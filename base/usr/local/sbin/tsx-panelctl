@@ -33,8 +33,8 @@
 #
 # Env overrides for tests: TSX_RUN_DIR, TSX_PANELCTL, TSX_LEDBAR, TSX_KEYPAD,
 # TSX_BLANK, TSX_ALS_BIN, TSX_CONFIG_BIN, TSX_REBOOT_BIN, TSX_AMIXER,
-# TSX_SOUND_CARD, TSX_PANELCTL_ONESHOT=1 (handle exactly one line then exit;
-# tests only).
+# TSX_SOUND_CARD, TSX_UPDATE_BIN, TSX_PANELCTL_ONESHOT=1 (handle exactly one
+# line then exit; tests only).
 set -u -f
 R=${TSX_RUN_DIR:-/run/tsx}
 FIFO=${TSX_PANELCTL:-$R/panelctl}
@@ -46,6 +46,7 @@ CONFIG=${TSX_CONFIG_BIN:-tsx-config}
 REBOOT_BIN=${TSX_REBOOT_BIN:-reboot}
 AMIXER=${TSX_AMIXER:-amixer}
 CARD=${TSX_SOUND_CARD:-TSW1060}
+UPDATE_BIN=${TSX_UPDATE_BIN:-tsx-autoupdate}
 ONESHOT=${TSX_PANELCTL_ONESHOT:-0}
 
 log() { echo "$(date '+%F %T') tsx-panelctl: $*"; }
@@ -117,6 +118,10 @@ handle() {
 		if [ -z "$a1$a2$a3$a4$rest" ]; then
 			log "reboot requested"; "$REBOOT_BIN"
 		else reject "reboot $a1 $a2 $a3 $a4 $rest"; fi;;
+	update-install)
+		if [ -z "$a1$a2$a3$a4$rest" ]; then
+			log "update-install requested"; "$UPDATE_BIN" now &
+		else reject "update-install $a1 $a2 $a3 $a4 $rest"; fi;;
 	'') ;;
 	*) reject "$cmd $a1 $a2 $a3 $a4 $rest";;
 	esac

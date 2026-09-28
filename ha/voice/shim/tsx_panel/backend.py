@@ -31,7 +31,7 @@ Env overrides (all also read by tsx-mqtt; new ones only for this module):
   TSX_PANELCTL (/run/tsx/panelctl), TSX_PANEL_DIRECT=1 (tests only: run
   privileged commands directly even when not root),
   TSX_LEDBAR/TSX_KEYPAD/TSX_BLANK/TSX_ALS_BIN/TSX_CONFIG_BIN/TSX_REBOOT_BIN/
-  TSX_AMIXER (binary names, for test fixtures on $PATH).
+  TSX_AMIXER/TSX_UPDATE_BIN (binary names, for test fixtures on $PATH).
 """
 
 import json
@@ -91,6 +91,7 @@ class PanelBackend:
         self.config_bin = _env("TSX_CONFIG_BIN", "tsx-config")
         self.reboot_bin = _env("TSX_REBOOT_BIN", "reboot")
         self.amixer_bin = _env("TSX_AMIXER", "amixer")
+        self.update_bin = _env("TSX_UPDATE_BIN", "tsx-autoupdate")
         self._last_key: Optional[Tuple[str, str]] = None
 
     # ---- privilege boundary -------------------------------------------------
@@ -102,6 +103,19 @@ class PanelBackend:
             subprocess.run(args, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
         except Exception:  # noqa: BLE001
             _LOGGER.warning("command failed: %s", args, exc_info=True)
+
+    def _spawn(self, *args) -> None:
+        """Like _run but does not wait for it to finish: "tsx-autoupdate
+        now" can run an apk upgrade for minutes, and this is called from the
+        ESPHome connection's own thread/loop (tsx-esphome runs privileged
+        commands directly), so waiting on it would stall every other
+        command and poll tick until the upgrade completes. Same fire-and-
+        forget shape as tsx-mqtt's "tsx-autoupdate now &".
+        """
+        try:
+            subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("command failed to start: %s", args, exc_info=True)
 
     def _ctl(self, *words) -> None:
         """Privileged command: run it directly (root) or hand it to the
@@ -147,6 +161,8 @@ class PanelBackend:
             self._run(self.config_bin, "apply")
         elif cmd == "reboot":
             self._run(self.reboot_bin)
+        elif cmd == "update-install":
+            self._spawn(self.update_bin, "now")
         else:
             _LOGGER.warning("tsx-panelctl: unknown command %r", cmd)
 
@@ -448,3 +464,26 @@ class PanelBackend:
     # ---- reboot --------------------------------------------------------------
     def reboot(self) -> None:
         self._ctl("reboot")
+
+    # ---- update (tsx-autoupdate, PLAN.md section 21) --------------------------
+    def get_update_status(self) -> dict:
+        """tsx-autoupdate's own HA-ready status (same file tsx-mqtt's
+        update_state() reads: $TSX_RUN_DIR/update-ha-state.json), or a safe
+        default before it has ever run -- see tsx-autoupdate's write_ha_json."""
+        path = self.run_dir / "update-ha-state.json"
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {
+                "installed_version": "unknown",
+                "latest_version": "unknown",
+                "title": "TSX packages",
+                "release_summary": "tsx-autoupdate has not run yet",
+                "in_progress": False,
+            }
+
+    def install_update(self) -> None:
+        """"Install" on the Update entity: the same "tsx-autoupdate now"
+        tsx-mqtt's Install runs -- right away, outside the night window (the
+        window/idle gate still applies to the reboot itself)."""
+        self._ctl("update-install")

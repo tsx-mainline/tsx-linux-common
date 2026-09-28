@@ -14,7 +14,10 @@ output_log=/var/log/tsx-voice.log
 error_log=/var/log/tsx-voice.log
 respawn_delay=10
 respawn_max=0
-depend() { need net; after tsx-audio tsx-setup; }
+# after tsx-config: its apply writes /run/tsx/esphome.key (HA_API_KEY) and
+# esphome.conf (HA_ALLOW_FROM), read once at start -- starting earlier would
+# serve the ESPHome API without them
+depend() { need net; after tsx-audio tsx-setup tsx-config; }
 start_pre() {
 	# supervise-daemon opens the log after switching to command_user: it must exist and be writable by kiosk
 	checkpath -f -m 0644 -o kiosk:audio /var/log/tsx-voice.log

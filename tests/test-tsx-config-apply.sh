@@ -89,13 +89,36 @@ set_ HA_ALLOW_FROM 192.0.2.9 >/dev/null; applyp
 set_ PANEL_NAME TSS-10-OTHER >/dev/null; applyp
 [ "$(restarts)" = 3 ] && ok "a PANEL_NAME change restarts it" || bad "PANEL_NAME change: $(restarts) restarts"
 
-echo "== apply warns while HA_ALLOW_FROM is empty =="
+vrestarts() { grep -c 'tsx-voice restart' "$W/rc.log" 2>/dev/null || true; }
+[ "$(vrestarts)" = 1 ] && ok "the PANEL_NAME change restarts a running tsx-voice too (device name)" || bad "PANEL_NAME change: $(vrestarts) tsx-voice restarts"
+
+echo "== HA_API_KEY: key file for both ESPHome servers, restarts on change =="
+KEY=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+set_ HA_API_KEY "$KEY" >/dev/null; applyp
+[ "$(cat "$FX/run/tsx/esphome.key" 2>/dev/null)" = "$KEY" ] && ok "esphome.key holds the key" || bad "esphome.key missing/wrong"
+[ "$(stat -c '%a' "$FX/run/tsx/esphome.key" 2>/dev/null)" = 640 ] && ok "esphome.key is mode 640 (group kiosk: the voice satellite)" || bad "esphome.key mode $(stat -c '%a' "$FX/run/tsx/esphome.key" 2>/dev/null), want 640"
+grep -qF -- "$KEY" "$FX/run/tsx/esphome.conf" "$FX/run/tsx/.esphome-sig" "$FX/run/tsx/.voice-sig" 2>/dev/null && bad "the key leaked into a world-readable file" || ok "the key is in no world-readable file"
+[ "$(restarts)" = 4 ] && ok "a new HA_API_KEY restarts tsx-esphome" || bad "HA_API_KEY: $(restarts) tsx-esphome restarts"
+[ "$(vrestarts)" = 2 ] && ok "a new HA_API_KEY restarts tsx-voice" || bad "HA_API_KEY: $(vrestarts) tsx-voice restarts"
+set_ KIOSK_URL "https://ha.example.org/third" >/dev/null; applyp
+[ "$(restarts)/$(vrestarts)" = 4/2 ] && ok "a KIOSK_URL change restarts neither" || bad "KIOSK_URL change: $(restarts)/$(vrestarts) restarts"
+OUT=$(TSX_CONF="$CFG" busybox sh "$SCRIPT" show 2>&1)
+case "$OUT" in *"$KEY"*) bad "show prints HA_API_KEY";; *"HA_API_KEY=********"*) ok "show masks HA_API_KEY";; *) bad "show does not list HA_API_KEY";; esac
+TSX_CONF="$CFG" busybox sh "$SCRIPT" unset HA_API_KEY >/dev/null; applyp
+[ ! -e "$FX/run/tsx/esphome.key" ] && ok "unsetting HA_API_KEY removes esphome.key (plaintext again)" || bad "esphome.key left behind"
+[ "$(restarts)/$(vrestarts)" = 5/3 ] && ok "removing the key restarts both" || bad "key removal: $(restarts)/$(vrestarts) restarts"
+
+echo "== apply warns while the API is open (no HA_API_KEY, no HA_ALLOW_FROM) =="
 TSX_CONF="$CFG" busybox sh "$SCRIPT" unset HA_ALLOW_FROM >/dev/null 2>&1 || true
 OUT=$(apply_ 2>&1)   # not piped into grep -q: pipefail would see the SIGPIPE
-case "$OUT" in *"WARNING: HA_ALLOW_FROM is empty"*) ok "apply prints the HA_ALLOW_FROM warning";; *) bad "apply does not warn about an empty HA_ALLOW_FROM";; esac
+case "$OUT" in *"WARNING: the ESPHome API (port 6053) is open"*) ok "apply prints the open-API warning";; *) bad "apply does not warn about an open API";; esac
 set_ HA_ALLOW_FROM 192.0.2.9 >/dev/null
 OUT=$(apply_ 2>&1)
-case "$OUT" in *"WARNING: HA_ALLOW_FROM"*) bad "apply warns with HA_ALLOW_FROM set";; *) ok "no warning once HA_ALLOW_FROM is set";; esac
+case "$OUT" in *"WARNING"*) bad "apply warns with HA_ALLOW_FROM set";; *) ok "no warning once HA_ALLOW_FROM is set";; esac
+TSX_CONF="$CFG" busybox sh "$SCRIPT" unset HA_ALLOW_FROM >/dev/null 2>&1 || true
+set_ HA_API_KEY "$KEY" >/dev/null
+OUT=$(apply_ 2>&1)
+case "$OUT" in *"WARNING"*) bad "apply warns with HA_API_KEY set";; *) ok "no warning with HA_API_KEY set (HA_ALLOW_FROM optional)";; esac
 
 echo "== $N ok, $F failed =="
 [ $F = 0 ] && echo PASS test-tsx-config-apply || echo FAIL test-tsx-config-apply

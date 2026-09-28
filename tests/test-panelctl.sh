@@ -18,7 +18,7 @@ N=0 F=0
 ok() { echo "  ok: $*"; N=$((N + 1)); }
 bad() { echo "  FAIL: $*"; F=$((F + 1)); }
 
-for b in tsx-ledbar tsx-keypad tsx-blank tsx-als tsx-config; do
+for b in tsx-ledbar tsx-keypad tsx-blank tsx-als tsx-config tsx-autoupdate; do
 	cat > "$T/bin/$b" <<EOF
 #!/bin/sh
 echo "$b \$*" >> "$T/cmds.log"
@@ -64,13 +64,14 @@ send "brightness 17"
 send "volume 42"
 send "config-url https://ha.example.org/lovelace/0"
 send "reboot"
+send "update-install"
 
 for want in \
 	'tsx-ledbar set 10 20 30' 'tsx-ledbar off' \
 	'tsx-keypad led 128' 'tsx-keypad led off' \
 	'tsx-blank on' 'tsx-blank off' 'tsx-als auto on' \
 	'tsx-config set KIOSK_URL https://ha.example.org/lovelace/0' 'tsx-config apply' \
-	'amixer -q -c TSW1060 sset Master 42%' 'reboot'
+	'amixer -q -c TSW1060 sset Master 42%' 'reboot' 'tsx-autoupdate now'
 do
 	grep -qxF "$want" "$T/cmds.log" 2>/dev/null && ok "ran: $want" || bad "missing: $want"
 done
@@ -88,10 +89,11 @@ send "; rm -rf /"
 send "config-url ftp://evil.example"
 send "brightness $(printf '9%.0s' $(seq 1 40))"
 send "volume 999"
+send "update-install now"
 
 [ ! -s "$T/cmds.log" ] && ok "no fake CLI was ever run for any hostile line" || { bad "a hostile line reached a CLI"; cat "$T/cmds.log"; }
 rejected=$(grep -c 'rejected:' "$T/panelctl.log")
-[ "$rejected" -ge 10 ] && ok "all 10 hostile lines were logged as rejected ($rejected)" || bad "expected >=10 rejections, got $rejected"
+[ "$rejected" -ge 11 ] && ok "all 11 hostile lines were logged as rejected ($rejected)" || bad "expected >=11 rejections, got $rejected"
 kill -0 "$PID" 2>/dev/null && ok "daemon is still alive after the hostile batch" || bad "daemon died"
 
 echo "== $N ok, $F failed =="

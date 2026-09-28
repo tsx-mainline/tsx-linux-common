@@ -31,6 +31,7 @@ from aioesphomeapi.api_pb2 import (  # pylint: disable=no-name-in-module
     SubscribeStatesRequest,
     SwitchCommandRequest,
     TextCommandRequest,
+    UpdateCommandRequest,
 )
 from getmac import get_mac_address
 from google.protobuf import message
@@ -38,7 +39,7 @@ from linux_voice_assistant.api_server import APIServer
 from linux_voice_assistant.util import get_default_interface, get_default_ipv4, get_esphome_version, get_version
 from linux_voice_assistant.zeroconf import HomeAssistantZeroconf
 
-from . import security
+from . import naming, security
 from .backend import PanelBackend
 from .device import build_entities, poll
 
@@ -52,6 +53,7 @@ COMMAND_TYPES = (
     LightCommandRequest,
     ButtonCommandRequest,
     TextCommandRequest,
+    UpdateCommandRequest,
 )
 
 
@@ -75,13 +77,21 @@ class PanelAPIServer(APIServer):
         super().__init__(PanelAPIServer.name)
 
     def connection_made(self, transport) -> None:
-        super().connection_made(transport)
+        super().connection_made(transport)  # security.enforce()'s patch: sets self._tsx_denied
+        peer = transport.get_extra_info("peername")
+        self._tsx_peer = peer[0] if peer else "?"
+        if getattr(self, "_tsx_denied", False):
+            return  # already logged (and closed) by security.py; not a served connection
         PanelAPIServer.connections.append(self)
+        _LOGGER.info("connection accepted: %s (%s)", self._tsx_peer,
+                     "encrypted" if security.encryption_enabled() else "plaintext")
 
     def connection_lost(self, exc) -> None:
         super().connection_lost(exc)
         if self in PanelAPIServer.connections:
             PanelAPIServer.connections.remove(self)
+            _LOGGER.info("connection closed: %s (%s)", getattr(self, "_tsx_peer", "?"),
+                         "encrypted" if security.encryption_enabled() else "plaintext")
 
     @classmethod
     def broadcast(cls, msgs: Iterable[message.Message]) -> None:
@@ -129,7 +139,7 @@ def _poll_loop(device, interval: float) -> None:
 
 async def async_main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", help="Device name (default: hostname)")
+    parser.add_argument("--name", help="Friendly name when PANEL_NAME is unset (default: hostname); see naming.py")
     parser.add_argument("--port", type=int, default=6053)
     parser.add_argument("--network-interface")
     parser.add_argument("--host")
@@ -138,20 +148,26 @@ async def async_main() -> None:
 
     import socket as _socket
 
-    device_name = args.name or _socket.gethostname()
     iface = args.network_interface or get_default_interface()
     host_ip = args.host or (get_default_ipv4(iface) if iface else None) or "0.0.0.0"
     mac = get_mac_address(interface=iface) or "00:00:00:00:00:00"
+    # same name/friendly name the voice satellite uses (naming.py), so
+    # switching VOICE does not rename the device in Home Assistant
+    device_name, friendly_name = naming.resolve(mac, args.name or _socket.gethostname())
 
     PanelAPIServer.name = device_name
-    PanelAPIServer.friendly_name = device_name
+    PanelAPIServer.friendly_name = friendly_name
     PanelAPIServer.mac_address = mac
 
     backend = PanelBackend()
     device = build_entities(None, backend, key_base=0)
     PanelAPIServer.device = device
 
-    security.enforce()  # HA_ALLOW_FROM (panel.conf); see security.py
+    try:
+        security.enforce()  # HA_API_KEY + HA_ALLOW_FROM (panel.conf); see security.py
+    except RuntimeError as err:
+        _LOGGER.critical("%s -- not serving the ESPHome API unencrypted", err)
+        sys.exit(1)
 
     loop = asyncio.get_running_loop()
     attempt = 1
@@ -171,7 +187,8 @@ async def async_main() -> None:
     discovery = HomeAssistantZeroconf(port=args.port, name=device_name, mac_address=mac, host_ip_address=host_ip)
     await discovery.register_server()
 
-    _LOGGER.info("tsx-esphome: %s listening on %s:%s (%d entities)", device_name, host_ip, args.port, len(device.entities))
+    _LOGGER.info("tsx-esphome: %s (%s) listening on %s:%s (%d entities, %s)", device_name, friendly_name, host_ip, args.port,
+                 len(device.entities), "encrypted" if security.encryption_enabled() else "plaintext")
     await asyncio.Future()  # run forever
 
 

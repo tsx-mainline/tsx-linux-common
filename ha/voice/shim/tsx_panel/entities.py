@@ -42,6 +42,7 @@ from aioesphomeapi.api_pb2 import (
     ListEntitiesSwitchResponse,
     ListEntitiesTextResponse,
     ListEntitiesTextSensorResponse,
+    ListEntitiesUpdateResponse,
     NumberCommandRequest,
     NumberStateResponse,
     SensorStateResponse,
@@ -51,6 +52,9 @@ from aioesphomeapi.api_pb2 import (
     TextCommandRequest,
     TextSensorStateResponse,
     TextStateResponse,
+    UpdateCommand,
+    UpdateCommandRequest,
+    UpdateStateResponse,
 )
 from google.protobuf import message
 
@@ -287,6 +291,65 @@ class BinarySensorEntity(ESPHomeEntity):
         except Exception:  # noqa: BLE001
             _LOGGER.debug("%s: read failed", self.name, exc_info=True)
         return BinarySensorStateResponse(key=self.key, state=self._state)
+
+    def poll(self):
+        return self._state_msg()
+
+
+class UpdateEntity(ESPHomeEntity):
+    """tsx-autoupdate's status (PLAN.md section 21) as a generic HA `update`
+    entity: the same status tsx-mqtt already publishes
+    (docs/ha.md "Update entity"), now also on the ESPHome device. get_state
+    returns tsx-autoupdate's own update-ha-state.json shape --
+    installed_version/latest_version/title/release_summary/in_progress (see
+    backend.py's get_update_status) -- with no numeric progress field, so
+    has_progress is always False. UPDATE_COMMAND_UPDATE runs the install
+    (backend.py's install_update -> the same "tsx-autoupdate now" tsx-mqtt's
+    Install button runs, through tsx-panelctl when unprivileged);
+    UPDATE_COMMAND_CHECK/NONE are not acted on (tsx-autoupdate checks on its
+    own schedule).
+    """
+
+    def __init__(self, server, key, name, object_id, get_state, install, icon=""):
+        ESPHomeEntity.__init__(self, server)
+        self.key, self.name, self.object_id = key, name, object_id
+        self._get_state, self._install, self.icon = get_state, install, icon
+        self._state = {}
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, UpdateCommandRequest) and msg.key == self.key:
+            if msg.command == UpdateCommand.UPDATE_COMMAND_UPDATE:
+                try:
+                    self._install()
+                except Exception:  # noqa: BLE001
+                    _LOGGER.warning("%s: install failed", self.name, exc_info=True)
+            yield self._state_msg()
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesUpdateResponse(
+                object_id=self.object_id, key=self.key, name=self.name, icon=self.icon,
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            yield self._state_msg()
+
+    def _state_msg(self):
+        try:
+            st = self._get_state() or {}
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("%s: read failed", self.name, exc_info=True)
+            st = {}
+        self._state = st
+        current = str(st.get("installed_version") or "")
+        latest = str(st.get("latest_version") or current)
+        return UpdateStateResponse(
+            key=self.key,
+            missing_state=current in ("", "unknown"),
+            in_progress=bool(st.get("in_progress")),
+            has_progress=False,
+            current_version=current,
+            latest_version=latest,
+            title=str(st.get("title") or ""),
+            release_summary=str(st.get("release_summary") or ""),
+        )
 
     def poll(self):
         return self._state_msg()

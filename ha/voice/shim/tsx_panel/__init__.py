@@ -19,4 +19,8 @@ Modules:
   device.py    builds the full entity list from a PanelBackend and runs the
                polling loop that pushes state changes to Home Assistant.
   esphome_server.py   the standalone tsx-esphome entry point.
+  security.py  HA_API_KEY (encryption) + HA_ALLOW_FROM, patched into the
+               shared linux_voice_assistant APIServer for both front ends.
+  noise.py     the server side of ESPHome's "noise" API encryption.
+  naming.py    the one ESPHome device name both front ends present.
 """

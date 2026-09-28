@@ -63,6 +63,17 @@ run set HA_ALLOW_FROM "192.0.2.0/99" >/dev/null 2>&1 && bad "HA_ALLOW_FROM with 
 run set HA_ALLOW_FROM "192.0.2.5,-x" >/dev/null 2>&1 && bad "HA_ALLOW_FROM with a leading-dash entry accepted" || ok "HA_ALLOW_FROM leading-dash entry rejected"
 run set PANEL_NAME "has spaces" >/dev/null 2>&1 && bad "PANEL_NAME with spaces accepted" || ok "PANEL_NAME with spaces rejected"
 
+echo "== HA_API_KEY: base64 of exactly 32 bytes, or empty =="
+K=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+run set HA_API_KEY "$K" && [ "$(run get HA_API_KEY)" = "$K" ] && ok "a generated key is accepted and round-trips" || bad "a generated key was rejected/changed ($K)"
+run set HA_API_KEY "" && ok "empty HA_API_KEY (plaintext) accepted" || bad "empty HA_API_KEY rejected"
+run set HA_API_KEY "$(head -c 16 /dev/urandom | base64)" >/dev/null 2>&1 && bad "a 16-byte key accepted" || ok "a 16-byte key rejected"
+run set HA_API_KEY "$(head -c 33 /dev/urandom | base64)" >/dev/null 2>&1 && bad "a 33-byte key accepted" || ok "a 33-byte key rejected"
+run set HA_API_KEY "${K%?}" >/dev/null 2>&1 && bad "a key without its '=' accepted" || ok "a key without its '=' rejected"
+run set HA_API_KEY "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB=" >/dev/null 2>&1 && bad "non-canonical base64 accepted" || ok "non-canonical base64 (stray low bits) rejected"
+run set HA_API_KEY "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-_=" >/dev/null 2>&1 && bad "url-safe base64 accepted" || ok "url-safe base64 alphabet rejected (ESPHome uses standard base64)"
+run set HA_API_KEY "$K" >/dev/null
+
 echo "== a value containing a literal newline is rejected =="
 V=$(printf 'line1\nline2')
 run set MQTT_USER "$V" >/dev/null 2>&1 && bad "embedded newline accepted" || ok "embedded newline rejected"
@@ -78,6 +89,7 @@ SHOWN=$(run show); RC=$?
 [ $RC = 0 ] && ok "show itself exits 0 (even though the last known key, SSH_AUTHORIZED_KEY, is unset)" || bad "show exited non-zero ($RC)"
 printf '%s\n' "$SHOWN" | grep -q '^HA_TOKEN=abcdefgh' && bad "show printed the raw token" || ok "show masks HA_TOKEN"
 printf '%s\n' "$SHOWN" | grep -q '^HA_TOKEN=\*\*\*\*' && ok "show prints a masked placeholder for HA_TOKEN" || bad "show did not mask HA_TOKEN"
+printf '%s\n' "$SHOWN" | grep -q '^HA_API_KEY=\*\*\*\*' && ok "show masks HA_API_KEY" || bad "show did not mask HA_API_KEY"
 printf '%s\n' "$SHOWN" | grep -q '^KIOSK_URL=https://ha.example.org/new$' && ok "show prints non-secret values in the clear" || bad "show did not print KIOSK_URL in the clear"
 
 echo "== $N ok, $F failed =="

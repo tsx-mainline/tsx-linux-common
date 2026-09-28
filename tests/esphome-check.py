@@ -4,27 +4,39 @@ tsx-esphome standalone server under test with aioesphomeapi (the same client
 library Home Assistant's ESPHome integration uses) and exercises the panel
 entity list PLAN.md section 18 asks for: list entities, toggle the LED bar
 light, set the kiosk URL text, receive a key-press event.
+
+  esphome-check.py PORT [--key BASE64] [--name N] [--friendly F] [--voice]
+
+--key connects with ESPHome's noise encryption (HA_API_KEY), --voice also
+requires the voice satellite's own entities (esphome-lva-harness.py).
 """
+import argparse
 import asyncio
 import sys
 
 from aioesphomeapi import APIClient
+from aioesphomeapi.model import UpdateCommand
 
 
-async def main(port: int) -> int:
-    client = APIClient("127.0.0.1", port, None)
+async def main(args) -> int:
+    client = APIClient("127.0.0.1", args.port, None, noise_psk=args.key)
     await client.connect(login=False)
     try:
         info = await client.device_info()
-        assert info.name == "test-panel", info.name
+        assert info.name == args.name, info.name
+        assert info.friendly_name == args.friendly, info.friendly_name
+        print(f"OK: device name {info.name!r}, friendly name {info.friendly_name!r}"
+              f" ({'noise-encrypted' if args.key else 'plaintext'})")
 
         entities, _services = await client.list_entities_services()
         by_id = {e.object_id: e for e in entities}
         want = {
             "ledbar", "keypad", "screen", "backlight", "kiosk_url",
             "reload_page", "reboot", "cpu_temp", "uptime", "ip_address",
-            "touched_recently", "key_power", "key_home",
+            "touched_recently", "key_power", "key_home", "update",
         }
+        if args.voice:
+            want |= {"mute", "thinking_sound", "linux_voice_assistant_media_player"}
         missing = want - by_id.keys()
         assert not missing, f"missing entities: {missing}"
         print(f"OK: {len(entities)} entities, all expected object_ids present")
@@ -61,6 +73,18 @@ async def main(port: int) -> int:
         await asyncio.sleep(0.5)
         print("OK: backlight number sent (5.0; test-esphome.sh checks the brightness file)")
 
+        update_state = states.get(by_id["update"].key)
+        assert update_state is not None, "no initial state for the update entity"
+        assert update_state.current_version == "abc123", update_state
+        assert update_state.latest_version == "abc123+1pending", update_state
+        assert update_state.release_summary == "pkg1 (1.0 -> 1.1)", update_state
+        assert not update_state.in_progress and not update_state.missing_state, update_state
+        print("OK: update entity reports tsx-autoupdate's status (installed/latest/release_summary)")
+
+        client.update_command(key=by_id["update"].key, command=UpdateCommand.INSTALL)
+        await asyncio.sleep(0.5)
+        print("OK: update entity Install sent (test-esphome.sh checks tsx-autoupdate ran)")
+
         # test-esphome.sh rewrites the fixture's buttons.state "last" line
         # after this point, to simulate a front-key press; give the daemon's
         # 1 s poll loop a couple of ticks to notice it.
@@ -78,4 +102,10 @@ async def main(port: int) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main(int(sys.argv[1]))))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("port", type=int)
+    parser.add_argument("--key")
+    parser.add_argument("--name", default="test-panel")
+    parser.add_argument("--friendly", default="Test-Panel")
+    parser.add_argument("--voice", action="store_true")
+    sys.exit(asyncio.run(main(parser.parse_args())))

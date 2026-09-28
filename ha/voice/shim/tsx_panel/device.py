@@ -30,6 +30,7 @@ from .entities import (
     SwitchEntity,
     TextEntity,
     TextSensorEntity,
+    UpdateEntity,
 )
 
 _LOGGER = logging.getLogger("tsx_panel.device")
@@ -67,6 +68,7 @@ class PanelDevice:
     uptime: SensorEntity
     ip_address: TextSensorEntity
     touched_recently: BinarySensorEntity
+    update: UpdateEntity
     keys: List[KeyEventEntity]
     _last_ledbar: Optional[tuple] = field(default=None, repr=False)
     _last_keypad: Optional[tuple] = field(default=None, repr=False)
@@ -196,6 +198,13 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     )
     entities.append(touched_recently)
 
+    # ---- update (tsx-autoupdate status; PLAN.md section 21) -------------------
+    update = UpdateEntity(
+        server, next_key(), "Update", "update",
+        get_state=backend.get_update_status, install=backend.install_update, icon="mdi:package-up",
+    )
+    entities.append(update)
+
     # ---- front-key events (one HA `event` entity per key, like tsx-mqtt) -------
     keys = []
     for name in backend.key_names():
@@ -208,7 +217,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
         backlight=backlight, als_auto=als_auto, illuminance=illuminance, volume=volume,
         kiosk_url=kiosk_url, reload_button=reload_button, reboot_button=reboot_button,
         cpu_temp=cpu_temp, uptime=uptime, ip_address=ip_address, touched_recently=touched_recently,
-        keys=keys, _pulse_since=time.time(),
+        update=update, keys=keys, _pulse_since=time.time(),
     )
 
 
@@ -252,7 +261,8 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None]) -> None:
         msgs.append(device.keypad._state_response())  # pylint: disable=protected-access
 
     for entity in (device.screen, device.backlight, device.als_auto, device.illuminance,
-                   device.volume, device.cpu_temp, device.uptime, device.ip_address, device.touched_recently):
+                   device.volume, device.cpu_temp, device.uptime, device.ip_address, device.touched_recently,
+                   device.update):
         if entity is None:
             continue
         before = getattr(entity, "_state", None)
