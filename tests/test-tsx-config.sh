@@ -32,6 +32,13 @@ printf '\n# a comment\nPANEL_NAME="Comment-Test"\n' >> "$CFG"
 [ "$(run get PANEL_NAME)" = "Comment-Test" ] && ok "get reads a key after blank lines/comments" || bad "comment tolerance"
 run show >/dev/null 2>&1 && ok "show does not choke on comments" || bad "show choked on comments"
 
+echo "== HA_TRANSPORT accepts the three valid values =="
+for v in esphome mqtt both; do
+	run set HA_TRANSPORT "$v" || bad "set HA_TRANSPORT $v"
+	[ "$(run get HA_TRANSPORT)" = "$v" ] || bad "get HA_TRANSPORT after set $v"
+done
+ok "HA_TRANSPORT esphome|mqtt|both round-trip"
+
 echo "== re-set stays a single line (no duplicate KEY=) =="
 run set KIOSK_URL "https://ha.example.org/new" || bad "re-set KIOSK_URL"
 [ "$(grep -c '^KIOSK_URL=' "$CFG")" = 1 ] && ok "exactly one KIOSK_URL= line" || bad "duplicate KIOSK_URL= lines"
@@ -46,6 +53,14 @@ run get BOGUS_KEY >/dev/null 2>&1 && bad "unknown key accepted by get" || ok "un
 run set VOICE maybe >/dev/null 2>&1 && bad "VOICE=maybe accepted" || ok "VOICE=maybe rejected"
 run set HA_LOGIN_METHOD carrier-pigeon >/dev/null 2>&1 && bad "bad HA_LOGIN_METHOD accepted" || ok "bad HA_LOGIN_METHOD rejected"
 run set KERNEL_FLAVOR beta >/dev/null 2>&1 && bad "bad KERNEL_FLAVOR accepted" || ok "bad KERNEL_FLAVOR rejected"
+run set HA_TRANSPORT websocket >/dev/null 2>&1 && bad "bad HA_TRANSPORT accepted" || ok "bad HA_TRANSPORT rejected"
+run set HA_ALLOW_FROM "192.0.2.5,192.168.1.0/24" && ok "valid HA_ALLOW_FROM (v4 + CIDR) accepted" || bad "valid HA_ALLOW_FROM (v4 + CIDR) rejected"
+run set HA_ALLOW_FROM "" && ok "empty HA_ALLOW_FROM (allow any) accepted" || bad "empty HA_ALLOW_FROM rejected"
+run set HA_ALLOW_FROM "fe80::1,2001:db8::/32" && ok "valid HA_ALLOW_FROM (v6 + CIDR) accepted" || bad "valid HA_ALLOW_FROM (v6 + CIDR) rejected"
+run set HA_ALLOW_FROM "192.0.2.5,*" >/dev/null 2>&1 && bad "HA_ALLOW_FROM with a glob accepted" || ok "HA_ALLOW_FROM with a glob rejected"
+run set HA_ALLOW_FROM "999.1.1.1" >/dev/null 2>&1 && bad "HA_ALLOW_FROM with an out-of-range octet accepted" || ok "HA_ALLOW_FROM out-of-range octet rejected"
+run set HA_ALLOW_FROM "192.0.2.0/99" >/dev/null 2>&1 && bad "HA_ALLOW_FROM with a bad prefix length accepted" || ok "HA_ALLOW_FROM bad prefix length rejected"
+run set HA_ALLOW_FROM "192.0.2.5,-x" >/dev/null 2>&1 && bad "HA_ALLOW_FROM with a leading-dash entry accepted" || ok "HA_ALLOW_FROM leading-dash entry rejected"
 run set PANEL_NAME "has spaces" >/dev/null 2>&1 && bad "PANEL_NAME with spaces accepted" || ok "PANEL_NAME with spaces rejected"
 
 echo "== a value containing a literal newline is rejected =="

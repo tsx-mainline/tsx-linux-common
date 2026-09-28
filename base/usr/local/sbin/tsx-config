@@ -24,10 +24,17 @@
 # secrets (HA_TOKEN, MQTT_PASSWORD, ROOT_PASSWORD_HASH, SSH_AUTHORIZED_KEY).
 #
 # Keys: PANEL_NAME, KIOSK_URL, HA_LOGIN_METHOD (token|trusted), HA_TOKEN,
-# TZ_NAME, VOICE (on|off), WAKE_WORD, MQTT_HOST, MQTT_PORT, MQTT_USER,
-# MQTT_PASSWORD, KERNEL_FLAVOR (lts|stable), ROOT_PASSWORD_HASH,
-# SSH_AUTHORIZED_KEY. See installer/panel.conf.example and docs/rootfs.md
-# "Panel configuration" for what each one does.
+# TZ_NAME, VOICE (on|off), WAKE_WORD, HA_TRANSPORT (esphome|mqtt|both;
+# PLAN.md section 18: esphome = one zero-config Home Assistant device over
+# the ESPHome native API, no broker -- tsx-esphome, or the voice satellite
+# itself when VOICE=on; mqtt = the tsx-mqtt bridge only, needs MQTT_HOST;
+# both = run whichever of the two are configured), HA_ALLOW_FROM (comma
+# list of IPv4/IPv6 addresses or CIDRs allowed to use the ESPHome API --
+# it has no encryption or password, see docs/ha.md "One Home Assistant
+# device"; empty = allow any, the zero-config default), MQTT_HOST,
+# MQTT_PORT, MQTT_USER, MQTT_PASSWORD, KERNEL_FLAVOR (lts|stable),
+# ROOT_PASSWORD_HASH, SSH_AUTHORIZED_KEY. See installer/panel.conf.example
+# and docs/rootfs.md "Panel configuration" for what each one does.
 set -eu
 TSX_CONF=${TSX_CONF:-/data/tsx/panel.conf}
 RUN=${TSX_RUN:-/run}/tsx
@@ -39,7 +46,7 @@ SEED=${TSX_CONF_SEED:-/etc/tsx/panel.conf.seed}
 # fixture tree at it; empty (the panel default) leaves the paths absolute.
 PREFIX=${TSX_APPLY_PREFIX:-}
 
-KNOWN_KEYS="PANEL_NAME KIOSK_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
+KNOWN_KEYS="PANEL_NAME KIOSK_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 SECRET_KEYS="HA_TOKEN MQTT_PASSWORD ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 
 usage() { sed -n '2,16p' "$0" >&2; exit 2; }
@@ -86,6 +93,35 @@ val_ok() {
 	TZ_NAME) printf '%s' "$v" | grep -Eq '^[A-Za-z0-9_+/-]{1,64}$';;
 	VOICE) case "$v" in on|off) return 0;; esac; return 1;;
 	WAKE_WORD) printf '%s' "$v" | grep -Eq '^[a-z0-9_]{1,32}$';;
+	HA_TRANSPORT) case "$v" in esphome|mqtt|both) return 0;; esac; return 1;;
+	HA_ALLOW_FROM)
+		[ -z "$v" ] && return 0   # empty = allow any (zero-config default)
+		# Peeled apart with parameter expansion, not `set -- $v` / IFS field
+		# splitting: an unquoted `set --` here would also pathname-expand
+		# any glob metacharacter in a comma-separated item.
+		rest=$v
+		while [ -n "$rest" ]; do
+			case "$rest" in *,*) item=${rest%%,*}; rest=${rest#*,};; *) item=$rest; rest=;; esac
+			item=$(trim "$item")
+			[ -n "$item" ] || return 1
+			addr=$item; pfx=
+			case "$item" in
+			*/*) addr=${item%/*}; pfx=${item#*/}
+				printf '%s' "$pfx" | grep -Eq '^[0-9]{1,3}$' || return 1;;
+			esac
+			case "$addr" in
+			*:*)
+				printf '%s' "$addr" | grep -Eq '^[0-9A-Fa-f:]+$' || return 1
+				[ -z "$pfx" ] || [ "$pfx" -le 128 ] || return 1;;
+			*)
+				printf '%s' "$addr" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+				for oct in $(printf '%s' "$addr" | tr '.' ' '); do
+					[ "$oct" -le 255 ] || return 1
+				done
+				[ -z "$pfx" ] || [ "$pfx" -le 32 ] || return 1;;
+			esac
+		done
+		return 0;;
 	MQTT_HOST) [ -z "$v" ] && return 0; printf '%s' "$v" | grep -Eq '^[A-Za-z0-9.:_-]+$';;
 	MQTT_PORT) [ -z "$v" ] && return 0; printf '%s' "$v" | grep -Eq '^[0-9]{1,5}$';;
 	MQTT_USER) printf '%s' "$v" | grep -Eq '^[A-Za-z0-9_.@-]*$';;
@@ -175,7 +211,16 @@ cfg_show() {
 		is_secret "$k" && v="********"
 		printf '%s=%s\n' "$k" "$v"
 	done
+	allow=$(cfg_get HA_ALLOW_FROM) || allow=
+	[ -n "$allow" ] || warn_allow_from
 	return 0
+}
+
+warn_allow_from() {
+	echo "# WARNING: HA_ALLOW_FROM is empty -- the ESPHome API (port 6053) has" >&2
+	echo "#   no encryption or password, so any host on the LAN can reboot this" >&2
+	echo "#   panel or change its kiosk URL. Set HA_ALLOW_FROM to your Home" >&2
+	echo "#   Assistant host's address (docs/ha.md \"One Home Assistant device\")." >&2
 }
 
 # ---- apply: boot-time materialisation (panel only) -------------------------
@@ -236,6 +281,39 @@ apply() {
 		on) tsx-audio enable voice >/dev/null 2>&1 || true;;
 		off) tsx-audio disable voice >/dev/null 2>&1 || true;;
 		esac
+	fi
+
+	# HA_TRANSPORT/HA_ALLOW_FROM: world-readable (no secret in either,
+	# unlike the other overrides above) because the voice satellite's own
+	# ESPHome plugin (rootfs/voice/shim/tsx_lva) reads this file directly --
+	# it runs as kiosk:audio and cannot read $TSX_CONF (mode 600).
+	# tsx-esphome (root) reads the same file too, for one code path instead
+	# of two (see rootfs/voice/shim/tsx_panel/security.py).
+	transport=$(cfg_get HA_TRANSPORT) || transport=esphome
+	allow=$(cfg_get HA_ALLOW_FROM) || allow=
+	tmp="$RUN/esphome.conf.tmp.$$"
+	{
+		printf 'TRANSPORT="%s"\n' "$(shq "$transport")"
+		printf 'ALLOW_FROM="%s"\n' "$(shq "$allow")"
+	} > "$tmp" && mv "$tmp" "$RUN/esphome.conf" && chmod 644 "$RUN/esphome.conf"
+	# same warning as `show` (docs/ha.md "Security"); not with HA_TRANSPORT=mqtt
+	if [ -z "$allow" ] && [ "$transport" != mqtt ]; then warn_allow_from; fi
+
+	# HA_TRANSPORT/VOICE together decide whether tsx-esphome (the standalone
+	# ESPHome device, PLAN.md section 18) should be running -- see its own
+	# start() for the same check. It is always in the default runlevel (like
+	# tsx-mqtt), so only restart it if it is already up; at boot time this
+	# apply() runs before tsx-esphome's own runlevel entry starts it, so
+	# there is nothing to restart yet and this is a no-op.
+	# Restart it only when something it reads changed (esphome.conf, the
+	# panel name, VOICE): tsx-esphome itself runs `tsx-config apply` for its
+	# Kiosk URL entity, and an unconditional restart killed it in the middle
+	# of that command (and dropped Home Assistant's connection each time).
+	sig="$(cat "$RUN/esphome.conf" 2>/dev/null)|$name|$voice"
+	oldsig=; [ -r "$RUN/.esphome-sig" ] && oldsig=$(cat "$RUN/.esphome-sig")
+	printf '%s\n' "$sig" > "$RUN/.esphome-sig"
+	if [ "$sig" != "$oldsig" ] && command -v rc-service >/dev/null 2>&1 && rc-service tsx-esphome status >/dev/null 2>&1; then
+		rc-service tsx-esphome restart >/dev/null 2>&1 || true
 	fi
 
 	method=$(cfg_get HA_LOGIN_METHOD) || method=

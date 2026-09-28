@@ -50,6 +50,8 @@ grep -q '^KIOSK_URL="https://ha.example.org/lovelace/default_view"$' "$FX/run/ts
 grep -q '^TZ_NAME="America/Denver"$' "$FX/run/tsx/kiosk.conf" 2>/dev/null && ok "kiosk.conf override has TZ_NAME" || bad "kiosk.conf override missing TZ_NAME"
 [ "$(stat -c '%a' "$FX/run/tsx/kiosk.conf" 2>/dev/null)" = 644 ] && ok "kiosk.conf override is mode 644 (kiosk-session reads it as the kiosk user)" || bad "kiosk.conf override not readable by the kiosk user"
 grep -q '^BROKER="192.0.2.5"$' "$FX/run/tsx/mqtt.conf" 2>/dev/null && ok "mqtt.conf override has BROKER" || bad "mqtt.conf override wrong"
+grep -q '^TRANSPORT="esphome"$' "$FX/run/tsx/esphome.conf" 2>/dev/null && ok "esphome.conf override defaults to TRANSPORT=esphome" || bad "esphome.conf override missing/wrong default"
+[ "$(stat -c '%a' "$FX/run/tsx/esphome.conf" 2>/dev/null)" = 644 ] && ok "esphome.conf override is world-readable (no secret)" || bad "esphome.conf override should be 644"
 [ "$(stat -c '%a' "$FX/run/tsx/mqtt.conf" 2>/dev/null)" = 600 ] && ok "mqtt.conf override is mode 600 (carries MQTT_PASSWORD)" || bad "mqtt.conf override not mode 600"
 
 echo "== the generated overrides are valid, safely sourceable shell =="
@@ -71,6 +73,29 @@ echo "== a manually-added extra ssh key survives apply (panel.conf never removes
 echo "ssh-ed25519 AAAAOTHERKEY someone@elsewhere" >> "$FX/root/.ssh/authorized_keys"
 apply_ >/dev/null 2>&1
 [ "$(wc -l < "$FX/root/.ssh/authorized_keys")" = 2 ] && ok "both keys present after another apply" || bad "an existing key was lost"
+
+echo "== tsx-esphome is restarted only when its inputs change =="
+mkdir -p "$W/bin"
+printf '#!/bin/sh\necho "rc-service $*" >> "%s/rc.log"\nexit 0\n' "$W" > "$W/bin/rc-service"; chmod +x "$W/bin/rc-service"
+rm -f "$FX/run/tsx/.esphome-sig" "$W/rc.log"
+applyp() { PATH="$W/bin:$PATH" apply_ >/dev/null 2>&1; }
+restarts() { grep -c 'tsx-esphome restart' "$W/rc.log" 2>/dev/null || true; }
+applyp; [ "$(restarts)" = 1 ] && ok "first apply (no signature yet) restarts tsx-esphome" || bad "first apply: $(restarts) restarts"
+applyp; [ "$(restarts)" = 1 ] && ok "apply with nothing changed does not restart it" || bad "unchanged apply restarted it ($(restarts))"
+set_ KIOSK_URL "https://ha.example.org/other" >/dev/null; applyp
+[ "$(restarts)" = 1 ] && ok "a KIOSK_URL change does not restart it" || bad "KIOSK_URL change restarted it ($(restarts))"
+set_ HA_ALLOW_FROM 192.0.2.9 >/dev/null; applyp
+[ "$(restarts)" = 2 ] && ok "an HA_ALLOW_FROM change restarts it" || bad "HA_ALLOW_FROM change: $(restarts) restarts"
+set_ PANEL_NAME TSS-10-OTHER >/dev/null; applyp
+[ "$(restarts)" = 3 ] && ok "a PANEL_NAME change restarts it" || bad "PANEL_NAME change: $(restarts) restarts"
+
+echo "== apply warns while HA_ALLOW_FROM is empty =="
+TSX_CONF="$CFG" busybox sh "$SCRIPT" unset HA_ALLOW_FROM >/dev/null 2>&1 || true
+OUT=$(apply_ 2>&1)   # not piped into grep -q: pipefail would see the SIGPIPE
+case "$OUT" in *"WARNING: HA_ALLOW_FROM is empty"*) ok "apply prints the HA_ALLOW_FROM warning";; *) bad "apply does not warn about an empty HA_ALLOW_FROM";; esac
+set_ HA_ALLOW_FROM 192.0.2.9 >/dev/null
+OUT=$(apply_ 2>&1)
+case "$OUT" in *"WARNING: HA_ALLOW_FROM"*) bad "apply warns with HA_ALLOW_FROM set";; *) ok "no warning once HA_ALLOW_FROM is set";; esac
 
 echo "== $N ok, $F failed =="
 [ $F = 0 ] && echo PASS test-tsx-config-apply || echo FAIL test-tsx-config-apply

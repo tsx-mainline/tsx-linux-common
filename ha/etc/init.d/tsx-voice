@@ -5,7 +5,11 @@
 description="Assist voice satellite (linux-voice-assistant, ESPHome API)"
 supervisor=supervise-daemon
 command=/usr/local/bin/tsx-voice-run
-command_user="kiosk:audio"
+# primary group kiosk (the /run/tsx/panelctl FIFO is root:kiosk 0660, see
+# tsx-panelctl); audio etc. come from kiosk's /etc/group memberships. With
+# "kiosk:audio" the process had no kiosk group and every panel entity write
+# failed ("tsx-panelctl not listening").
+command_user="kiosk:kiosk"
 output_log=/var/log/tsx-voice.log
 error_log=/var/log/tsx-voice.log
 respawn_delay=10
