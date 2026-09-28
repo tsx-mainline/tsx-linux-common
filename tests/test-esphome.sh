@@ -128,13 +128,13 @@ echo "== ESPHome device name rules (tsx_panel/naming.py) =="
 PYTHONPATH="$SHIM" TSX_PANEL_NAME_FILE=/nonexistent "$T/venv/bin/python3" -c '
 import os
 from tsx_panel import naming as n
-assert n.esphome_name("TSS-10-AABBCC", "02:00:00:00:00:01") == "tss-10-aabbcc"
+assert n.esphome_name("TSS-10-ABCDEF", "02:00:00:00:00:01") == "tss-10-abcdef"
 assert n.esphome_name("", "02:AA:bb:cc:dd:ee") == "tsx-02aabbccddee"
 assert n.esphome_name("--Odd--Name--", "") == "odd-name"
 os.environ.pop("TSX_PANEL_NAME", None)
 assert n.resolve("02:aa:bb:cc:dd:ee", "TSW-1060-HOST") == ("tsx-02aabbccddee", "TSW-1060-HOST")
-os.environ["TSX_PANEL_NAME"] = "TSS-10-AABBCC"
-assert n.resolve("02:aa:bb:cc:dd:ee", "TSW-1060-HOST") == ("tss-10-aabbcc", "TSS-10-AABBCC")
+os.environ["TSX_PANEL_NAME"] = "TSS-10-ABCDEF"
+assert n.resolve("02:aa:bb:cc:dd:ee", "TSW-1060-HOST") == ("tss-10-abcdef", "TSS-10-ABCDEF")
 print("OK: PANEL_NAME -> lowercase name + PANEL_NAME friendly name; fallback tsx-<mac> + --name")
 ' || rc=1
 

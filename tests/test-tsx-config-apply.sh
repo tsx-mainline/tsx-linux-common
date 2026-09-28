@@ -24,7 +24,7 @@ env TSX_CONF="$W/nope/panel.conf" TSX_RUN="$FX/run" TSX_STATE_DIR="$FX/var/lib/t
 [ ! -e "$FX/run/tsx/kiosk.conf" ] && ok "no /run/tsx/kiosk.conf written" || bad "kiosk.conf written with nothing to apply"
 
 echo "== apply requires root unless TSX_APPLY_ALLOW_NONROOT=1 =="
-set_ PANEL_NAME TSS-10-AABBCC >/dev/null
+set_ PANEL_NAME TSS-10-ABCDEF >/dev/null
 env TSX_CONF="$CFG" TSX_RUN="$FX/run" busybox sh "$SCRIPT" apply >/dev/null 2>&1 && bad "apply ran without root and without the test override" || ok "apply refuses non-root without the override"
 
 echo "== build a full panel.conf and apply it =="
@@ -42,9 +42,9 @@ set_ WAKE_WORD hey_jarvis >/dev/null
 apply_ >/dev/null 2>&1
 [ $? = 0 ] && ok "apply exits 0" || bad "apply failed"
 
-[ "$(cat "$FX/run/tsx/panel-name" 2>/dev/null)" = TSS-10-AABBCC ] && ok "panel-name written" || bad "panel-name missing/wrong"
-grep -q '^SENDSPIN_NAME="TSS-10-AABBCC"$' "$FX/run/tsx/sendspin.conf" 2>/dev/null && ok "sendspin.conf override has SENDSPIN_NAME" || bad "sendspin.conf override wrong"
-grep -q '^NAME="TSS-10-AABBCC"$' "$FX/run/tsx/voice.conf" 2>/dev/null && ok "voice.conf override has NAME" || bad "voice.conf override wrong (NAME)"
+[ "$(cat "$FX/run/tsx/panel-name" 2>/dev/null)" = TSS-10-ABCDEF ] && ok "panel-name written" || bad "panel-name missing/wrong"
+grep -q '^SENDSPIN_NAME="TSS-10-ABCDEF"$' "$FX/run/tsx/sendspin.conf" 2>/dev/null && ok "sendspin.conf override has SENDSPIN_NAME" || bad "sendspin.conf override wrong"
+grep -q '^NAME="TSS-10-ABCDEF"$' "$FX/run/tsx/voice.conf" 2>/dev/null && ok "voice.conf override has NAME" || bad "voice.conf override wrong (NAME)"
 grep -q '^WAKE_WORD="hey_jarvis"$' "$FX/run/tsx/voice.conf" 2>/dev/null && ok "voice.conf override has WAKE_WORD" || bad "voice.conf override wrong (WAKE_WORD)"
 grep -q '^KIOSK_URL="https://ha.example.org/lovelace/default_view"$' "$FX/run/tsx/kiosk.conf" 2>/dev/null && ok "kiosk.conf override has KIOSK_URL" || bad "kiosk.conf override wrong"
 grep -q '^TZ_NAME="America/Denver"$' "$FX/run/tsx/kiosk.conf" 2>/dev/null && ok "kiosk.conf override has TZ_NAME" || bad "kiosk.conf override missing TZ_NAME"
