@@ -16,6 +16,7 @@ start_pre() {
 	checkpath -f -m 0644 -o kiosk:audio /var/log/tsx-voice.log
 	STATE_DIR=/var/lib/tsx-voice
 	[ -r /etc/tsx/voice.conf ] && . /etc/tsx/voice.conf
+	[ -r /run/tsx/voice.conf ] && . /run/tsx/voice.conf   # panel.conf NAME/WAKE_WORD (tsx-config apply)
 	[ -x /usr/local/bin/linux-voice-assistant ] || { eerror "linux-voice-assistant not installed"; return 1; }
 	[ -e /proc/asound/TSW1060 ] || ewarn "no TSW1060 sound card"
 	checkpath -d -m 0755 -o kiosk:audio "$STATE_DIR"
