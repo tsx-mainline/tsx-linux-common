@@ -30,7 +30,9 @@ depend() {
 DIRS="var/lib/kiosk var/log var/lib/tsx root home"
 # Only the ha profile has the Sendspin player and its state directory.
 [ -e /etc/init.d/tsx-sendspin ] && DIRS="var/lib/kiosk var/log var/lib/tsx var/lib/sendspin root home"
-LOG=/run/tsx-data.log
+# Test hooks (tests/test-tsx-data.sh): a root to work under, and the log file.
+R=${TSX_DATA_ROOT:-}
+LOG=${TSX_DATA_LOG:-/run/tsx-data.log}
 
 # stdout: "file <sha256> <relpath>" per regular file and "link <target>
 # <relpath>" per symlink under $1, sorted. This way, a test can compare two
@@ -44,12 +46,14 @@ tree_digest() {
 }
 
 move_one() {
-	d=$1 src="/$1" tgt="/data/$1"
+	d=$1 src="$R/$1" tgt="$R/data/$1"
 	mountpoint -q "$src" 2>/dev/null && return 0   # already bind-mounted (e.g. service restarted)
 	mkdir -p "$tgt" 2>/dev/null
+	# A new root file system may not have the directory (/var/lib/tsx). The
+	# bind mount needs it. Without it, the services write to the root file system.
+	[ -e "$src" ] || mkdir -p "$src"
 	if [ ! -e "$tgt/.tsx-moved" ]; then
 		einfo "tsx-data: moving /$d to $tgt"
-		[ -e "$src" ] || mkdir -p "$src"
 		own=$(stat -c '%u:%g' "$src" 2>/dev/null)
 		mod=$(stat -c '%a' "$src" 2>/dev/null)
 		if ! cp -a "$src/." "$tgt/" >>"$LOG" 2>&1; then

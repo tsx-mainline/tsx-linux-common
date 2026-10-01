@@ -7,22 +7,21 @@ depend() { need localmount; before networking kiosk; }
 # test (rootfs/tests/test-tsx-setup-mac.sh) can call only this function. The
 # rest of start() has zram, cpufreq and timezone side effects on a real host.
 #
-# Mainline has no MAC source on this board. stmmac picks a random MAC at each
-# boot, so the DHCP address changed at every boot. The U-Boot env "ethaddr"
-# ALWAYS wins when it is present and valid. It is the MAC that U-Boot itself
-# uses for DHCP. The script reads it only from mmcblk0 at 1 MiB, the live
-# env (verified 2026-09-26). This matches the priority of the rescue system
-# (rootfs/initramfs/overlay/etc/init.d/rcS). That system is stateless and runs
-# in RAM. It derives the MAC from the same env at every boot, so no file can
-# fall out of sync. TSX_ETH0_MAC_FILE (/etc/tsx/eth0.mac) is only the
-# fallback for a board with no ethaddr in its env. The script keeps it in
-# step with a valid ethaddr whenever it sees one (docs/recovery.md "Random
-# MAC in the rescue, and the fix").
+# Mainline has no MAC source on these boards. The kernel picks a random MAC
+# at each boot, so the DHCP address changed at every boot. The board file
+# (board.sh) reads the unit MAC from the place that the board keeps it, for
+# example the U-Boot env or the devinfo partition. This MAC ALWAYS wins when
+# the board gives a valid one. The rescue system uses the same MAC, so a
+# panel keeps one DHCP address in both. TSX_ETH0_MAC_FILE (/etc/tsx/eth0.mac)
+# is only the fallback for a unit with no MAC in the board data. The script
+# keeps it in step with a valid board MAC whenever it sees one (docs/recovery.md
+# "Random MAC in the rescue, and the fix").
 #
-# The board file gives the MAC (tsx_board_mac_early, board.sh). TSX_MMCBLK0
-# (read by board.sh), TSX_BOARD_CONF and TSX_ETH0_MAC_FILE are hooks for host tests only
-# (rootfs/tests/). They work like TSX_APPLY_PREFIX in tsx-config. If they
-# are empty or unset, the script uses the real paths of the panel.
+# The board file gives the MAC (tsx_board_mac_early, board.sh). TSX_BOARD_CONF
+# and TSX_ETH0_MAC_FILE are hooks for host tests only (tests/). The hooks of
+# the board file work the same way. They work like TSX_APPLY_PREFIX in
+# tsx-config. If they are empty or unset, the script uses the real paths of
+# the panel.
 select_eth0_mac() {
 	. "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 	macf=${TSX_ETH0_MAC_FILE:-/etc/tsx/eth0.mac}
@@ -35,7 +34,7 @@ select_eth0_mac() {
 			# Use stderr, because stdout is the answer of this function. einfo
 			# of OpenRC prints to stdout. On a fresh install, this line made
 			# mac= two lines, and `ip link set` failed. The random MAC stayed.
-			einfo "eth0 MAC $mac (from U-Boot env; $macf was '${cur:-unset}', now back in sync)" >&2
+			einfo "eth0 MAC $mac (from the board, ${TSX_MAC_SOURCE:-board data}; $macf was '${cur:-unset}', now back in sync)" >&2
 		fi
 	else
 		[ -s "$macf" ] && mac=$(head -1 "$macf")
@@ -59,6 +58,8 @@ start() {
 		echo "$TZ_NAME" > /etc/timezone
 	fi
 	mac=$(select_eth0_mac)
+	# On some boards eth0 sits behind a USB hub and can appear a moment after boot.
+	i=0; while [ ! -e /sys/class/net/eth0 ] && [ $i -lt 20 ]; do sleep 0.5; i=$((i + 1)); done
 	if ip link set dev eth0 address "$mac" 2>/dev/null; then einfo "eth0 MAC $mac"
 	else ewarn "eth0 MAC '$mac' could not be set: eth0 keeps $(cat /sys/class/net/eth0/address 2>/dev/null)"; fi
 	# Compressed swap in RAM. It needs CONFIG_ZRAM, and the panel kernel lacks it today.
