@@ -12,8 +12,7 @@
 #     the touch matrix and then the output transform. This is how wlroots
 #     applies a touch device that is mapped to an output. We measured this on
 #     a TSS-10 with injected touches.
-#   - kiosk-session puts the sway lines into the session config, and the
-#     initramfs gets the same tsx-orientation.
+#   - kiosk-session puts the sway lines into the session config.
 #   - the layout of tsx-overlay (tsx-overlay-layout.h) on the four outputs
 #     (1280x800, 1024x600, and both turned). It must stay unchanged in
 #     landscape. In portrait it must be no higher than the 10-inch landscape
@@ -21,8 +20,8 @@
 # The last two parts compile C with CC (default gcc). The other parts need
 # busybox and python3.
 set -eu
-HERE=$(cd "$(dirname "$0")/../.." && pwd)
-ORI=$HERE/rootfs/overlay/usr/local/bin/tsx-orientation
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+ORI=$HERE/kiosk/usr/local/bin/tsx-orientation
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 N=0 F=0
 ok()  { N=$((N + 1)); echo "  ok: $*"; }
@@ -75,15 +74,13 @@ grep -q 'transform normal' "$T/swaymsg.log" && grep -q 'calibration_matrix 1 0 0
 rm -f "$T/run/user/$uid"/*.sock
 msg=$(ap "$T/o4"); case "$msg" in *"no running sway kiosk"*) ok "no sway: exit 0, applies at the next kiosk start";; *) bad "no sway: $msg";; esac
 
-echo "== kiosk-session and the initramfs use it =="
-KS=$HERE/rootfs/overlay/usr/local/bin/kiosk-session
+echo "== kiosk-session uses it =="
+KS=$HERE/kiosk/usr/local/bin/kiosk-session
 grep -q 'orient_cfg=$(/usr/local/bin/tsx-orientation sway)' "$KS" && grep -q '^\$orient_cfg$' "$KS" && ok "kiosk-session: sway lines in the session config" || bad "kiosk-session does not use tsx-orientation sway"
-grep -q 'overlay/usr/local/bin/tsx-orientation" \$R/usr/sbin/tsx-orientation' "$HERE/rootfs/initramfs/mkinitramfs-switchroot.sh" && ok "initramfs ships the same tsx-orientation" || bad "initramfs lacks tsx-orientation"
-grep -q 'tsx-orientation -f /newroot/etc/tsx/orientation info' "$HERE/rootfs/initramfs/overlay/init" && ok "/init reads the orientation from the mounted root" || bad "/init does not read the orientation"
 
 CC=${CC:-gcc}
 echo "== touch (matrix + output transform) vs the turned splash (CC=$CC) =="
-$CC -O2 -Wall -Wextra -Werror -o "$T/tsx-splash" "$HERE/rootfs/src/tsx-splash.c"
+$CC -O2 -Wall -Wextra -Werror -o "$T/tsx-splash" "$HERE/splash/src/tsx-splash.c"
 mkdir -p "$T/d"
 # frames with an 11x11 white marker centered on (105, 205), upright
 python3 - "$T/d" <<'PY'
@@ -158,7 +155,7 @@ int main(void)
 	return fails != 0;
 }
 C
-if $CC -O2 -Wall -Wextra -Werror -I"$HERE/rootfs/src" -o "$T/ov" "$T/ov.c" && "$T/ov" > "$T/ov.out"; then
+if $CC -O2 -Wall -Wextra -Werror -I"$HERE/kiosk/src" -o "$T/ov" "$T/ov.c" && "$T/ov" > "$T/ov.out"; then
 	ok "all eight layouts fit"; sed 's/^/      /' "$T/ov.out"
 else
 	bad "overlay layout"; cat "$T/ov.out" 2>/dev/null

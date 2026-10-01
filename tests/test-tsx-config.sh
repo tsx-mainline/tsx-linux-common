@@ -1,14 +1,14 @@
 #!/bin/bash
-# Host test: rootfs/overlay/usr/local/sbin/tsx-config's get/set/unset/show
+# Host test: base/usr/local/sbin/tsx-config's get/set/unset/show
 # parser (docs/rootfs.md "Panel configuration"). No panel, no docker: runs
 # the exact same script the panel runs, under busybox ash (the panel's
 # shell), against a throwaway file via $TSX_CONF.
 set -uo pipefail
-# The board file (rootfs/overlay/usr/local/lib/tsx/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/lib/tsx/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/bin/tsx-board
+# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
+export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
+export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-SCRIPT="$HERE/overlay/usr/local/sbin/tsx-config"
+SCRIPT="$HERE/base/usr/local/sbin/tsx-config"
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-tsx-config: no busybox on this host"; exit 0; }
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 CFG="$W/panel.conf"
@@ -93,7 +93,7 @@ run set HA_API_KEY "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-_=" >/dev/null 2>&
 run set HA_API_KEY "$K" >/dev/null
 
 echo "== ORIENTATION: the four names of tsx-orientation, nothing else =="
-ORI="$HERE/overlay/usr/local/bin/tsx-orientation"
+ORI="$HERE/kiosk/usr/local/bin/tsx-orientation"
 for v in landscape portrait landscape-flipped portrait-flipped; do
 	run set ORIENTATION "$v" && [ "$(run get ORIENTATION)" = "$v" ] && busybox sh "$ORI" check "$v" \
 		&& ok "ORIENTATION $v accepted (and by tsx-orientation)" || bad "ORIENTATION $v"

@@ -10,7 +10,7 @@
 #   - tsx-autoupdate: the package names
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-O=$HERE/overlay
+. "$(dirname "$0")/lib/paths.sh"
 BOARDX=$(mktemp -d)/board.sh; T=$(dirname "$BOARDX"); trap 'rm -rf "$T"' EXIT
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-board-fake: no busybox on this host"; exit 0; }
 N=0 F=0
@@ -48,7 +48,7 @@ EOB
 busybox sh -n "$BOARDX" && ok "the fake board file is valid shell"
 
 echo "== rescue screen =="
-RS=$HERE/initramfs/overlay/usr/sbin/tsx-rescue-status
+RS=$HERE/rescue/usr/sbin/tsx-rescue-status
 mkdir -p "$T/run" "$T/sbin"
 printf '#!/bin/sh\necho "2: eth0    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0"\n' > "$T/sbin/ip"
 printf '#!/bin/sh\necho 6.18.0\n' > "$T/sbin/uname"
@@ -70,7 +70,7 @@ grep -qx 'network      : eth0 192.0.2.10 (dhcp, MAC 00:10:7f:00:00:07, hardware)
 grep -qiE 'uboot|u-boot|xx60|TSS-10|TSW-1060' "$T/frame" && bad "an xx60 name shows on the screen" || ok "no xx60 name on the screen"
 
 echo "== kiosk renderer selection (fake sysfs) =="
-KS=$O/usr/local/bin/kiosk-session
+KS=$(P usr/local/bin/kiosk-session)
 sed -n '/^# --- renderer selection/,/^log "display=/p' "$KS" > "$T/sel.sh"
 [ "$(wc -l < "$T/sel.sh")" -gt 20 ] && ok "the renderer selection is in kiosk-session" || bad "cannot find the renderer selection"
 mkdir -p "$T/drivers/lima" "$T/drivers/meson" "$T/drivers/fakedrm" "$T/drivers/simple-framebuffer"
@@ -90,7 +90,7 @@ sel() { # DRMDIR BOARDFILE [KIOSK_GPU]
 		. '"$T"'/sel.sh
 		echo "WLR_RENDERER=$WLR_RENDERER WLR_DRM_DEVICES=${WLR_DRM_DEVICES:-} NOMOD=${WLR_DRM_NO_MODIFIERS:-} FMT=${CAGE_RENDER_FORMAT:-}"
 		echo "comp_gl=$comp_gl browser_gl=$browser_gl"' 2>&1; }
-BOARD60=$O/usr/local/lib/tsx/board.sh
+BOARD60=$TSX_ROOT/tests/boards/xx60/board.sh
 mkdrm "$T/drm60" card0:lima card2:meson render:lima
 out=$(sel "$T/drm60" "$BOARD60")
 echo "$out" | grep -q "^log: display=/dev/dri/card2 (meson) render=/dev/dri/renderD128 renderer=gles2 browser_gpu=0" && ok "xx60 board: meson display, lima render node, GLES in the compositor, software browser" || bad "xx60 board: $out"
@@ -113,9 +113,9 @@ mkdir -p "$FX/etc/apk" "$FX/etc/tsx" "$FX/root" "$FX/var/lib/kiosk"
 echo 'root:!:19000:0:99999:7:::' > "$FX/etc/shadow"
 printf 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main\nhttps://dl-cdn.alpinelinux.org/alpine/v3.24/community\n' > "$FX/etc/apk/repositories"
 BB=$T/bb; mkdir -p "$BB"; for a in sed grep cmp head cut mv chmod cat rm; do ln -sf "$(command -v busybox)" "$BB/$a"; done
-cfg_set() { TSX_BOARD_CONF=$BOARDX TSX_CONF="$CFG" busybox sh "$O/usr/local/sbin/tsx-config" set "$@" >/dev/null; }
+cfg_set() { TSX_BOARD_CONF=$BOARDX TSX_CONF="$CFG" busybox sh "$(P usr/local/sbin/tsx-config)" set "$@" >/dev/null; }
 cfg_apply() { PATH="$BB:$PATH" TSX_BOARD_CONF=$BOARDX TSX_CONF="$CFG" TSX_RUN="$FX/run" TSX_STATE_DIR="$FX/var/lib/tsx" TSX_APPLY_PREFIX="$FX" TSX_APPLY_ALLOW_NONROOT=1 \
-	busybox sh "$O/usr/local/sbin/tsx-config" apply 2>&1; }
+	busybox sh "$(P usr/local/sbin/tsx-config)" apply 2>&1; }
 cfg_set PANEL_NAME FAKE-100-TEST; cfg_set APK_URL https://tsx-aports.example.org
 cfg_set BT_MAC 02:00:00:00:00:01
 out=$(cfg_apply)
@@ -126,7 +126,7 @@ grep -qx 'MAC=""' "$FX/run/tsx/bt.conf" && ok "BT_MAC is left out when the board
 case "$out" in *"BT_MAC=02:00:00:00:00:01 is set, but this board takes the Bluetooth address from the controller"*) ok "BT_MAC: a warning says why";; *) bad "BT_MAC warning: $out";; esac
 head -n 1 "$CFG" | grep -q 'fake panel configuration' && ok "the panel.conf header names the family" || bad "panel.conf header: $(head -n 1 "$CFG")"
 # the xx60 board keeps BT_MAC
-out=$(PATH="$BB:$PATH" TSX_BOARD_CONF=$BOARD60 TSX_CONF="$CFG" TSX_RUN="$FX/run60" TSX_STATE_DIR="$FX/var/lib/tsx" TSX_APPLY_PREFIX="$FX" TSX_APPLY_ALLOW_NONROOT=1 busybox sh "$O/usr/local/sbin/tsx-config" apply 2>&1)
+out=$(PATH="$BB:$PATH" TSX_BOARD_CONF=$BOARD60 TSX_CONF="$CFG" TSX_RUN="$FX/run60" TSX_STATE_DIR="$FX/var/lib/tsx" TSX_APPLY_PREFIX="$FX" TSX_APPLY_ALLOW_NONROOT=1 busybox sh "$(P usr/local/sbin/tsx-config)" apply 2>&1)
 grep -qx 'MAC="02:00:00:00:00:01"' "$FX/run60/tsx/bt.conf" && grep -qx 'PROXY="off"' "$FX/run60/tsx/bt.conf" && ok "the xx60 board file: BT_MAC kept, proxy off" || bad "xx60 bt.conf: $(cat "$FX/run60/tsx/bt.conf")"
 
 echo "== tsx-mqtt (dry run) =="
@@ -134,8 +134,8 @@ mkdir -p "$T/mq/run" "$T/mq/bin"
 printf 'NODE_ID=tsx-kiosk\nDEVICE_NAME=TSX test\n' > "$T/mq/mqtt.conf"
 mkdir -p "$T/mq/asound/FakeCard"
 # tsx-mqtt asks tsx-panelctl whether the sound card of the board is there
-printf '#!/bin/sh\nexec sh "%s/usr/local/sbin/tsx-panelctl" "$@"\n' "$O" > "$T/mq/bin/tsx-panelctl"; chmod +x "$T/mq/bin/tsx-panelctl"
-mq() { echo | PATH=$T/mq/bin:$PATH TSX_BOARD_CONF=$1 TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mq/mqtt.conf TSX_RUN_DIR=$T/mq/run TSX_ASOUND_DIR=$T/mq/asound sh "$O/usr/local/sbin/tsx-mqtt" 2>&1; }
+printf '#!/bin/sh\nexec sh "%s" "$@"\n' "$(P usr/local/sbin/tsx-panelctl)" > "$T/mq/bin/tsx-panelctl"; chmod +x "$T/mq/bin/tsx-panelctl"
+mq() { echo | PATH=$T/mq/bin:$PATH TSX_BOARD_CONF=$1 TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mq/mqtt.conf TSX_RUN_DIR=$T/mq/run TSX_ASOUND_DIR=$T/mq/asound sh "$(P usr/local/sbin/tsx-mqtt)" 2>&1; }
 out=$(mq "$BOARDX")
 echo "$out" | grep -q '"mdl":"FAKE-100 (mainline Linux)"' && ok "the device model comes from the board file" || bad "mdl: $(echo "$out" | grep -m1 mdl)"
 echo "$out" | grep -q 'number/tsx-kiosk/volume/config' && ok "the volume entity follows the sound card of the board (FakeCard)" || bad "no volume entity"
@@ -144,7 +144,7 @@ echo "$out" | grep -q '"mdl":"xx60 (mainline Linux)"' && ok "the xx60 board file
 echo "$out" | grep -q 'number/tsx-kiosk/volume/config' && bad "the volume entity exists without the TSW1060 card" || ok "no volume entity without the card of the board"
 
 echo "== tsx-autoupdate =="
-BIN=$O/usr/local/sbin/tsx-autoupdate
+BIN=$(P usr/local/sbin/tsx-autoupdate)
 TSX_BOARD_CONF=$BOARDX sh "$BIN" __needs_reboot "tsx-fake-kernel-lts"; eq $? 0 "the kernel package of the board needs a reboot"
 TSX_BOARD_CONF=$BOARDX sh "$BIN" __needs_reboot "tsx-xx60-kernel-lts"; eq $? 1 "the kernel package of another family does not"
 TSX_BOARD_CONF=$BOARD60 sh "$BIN" __needs_reboot "tsx-xx60-kernel-lts"; eq $? 0 "the xx60 board file: the xx60 kernel package needs a reboot"

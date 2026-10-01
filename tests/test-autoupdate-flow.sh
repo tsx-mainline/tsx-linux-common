@@ -7,10 +7,10 @@
 # The test touches nothing on the host. /etc/apk/world, the chromium binary,
 # rc-service, curl and reboot are all stubs under $T/bin.
 set -u
-# The board file (rootfs/overlay/usr/local/lib/tsx/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/lib/tsx/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/bin/tsx-board
-HERE=$(cd "$(dirname "$0")" && pwd); BIN=$HERE/../../rootfs/overlay/usr/local/sbin/tsx-autoupdate
+# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
+export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
+export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
+HERE=$(cd "$(dirname "$0")" && pwd); BIN=$HERE/../autoupdate/usr/local/sbin/tsx-autoupdate
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin"
 fail=0
@@ -228,8 +228,22 @@ NOWDATE=2026-01-11 NOWHHMM=12:00 TSXCHROM_INSTALLED=0 run check >/dev/null
 chk "$(jf "$T/run/update.json" .chromium_decision)" none "14: tsx-xx60-chromium installed -> none"
 chk "$(jf "$T/run/update.json" .reboot_pending)" true "14: a kernel package update needs a reboot"
 chk "$(jf "$T/run/update.json" .chromium_pinned)" tsx-xx60-chromium "14: status names the package"
-TSXCHROM_INSTALLED=0 run status | grep -q '^chromium:       tsx-xx60-chromium (ES2 patch built in' || { echo "FAIL: 14: status chromium line"; fail=1; }
+TSXCHROM_INSTALLED=0 run status | grep -q "^chromium:       tsx-xx60-chromium (the project's build" || { echo "FAIL: 14: status chromium line"; fail=1; }
 [ -e "$T/state/chromium-hold" ] && { echo "FAIL: 14: hold file written for a packaged chromium"; fail=1; }
+
+# ---- 15: Alpine chromium, not pinned ------------------------------------------
+printf 'chromium\nsome-other-pkg\n' > "$T/world"
+: > "$T/tsxchrom.txt"; : > "$T/sim.txt"
+reset_calls
+NOWDATE=2026-01-12 NOWHHMM=12:00 run check >/dev/null
+chk "$(jf "$T/run/update.json" .chromium_decision)" none "15: unpinned Alpine chromium -> none (an ordinary package)"
+chk "$(jf "$T/run/update.json" .chromium_pinned)" "" "15: nothing pinned"
+run status | grep -q "^chromium:       Alpine's chromium, not pinned" || { echo "FAIL: 15: status chromium line"; fail=1; }
+# ---- 16: ... and tsx-xx60-chromium offered: migrate even without a pin ---------
+printf 'tsx-xx60-chromium-3.0.0-r0 armv7 {tsx-xx60-chromium} (BSD-3-Clause)\n' > "$T/tsxchrom.txt"
+reset_calls
+NOWDATE=2026-01-12 NOWHHMM=12:05 run check >/dev/null
+chk "$(jf "$T/run/update.json" .chromium_decision)" migrate "16: unpinned + tsx-xx60-chromium offered -> migrate"
 
 [ $fail = 0 ] && echo "PASS tsx-autoupdate flow (check/install/window/idle/chromium/status/healthcheck/repositories/tsx-xx60-chromium)"
 exit $fail

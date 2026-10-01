@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """A small BLE peripheral with a GATT server, for the tests of the active
-Bluetooth proxy (rootfs/overlay/usr/local/lib/tsx/btgatt.py).
+Bluetooth proxy (ha/usr/local/lib/tsx/btgatt.py).
 
   bt-gatt-peer.py fake SOCKET LOG [--mtu N]
   bt-gatt-peer.py hw LOG [--hci 0] [--name tsx-test-peer]

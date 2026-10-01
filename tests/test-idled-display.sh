@@ -17,8 +17,8 @@
 #  - it skips a stale socket, reports failure after TSX_DISPLAY_TRIES, and
 #    uses the framebuffer when no sway runs
 set -euo pipefail
-HERE=$(cd "$(dirname "$0")" && pwd); SRC=$HERE/../../rootfs/src/tsx-idled.c
-DP=$HERE/../../rootfs/overlay/usr/local/bin/tsx-display-power
+HERE=$(cd "$(dirname "$0")" && pwd); SRC=$HERE/../kiosk/src/tsx-idled.c
+DP=$HERE/../kiosk/usr/local/bin/tsx-display-power
 T=$(mktemp -d); PID=; trap '[ -n "$PID" ] && kill $PID 2>/dev/null; rm -rf $T' EXIT
 gcc -O2 -Wall -Werror -o $T/tsx-idled $SRC
 mkdir -p $T/bl/mp3309c $T/input $T/run

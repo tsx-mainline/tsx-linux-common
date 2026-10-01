@@ -1,5 +1,5 @@
 #!/bin/sh
-# Host test for rootfs/src/tsx-splash.c (no framebuffer needed). The test
+# Host test for splash/src/tsx-splash.c (no framebuffer needed). The test
 # builds it with the host compiler. It renders frames with "png -g WxH" from a
 # synthetic splash dir: a PPM with a white square, and a PSF2 font whose
 # glyphs are solid blocks. It checks the pixels for these cases:
@@ -17,7 +17,7 @@ N=0 F=0
 ok() { N=$((N + 1)); echo "  ok: $*"; }
 bad() { F=$((F + 1)); echo "  FAIL: $*"; }
 
-${CC:-gcc} -O2 -Wall -Wextra -Werror -o "$W/tsx-splash" "$HERE/../src/tsx-splash.c"
+${CC:-gcc} -O2 -Wall -Wextra -Werror -o "$W/tsx-splash" "$HERE/../splash/src/tsx-splash.c"
 mkdir -p "$W/d"
 python3 - "$W/d" <<'PY'
 import struct, sys

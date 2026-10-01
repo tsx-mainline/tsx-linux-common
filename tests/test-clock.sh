@@ -8,32 +8,32 @@
 #  - the clock line of `tsx-config show`
 # The test runs under busybox or dash sh and needs no compiler.
 set -eu
-# The board file (rootfs/overlay/usr/local/lib/tsx/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/lib/tsx/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/bin/tsx-board
-HERE=$(cd "$(dirname "$0")/.." && pwd); O=$HERE/overlay
+# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
+export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
+export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+. "$(dirname "$0")/lib/paths.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 N=0 F=0
 ok()  { N=$((N + 1)); echo "  ok: $*"; }
 bad() { F=$((F + 1)); echo "  FAIL: $*"; }
 
 echo "== chrony.conf, interfaces, image build =="
-C=$O/etc/chrony/chrony.conf
+C=$(P etc/chrony/chrony.conf)
 grep -q '^sourcedir /run/chrony-dhcp$' "$C" && ok "sourcedir /run/chrony-dhcp" || bad "no sourcedir"
 [ "$(grep -n '^sourcedir' "$C" | cut -d: -f1)" -lt "$(grep -n '^pool' "$C" | cut -d: -f1)" ] && ok "DHCP sources before the pool" || bad "sourcedir after pool"
 grep -q '^makestep 1 -1$' "$C" && ok "makestep 1 -1" || bad "no makestep 1 -1"
 grep -q '^initstepslew' "$C" && bad "initstepslew is back" || ok "no initstepslew"
-grep -q '^[[:space:]]*udhcpc-opts -O ntpsrv$' "$O/etc/network/interfaces" && ok "udhcpc asks for option 42" || bad "no udhcpc-opts -O ntpsrv"
+grep -q '^[[:space:]]*udhcpc-opts -O ntpsrv$' "$(P etc/network/interfaces)" && ok "udhcpc asks for option 42" || bad "no udhcpc-opts -O ntpsrv"
 for d in post-bound post-renew; do
-	h=$O/etc/udhcpc/$d/tsx-ntp
+	h=$(P etc/udhcpc/)$d/tsx-ntp
 	[ -x "$h" ] && grep -q '^exec /usr/local/sbin/tsx-dhcp-ntp$' "$h" && ok "udhcpc $d hook" || bad "udhcpc $d hook"
 done
-grep -q 'touch $R/var/lib/misc/openrc-shutdowntime' "$HERE/mkrootfs.sh" && ok "image ships the swclock file (boot clock floor = build time)" || bad "no swclock floor in mkrootfs.sh"
-[ -x "$O/etc/periodic/15min/tsx-savetime" ] && ok "tsx-savetime periodic" || bad "tsx-savetime not executable"
+[ -x "$(P etc/periodic/15min/tsx-savetime)" ] && ok "tsx-savetime periodic" || bad "tsx-savetime not executable"
 
 echo "== tsx-dhcp-ntp =="
 printf '#!/bin/sh\necho "$*" >> %s/chronyc.log\n' "$T" > "$T/chronyc"; chmod +x "$T/chronyc"
-hook() { env TSX_CHRONY_DHCP_DIR="$T/d" TSX_CHRONYC="$T/chronyc" interface=eth0 ntpsrv="$1" sh "$O/usr/local/sbin/tsx-dhcp-ntp"; }
+hook() { env TSX_CHRONY_DHCP_DIR="$T/d" TSX_CHRONYC="$T/chronyc" interface=eth0 ntpsrv="$1" sh "$(P usr/local/sbin/tsx-dhcp-ntp)"; }
 calls() { [ -f "$T/chronyc.log" ] && wc -l < "$T/chronyc.log" | tr -d ' ' || echo 0; }
 hook "192.0.2.1 192.0.2.2"
 [ "$(cat "$T/d/eth0.sources")" = "server 192.0.2.1 iburst prefer
@@ -48,11 +48,11 @@ hook ""; [ "$(calls)" = 3 ] && ok "still none: no reload" || bad "reloaded for n
 
 echo "== tsx-config show: clock line =="
 printf '#!/bin/sh\nprintf "Reference ID    : 2D3F360D (192.0.2.7)\\nLeap status     : %%s\\n" "$LEAP"\n' > "$T/chronyc"
-LEAP=Normal TSX_CHRONYC="$T/chronyc" TSX_CONF="$T/panel.conf" sh "$O/usr/local/sbin/tsx-config" show 2> "$T/err" >/dev/null
+LEAP=Normal TSX_CHRONYC="$T/chronyc" TSX_CONF="$T/panel.conf" sh "$(P usr/local/sbin/tsx-config)" show 2> "$T/err" >/dev/null
 grep -q '^# clock: .*NTP synced (192.0.2.7)$' "$T/err" && ok "synced: server shown" || bad "synced line: $(cat "$T/err")"
-LEAP='Not synchronised' TSX_CHRONYC="$T/chronyc" TSX_CONF="$T/panel.conf" sh "$O/usr/local/sbin/tsx-config" show 2> "$T/err" >/dev/null
+LEAP='Not synchronised' TSX_CHRONYC="$T/chronyc" TSX_CONF="$T/panel.conf" sh "$(P usr/local/sbin/tsx-config)" show 2> "$T/err" >/dev/null
 grep -q '^# clock: .*NOT synced yet' "$T/err" && ok "not synced: said so" || bad "not-synced line: $(cat "$T/err")"
-TSX_CHRONYC="$T/nochronyc" TSX_CONF="$T/panel.conf" sh "$O/usr/local/sbin/tsx-config" show 2> "$T/err" >/dev/null
+TSX_CHRONYC="$T/nochronyc" TSX_CONF="$T/panel.conf" sh "$(P usr/local/sbin/tsx-config)" show 2> "$T/err" >/dev/null
 grep -q '^# clock' "$T/err" && bad "clock line without chronyc" || ok "no chronyc (build host): no clock line"
 
 echo "== $N ok, $F failed =="

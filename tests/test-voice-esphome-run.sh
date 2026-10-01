@@ -9,7 +9,7 @@
 # needs neither linux-voice-assistant nor python3.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
-O=$HERE/../overlay
+. "$(dirname "$0")/lib/paths.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/run"
 HOST=$(hostname)
@@ -23,20 +23,20 @@ chk() {  # chk LABEL OUTPUT WANT_NAME
 printf 'PORT=6053\n' > "$T/voice.conf"
 printf 'PORT=6053\n' > "$T/esphome.conf"
 out=$(TSX_VOICE_CONF="$T/voice.conf" TSX_VOICE_RUN_CONF="$T/run/voice.conf" \
-	sh "$O/usr/local/bin/tsx-voice-run" --print)
+	sh "$(P usr/local/bin/tsx-voice-run)" --print)
 chk "voice, no config at all" "$out" "$HOST"
 out=$(TSX_ESPHOME_CONF="$T/esphome.conf" TSX_ESPHOME_RUN_CONF="$T/run/voice.conf" \
-	sh "$O/usr/local/bin/tsx-esphome-run" --print)
+	sh "$(P usr/local/bin/tsx-esphome-run)" --print)
 chk "esphome, no config at all" "$out" "$HOST"
 
 # ---- panel.conf override (/run/tsx/voice.conf's NAME, from PANEL_NAME): ---
 # both front ends must use it, whichever one is actually running
 printf 'NAME="panel-override"\n' > "$T/run/voice.conf"
 out=$(TSX_VOICE_CONF="$T/voice.conf" TSX_VOICE_RUN_CONF="$T/run/voice.conf" \
-	sh "$O/usr/local/bin/tsx-voice-run" --print)
+	sh "$(P usr/local/bin/tsx-voice-run)" --print)
 chk "voice, panel.conf override" "$out" "panel-override"
 out=$(TSX_ESPHOME_CONF="$T/esphome.conf" TSX_ESPHOME_RUN_CONF="$T/run/voice.conf" \
-	sh "$O/usr/local/bin/tsx-esphome-run" --print)
+	sh "$(P usr/local/bin/tsx-esphome-run)" --print)
 chk "esphome, panel.conf override" "$out" "panel-override"
 
 # ---- a NAME set directly in /etc/tsx/voice.conf still wins over hostname --
@@ -44,13 +44,13 @@ chk "esphome, panel.conf override" "$out" "panel-override"
 rm -f "$T/run/voice.conf"
 printf 'NAME=local-name\nPORT=6053\n' > "$T/voice.conf"
 out=$(TSX_VOICE_CONF="$T/voice.conf" TSX_VOICE_RUN_CONF="$T/run/voice.conf" \
-	sh "$O/usr/local/bin/tsx-voice-run" --print)
+	sh "$(P usr/local/bin/tsx-voice-run)" --print)
 chk "voice, /etc/tsx/voice.conf NAME, no override" "$out" "local-name"
 
 # ---- the panel.conf override still wins over a static /etc/tsx/*.conf NAME
 printf 'NAME="panel-override"\n' > "$T/run/voice.conf"
 out=$(TSX_VOICE_CONF="$T/voice.conf" TSX_VOICE_RUN_CONF="$T/run/voice.conf" \
-	sh "$O/usr/local/bin/tsx-voice-run" --print)
+	sh "$(P usr/local/bin/tsx-voice-run)" --print)
 chk "voice, panel.conf override beats /etc/tsx/voice.conf NAME" "$out" "panel-override"
 
 [ $fail = 0 ] && echo "PASS tsx-voice-run / tsx-esphome-run: panel.conf PANEL_NAME override honoured"

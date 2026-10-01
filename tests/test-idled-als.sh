@@ -3,7 +3,7 @@
 # To run on a separate build host instead: BUILD_HOST=<host> tools/build/remote-build.sh
 # (or equivalent) with this script as the command.
 set -euo pipefail
-HERE=$(cd "$(dirname "$0")" && pwd); SRC=$HERE/../../rootfs/src/tsx-idled.c
+HERE=$(cd "$(dirname "$0")" && pwd); SRC=$HERE/../kiosk/src/tsx-idled.c
 T=$(mktemp -d); PID=; trap '[ -n "$PID" ] && kill $PID 2>/dev/null; rm -rf $T' EXIT
 gcc -O2 -Wall -Werror -o $T/tsx-idled $SRC
 mkdir -p $T/bl/mp3309c $T/input $T/run

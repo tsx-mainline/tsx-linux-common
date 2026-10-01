@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Voice-satellite code path for rootfs/tests/test-esphome.sh, without the
+"""Voice-satellite code path for tests/test-esphome.sh, without the
 audio/wake-word stack: runs the real tsx_lva patches (security.enforce(),
 the ServerState name patch, the panel-entity plugin) and serves the REAL
 linux_voice_assistant VoiceSatelliteProtocol on a port, exactly the way

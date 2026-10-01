@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fake Chromium DevTools endpoint for rootfs/tests/test-esphome.sh: the
+"""Fake Chromium DevTools endpoint for tests/test-esphome.sh: the
 /json HTTP list tsx_panel.backend.PanelBackend polls for the current tab, and
 a websocket that answers any DevTools command with an empty result (enough
 to exercise Page.navigate / Page.reload without a real Chromium)."""

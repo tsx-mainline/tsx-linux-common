@@ -7,11 +7,11 @@
 # Usage: tests/test-buttons.sh      (builds both daemons with host gcc)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-SRC=$HERE/../../rootfs/src
+SRC=$HERE/..
 T=$(mktemp -d); PIDS=
 trap 'for p in $PIDS; do kill $p 2>/dev/null || true; done; [ -n "${KEEP:-}" ] && echo "kept $T" || rm -rf $T' EXIT
-gcc -O2 -Wall -o $T/tsx-buttons $SRC/tsx-buttons.c
-gcc -O2 -Wall -o $T/tsx-idled $SRC/tsx-idled.c
+gcc -O2 -Wall -o $T/tsx-buttons $SRC/buttons/src/tsx-buttons.c
+gcc -O2 -Wall -o $T/tsx-idled $SRC/kiosk/src/tsx-idled.c
 HA_PORT=$((20000 + RANDOM % 10000)); CDP_PORT=$((HA_PORT + 1))
 mkdir -p $T/bl/mp3309c $T/input $T/idled-input $T/run $T/log
 for l in tsx:keypad tsx:key1 tsx:key2 tsx:key3 tsx:key4 tsx:key5; do mkdir -p "$T/leds/$l"; echo 0 > "$T/leds/$l/brightness"; done
@@ -188,7 +188,7 @@ ctl "led auto"; sleep 0.3
 echo 77 > "$T/leds/tsx:keypad/brightness"; sleep 5.5; [ "$(led keypad)" = 128 ] || fail "external LED change not re-applied"
 ok "control FIFO: led N/auto/0, key NAME off/auto. re-apply after external change"
 
-K=$HERE/../../rootfs/overlay/usr/local/bin/tsx-keypad
+K=$HERE/../buttons/usr/local/bin/tsx-keypad
 TSX_RUN_DIR=$T/run $K led 60; sleep 0.3; [ "$(led keypad)" = 60 ] || fail "tsx-keypad led 60"
 TSX_RUN_DIR=$T/run $K status | grep -q '^led 60 override' || fail "tsx-keypad status"
 TSX_RUN_DIR=$T/run $K led auto; sleep 0.3

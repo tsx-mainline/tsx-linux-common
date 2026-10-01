@@ -1,5 +1,5 @@
 #!/bin/bash
-# Host test for tsx-panelctl (rootfs/overlay/usr/local/sbin/tsx-panelctl).
+# Host test for tsx-panelctl (base/usr/local/sbin/tsx-panelctl).
 # The "kiosk" user writes to the FIFO and also runs Chromium unsandboxed. So
 # tsx-panelctl must validate every line as hostile input and not only parse it.
 # The test checks two things. The documented, exact command forms must run the
@@ -8,11 +8,11 @@
 # Such lines are a glob, a leading-dash "option", a wrong argument count, an
 # out-of-range number, an overlong numeric string and a bare shell metacharacter.
 set -uo pipefail
-# The board file (rootfs/overlay/usr/local/lib/tsx/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/lib/tsx/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/bin/tsx-board
+# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
+export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
+export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
 HERE=$(cd "$(dirname "$0")" && pwd)
-SCRIPT="$HERE/../overlay/usr/local/sbin/tsx-panelctl"
+SCRIPT="$HERE/../base/usr/local/sbin/tsx-panelctl"
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-panelctl: no busybox on this host"; exit 0; }
 T=$(mktemp -d); PID=
 trap '[ -n "$PID" ] && kill "$PID" 2>/dev/null; [ -n "${KEEP:-}" ] && echo "kept $T" || rm -rf "$T"' EXIT

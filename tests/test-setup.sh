@@ -27,16 +27,15 @@
 #  - no secret ever appears in a JSON response or in the log of either daemon
 set -uo pipefail
 export PYTHONDONTWRITEBYTECODE=1   # the test imports tsx-setupd: no .pyc next to it
-# The board file (rootfs/overlay/usr/local/lib/tsx/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/lib/tsx/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/bin/tsx-board
+# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
+export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
+export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-SBIN="$HERE/overlay/usr/local/sbin"
-BIN="$HERE/overlay/usr/local/bin"
-SETUPD="$SBIN/tsx-setupd"
-HELPER="$SBIN/tsx-setup-helper"
-TSXCONFIG="$SBIN/tsx-config"
-KIOSKURL="$BIN/tsx-kiosk-url"
+. "$HERE/tests/lib/paths.sh"
+SETUPD=$(P usr/local/sbin/tsx-setupd)
+HELPER=$(P usr/local/sbin/tsx-setup-helper)
+TSXCONFIG=$(P usr/local/sbin/tsx-config)
+KIOSKURL=$(P usr/local/bin/tsx-kiosk-url)
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-setup: no busybox on this host"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo "SKIPPED test-setup: no python3 on this host"; exit 0; }
 
@@ -56,32 +55,24 @@ bad() { echo "  FAIL: $*"; F=$((F + 1)); }
 echo "== syntax =="
 busybox sh -n "$TSXCONFIG" && ok "busybox sh -n tsx-config" || bad "busybox sh -n tsx-config"
 busybox sh -n "$KIOSKURL" && ok "busybox sh -n tsx-kiosk-url" || bad "busybox sh -n tsx-kiosk-url"
-busybox sh -n "$HERE/overlay/usr/local/bin/kiosk-session" && ok "busybox sh -n kiosk-session" || bad "busybox sh -n kiosk-session"
+busybox sh -n "$HERE/kiosk/usr/local/bin/kiosk-session" && ok "busybox sh -n kiosk-session" || bad "busybox sh -n kiosk-session"
 busybox sh -n "$HELPER" && ok "busybox sh -n tsx-setup-helper" || bad "busybox sh -n tsx-setup-helper"
-busybox sh -n "$HERE/overlay/etc/init.d/tsx-setupd" && ok "busybox sh -n init.d/tsx-setupd" || bad "busybox sh -n init.d/tsx-setupd"
-busybox sh -n "$HERE/overlay/etc/init.d/tsx-setup-helper" && ok "busybox sh -n init.d/tsx-setup-helper" || bad "busybox sh -n init.d/tsx-setup-helper"
-busybox sh -n "$SBIN/tsx-panelctl" && ok "busybox sh -n tsx-panelctl" || bad "busybox sh -n tsx-panelctl"
+busybox sh -n "$HERE/setup/etc/init.d/tsx-setupd" && ok "busybox sh -n init.d/tsx-setupd" || bad "busybox sh -n init.d/tsx-setupd"
+busybox sh -n "$HERE/setup/etc/init.d/tsx-setup-helper" && ok "busybox sh -n init.d/tsx-setup-helper" || bad "busybox sh -n init.d/tsx-setup-helper"
+busybox sh -n "$(P usr/local/sbin/tsx-panelctl)" && ok "busybox sh -n tsx-panelctl" || bad "busybox sh -n tsx-panelctl"
 # py_compile writes next to the source by default, and another test that
 # reads the overlay at the same time sees the stray file. Write to $T.
 python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$SETUPD" "$T/setupd.pyc" \
 	&& ok "python3 -m py_compile tsx-setupd" || bad "py_compile tsx-setupd"
 
 echo "== tsx-setupd runs as an unprivileged user, not root =="
-grep -q '^command_user="tsx-setup:tsx-setup"$' "$HERE/overlay/etc/init.d/tsx-setupd" \
+grep -q '^command_user="tsx-setup:tsx-setup"$' "$HERE/setup/etc/init.d/tsx-setupd" \
 	&& ok "init.d/tsx-setupd sets command_user to tsx-setup, not root" \
 	|| bad "init.d/tsx-setupd does not run as the unprivileged tsx-setup user"
-grep -q 'adduser -D -H -s /sbin/nologin.*tsx-setup' "$HERE/mkrootfs.sh" \
-	&& ok "mkrootfs.sh creates the tsx-setup system user" \
-	|| bad "mkrootfs.sh does not create a tsx-setup user"
-for s in tsx-setup-helper tsx-setupd; do
-	sh "$HERE/profile.sh" has kiosk svc "$s" \
-		&& ok "the kiosk and ha profiles enable $s in the default runlevel" \
-		|| bad "the kiosk profile does not enable $s in the default runlevel (no setup page on the panel)"
-done
-grep -q 'checkpath -f -o tsx-setup:tsx-setup .*/var/log/tsx-setupd.log' "$HERE/overlay/etc/init.d/tsx-setupd" \
+grep -q 'checkpath -f -o tsx-setup:tsx-setup .*/var/log/tsx-setupd.log' "$HERE/setup/etc/init.d/tsx-setupd" \
 	&& ok "init.d/tsx-setupd gives tsx-setup its own log file (supervise-daemon opens it as that user)" \
 	|| bad "init.d/tsx-setupd: no tsx-setup-owned /var/log/tsx-setupd.log (the daemon exits 1 on the panel)"
-for k in $(sed -n 's/^\([A-Z_]*\)=.*/\1/p' "$HERE/overlay/etc/tsx/setup.conf"); do
+for k in $(sed -n 's/^\([A-Z_]*\)=.*/\1/p' "$HERE/setup/etc/tsx/setup.conf"); do
 	grep -q "\"$k\"" "$SETUPD" \
 		&& ok "setup.conf key $k is read by tsx-setupd" \
 		|| bad "setup.conf key $k is not read by tsx-setupd (a dead knob)"
@@ -260,7 +251,7 @@ grep -q "listening on" "$T/helper.log" 2>/dev/null || { echo "FAIL: tsx-setup-he
 
 TSX_CONFIG_BIN="$T/bin/tsx-config" TSX_RUN_DIR="$RUNDIR" TSX_ZONEINFO_DIR="$T/zoneinfo" \
 TSX_SETUP_CONF="$T/setup.conf" TSX_SETUP_NO_ZEROCONF=1 TSX_KIOSK_CONF="$T/kiosk.conf" \
-TSX_SETUP_PLUGIN_DIR="$HERE/overlay/usr/local/share/tsx/setup.d" \
+TSX_SETUP_PLUGIN_DIR="$(dirname "$(P usr/local/share/tsx/setup.d/ha.py)")" \
 	python3 "$SETUPD" > "$T/setupd.log" 2>&1 &
 SETUPD_PID=$!
 for _ in $(seq 1 50); do grep -q "listening on" "$T/setupd.log" 2>/dev/null && break; sleep 0.1; done
@@ -580,7 +571,7 @@ kill "$SETUPD2_PID" 2>/dev/null; wait "$SETUPD2_PID" 2>/dev/null
 PORT=$PORT_HA
 TSX_CONFIG_BIN="$T/bin/tsx-config" TSX_RUN_DIR="$RUNDIR" TSX_ZONEINFO_DIR="$T/zoneinfo" \
 TSX_SETUP_CONF="$T/setup.conf" TSX_SETUP_NO_ZEROCONF=1 TSX_KIOSK_CONF="$T/kiosk.conf" \
-TSX_SETUP_PLUGIN_DIR="$HERE/overlay/usr/local/share/tsx/setup.d" \
+TSX_SETUP_PLUGIN_DIR="$(dirname "$(P usr/local/share/tsx/setup.d/ha.py)")" \
 	python3 "$SETUPD" > "$T/setupd3.log" 2>&1 &
 SETUPD_PID=$!
 for _ in $(seq 1 50); do grep -q "listening on" "$T/setupd3.log" 2>/dev/null && break; sleep 0.1; done

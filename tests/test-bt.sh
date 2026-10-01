@@ -24,12 +24,12 @@
 #    and the BT_ACTIVE switch.
 # The PSR files here are made up. They are not the vendor file.
 set -uo pipefail
-# The board file (rootfs/overlay/usr/local/lib/tsx/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/lib/tsx/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/bin/tsx-board
+# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
+export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
+export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
 HERE=$(cd "$(dirname "$0")" && pwd)
-LIB=$HERE/../overlay/usr/local/lib/tsx
-BT=$HERE/../overlay/usr/local/sbin/tsx-bt
+LIB=$HERE/../ha/usr/local/lib/tsx
+BT=$HERE/../ha/usr/local/sbin/tsx-bt
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-bt: no busybox on this host"; exit 0; }
 W=$(mktemp -d)
 PIDS=
@@ -419,7 +419,7 @@ sleep 0.3
 kill "$SCAN" 2>/dev/null; wait "$SCAN" 2>/dev/null
 
 echo "== bluetooth.py (the ESPHome side): queue cap, flags, state =="
-python3 - "$HERE/../voice/shim" "$W" <<'PYEOF' && ok "bluetooth.py: advertisement queue cap, feature flags, bt.state absent turns the proxy off, mode of each connection" || bad "bluetooth.py unit checks"
+python3 - "$HERE/../ha/voice/shim" "$W" <<'PYEOF' && ok "bluetooth.py: advertisement queue cap, feature flags, bt.state absent turns the proxy off, mode of each connection" || bad "bluetooth.py unit checks"
 import os, sys
 sys.path.insert(0, sys.argv[1])
 w = sys.argv[2]

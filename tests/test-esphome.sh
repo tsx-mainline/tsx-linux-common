@@ -17,7 +17,7 @@
 #  - a key file that the server cannot use (the server refuses to start)
 #  - HA_ALLOW_FROM
 # The test needs the network only to fetch pinned, public packages. These are
-# the packages that rootfs/voice/install-lva.sh fetches for the panel image.
+# the packages that ha/voice/install-lva.sh fetches for the panel image.
 # The test compiles nothing.
 #
 # tsx_panel reuses linux_voice_assistant.entity.LEDLightEntity (the LED bar
@@ -25,11 +25,11 @@
 # plays audio. So the test needs a system libmpv, and this is easy to miss.
 # See ci/lint.sh and .github/workflows/tests.yml for the apt-get package name.
 set -euo pipefail
-# The board file (rootfs/overlay/usr/local/lib/tsx/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/lib/tsx/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/bin/tsx-board
+# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
+export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
+export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
 HERE=$(cd "$(dirname "$0")" && pwd)
-SHIM=$HERE/../voice/shim
+SHIM=$HERE/../ha/voice/shim
 T=$(mktemp -d)
 PIDS=
 trap 'for p in $PIDS; do kill "$p" 2>/dev/null || true; done; [ -n "${KEEP:-}" ] && echo "kept $T" || rm -rf "$T"' EXIT
@@ -100,12 +100,12 @@ echo "amixer \$*" >> "$F/cmds.log"
 EOF
 cat > "$F/bin/tsx-panelctl" <<EOF
 #!/bin/sh
-exec sh "$HERE/../overlay/usr/local/sbin/tsx-panelctl" "\$@"
+exec sh "$HERE/../base/usr/local/sbin/tsx-panelctl" "\$@"
 EOF
 chmod +x "$F/bin/reboot" "$F/bin/amixer" "$F/bin/tsx-panelctl"
 env PATH="$F/bin:$PATH" TSX_RUN_DIR="$F/run/tsx" TSX_REBOOT_BIN="$F/bin/reboot" TSX_IDLED_STATE="$F/run/tsx-idled.state" \
 	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf" TSX_ALS_CONF="$F/etc/tsx/als.conf.missing" TSX_ASOUND_DIR="$F/proc/asound" \
-	sh "$HERE/../overlay/usr/local/sbin/tsx-panelctl" > "$T/panelctl.log" 2>&1 &
+	sh "$HERE/../base/usr/local/sbin/tsx-panelctl" > "$T/panelctl.log" 2>&1 &
 PIDS="$PIDS $!"
 for _ in $(seq 1 30); do grep -q "listening on" "$T/panelctl.log" 2>/dev/null && break; sleep 0.1; done
 grep -q "listening on" "$T/panelctl.log" || { echo "FAIL: tsx-panelctl did not start"; cat "$T/panelctl.log"; exit 1; }
@@ -272,7 +272,7 @@ printf 'PROXY="off"\nMAC=""\n' > "$F/run/tsx/bt-off.conf"
 printf 'PROXY="on"\nACTIVE="on"\nMAC=""\n' > "$F/run/tsx/bt-active.conf"
 start_btscan() {
 	TSX_BTSCAN_FAKE_HCI="$T/hci.sock" TSX_BTSCAN_FAKE_L2CAP="$T/peer.sock" TSX_BT_CONF="$F/run/tsx/bt-active.conf" \
-		TSX_BT_CONNECT_TIMEOUT=2 python3 "$HERE/../overlay/usr/local/lib/tsx/btscan.py" \
+		TSX_BT_CONNECT_TIMEOUT=2 python3 "$HERE/../ha/usr/local/lib/tsx/btscan.py" \
 		--socket "$F/run/tsx/bt-adv.sock" --group "" >> "$T/btscan.log" 2>&1 &
 	BTSCAN_PID=$!
 	PIDS="$PIDS $!"

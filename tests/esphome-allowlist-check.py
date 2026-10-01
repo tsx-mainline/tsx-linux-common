@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Client-side check for rootfs/tests/test-esphome.sh's HA_ALLOW_FROM test:
+"""Client-side check for tests/test-esphome.sh's HA_ALLOW_FROM test:
 connects to a tsx-esphome instance and asserts the connection either
 succeeds (an allowed peer) or is closed by the server (a denied one) -- see
 rootfs/voice/shim/tsx_panel/security.py.

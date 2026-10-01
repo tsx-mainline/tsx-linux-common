@@ -3,10 +3,11 @@
 # command handling. tsx-mqtt does not touch the hardware: every command goes to
 # tsx-panelctl, which is a stub here that logs the calls.
 set -eu
-# The board file (rootfs/overlay/usr/local/lib/tsx/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/lib/tsx/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/bin/tsx-board
-HERE=$(cd "$(dirname "$0")" && pwd); O=$HERE/../../rootfs/overlay
+# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
+export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
+export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
+HERE=$(cd "$(dirname "$0")" && pwd)
+. "$(dirname "$0")/lib/paths.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; mkdir -p "$T/bin" "$T/run" "$T/bl/x"
 # the stub of tsx-panelctl: the LED bar and the sound card are there, `send` logs, `get volume` has no value
 cat > "$T/bin/tsx-panelctl" <<'EOF'
@@ -29,8 +30,8 @@ printf '%s\n' 'tsx/tsx-kiosk/ledbar/rgb/set 255,0,0' 'tsx/tsx-kiosk/ledbar/brigh
 	'tsx/tsx-kiosk/keypad/set OFF' 'tsx/tsx-kiosk/screen/set OFF' 'tsx/tsx-kiosk/backlight/set 30' 'tsx/tsx-kiosk/bogus/set x' \
 	'tsx/tsx-kiosk/update/set INSTALL' 'tsx/tsx-kiosk/blank_timeout/set 600.0' 'tsx/tsx-kiosk/blank_timeout/set 99999' |
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$O/etc/tsx/buttons.conf TSX_KIOSK_CONF=$O/etc/kiosk.conf TSX_BACKLIGHT_DIR=$T/bl \
-	TSX_MQTT_PREV_KEY="power short 11:59:00" sh "$O/usr/local/sbin/tsx-mqtt" > "$T/out" 2>&1
+	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	TSX_MQTT_PREV_KEY="power short 11:59:00" sh "$(P usr/local/sbin/tsx-mqtt)" > "$T/out" 2>&1
 sleep 0.3   # let the backgrounded "tsx-autoupdate now &" (update/set) finish logging
 fail=0
 chk() { grep -qF -- "$1" "$T/out" || { echo "FAIL: missing: $1"; fail=1; }; }
@@ -62,13 +63,13 @@ grep -q 'blank-timeout 99999' "$T/out" && { echo "FAIL: blank timeout above 8640
 [ ! -e "$T/run/brightness" ] || { echo "FAIL: tsx-mqtt wrote the brightness override itself"; fail=1; }
 [ "$(cat "$T/bl/x/brightness")" = 0 ] || { echo "FAIL: tsx-mqtt wrote the backlight device itself"; fail=1; }
 grep -qE 'CALL (tsx-ledbar|tsx-keypad|tsx-blank|tsx-als|tsx-config|amixer)' "$T/out" && { echo "FAIL: tsx-mqtt called a hardware tool directly"; fail=1; }
-grep -nE '^[[:space:]]*(tsx-ledbar|tsx-keypad|tsx-blank|tsx-als|amixer)[[:space:]]|[;&|][[:space:]]*(tsx-ledbar|tsx-keypad|tsx-blank|tsx-als|amixer)[[:space:]]' "$O/usr/local/sbin/tsx-mqtt" | grep -v '^[0-9]*:#' && { echo "FAIL: tsx-mqtt source runs a hardware tool"; fail=1; }
+grep -nE '^[[:space:]]*(tsx-ledbar|tsx-keypad|tsx-blank|tsx-als|amixer)[[:space:]]|[;&|][[:space:]]*(tsx-ledbar|tsx-keypad|tsx-blank|tsx-als|amixer)[[:space:]]' "$(P usr/local/sbin/tsx-mqtt)" | grep -v '^[0-9]*:#' && { echo "FAIL: tsx-mqtt source runs a hardware tool"; fail=1; }
 # a panel without a LED bar tool, front keys and eMMC wear: those entities are
 # not announced, and an older discovery topic of them is cleared
 mkdir -p "$T/bin-bare"
 PATH=$T/bin-bare:/usr/bin:/bin TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$T/none TSX_KIOSK_CONF=$O/etc/kiosk.conf TSX_BACKLIGHT_DIR=$T/bl \
-	sh "$O/usr/local/sbin/tsx-mqtt" < /dev/null > "$T/outbare" 2>&1
+	TSX_BUTTONS_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T/outbare" 2>&1
 grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/ledbar/config ' "$T/outbare" || { echo "FAIL: bare: the LED bar entity is not cleared"; fail=1; }
 grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/keypad/config ' "$T/outbare" || { echo "FAIL: bare: the key LED entity is not cleared"; fail=1; }
 grep -q 'homeassistant/event/' "$T/outbare" && { echo "FAIL: bare: key events announced without keys"; fail=1; }
@@ -81,8 +82,8 @@ T3=$T/hw; mkdir -p "$T3/run"
 printf 'life_a 0x01\nlife_b 0x0b\neol 0x02\n' > "$T3/run/emmc.state"
 printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T3/run/als.state"
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T3/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$O/etc/tsx/buttons.conf TSX_KIOSK_CONF=$O/etc/kiosk.conf TSX_BACKLIGHT_DIR=$T/bl \
-	sh "$O/usr/local/sbin/tsx-mqtt" < /dev/null > "$T3/out" 2>&1
+	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T3/out" 2>&1
 chk3() { grep -qF -- "$1" "$T3/out" || { echo "FAIL: emmc: missing: $1"; fail=1; }; }
 grep '/config {' "$T3/out" | while read -r _ _ t j; do echo "$j" | jq -e . >/dev/null || { echo "FAIL: bad JSON $t"; exit 1; }; done || fail=1
 for t in sensor/tsx-kiosk/emmc_life_a sensor/tsx-kiosk/emmc_life_b sensor/tsx-kiosk/emmc_eol sensor/tsx-kiosk/illuminance switch/tsx-kiosk/als_auto; do
@@ -94,13 +95,13 @@ chk3 'PUB (retained) tsx/tsx-kiosk/emmc/eol warning'
 chk3 'PUB (retained) tsx/tsx-kiosk/als/lux 12.5'
 printf 'life_a 0x00\nlife_b 0x03\neol 0x03\n' > "$T3/run/emmc.state"
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T3/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$O/etc/tsx/buttons.conf TSX_KIOSK_CONF=$O/etc/kiosk.conf TSX_BACKLIGHT_DIR=$T/bl \
-	sh "$O/usr/local/sbin/tsx-mqtt" < /dev/null > "$T3/out2" 2>&1
+	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T3/out2" 2>&1
 grep -qF 'PUB (retained) tsx/tsx-kiosk/emmc/life_a none' "$T3/out2" && grep -qF 'PUB (retained) tsx/tsx-kiosk/emmc/life_b 30' "$T3/out2" \
 	&& grep -qF 'PUB (retained) tsx/tsx-kiosk/emmc/eol urgent' "$T3/out2" || { echo "FAIL: emmc: unreported life must be none, 0x03 must be 30 and urgent"; fail=1; }
 
 # unconfigured: exits 0 quietly
-out=$(TSX_MQTT_CONF=/nonexistent sh "$O/usr/local/sbin/tsx-mqtt"); rc=$?
+out=$(TSX_MQTT_CONF=/nonexistent sh "$(P usr/local/sbin/tsx-mqtt)"); rc=$?
 [ $rc = 0 ] && echo "$out" | grep -q 'BROKER not set' || { echo "FAIL: unconfigured run rc=$rc '$out'"; fail=1; }
 
 # panel.conf override: /run/tsx/mqtt.conf (written by `tsx-config apply` from
@@ -110,8 +111,8 @@ T2=$(mktemp -d); mkdir -p "$T2/run"
 printf 'BROKER=base.example\nPORT=1883\n' > "$T2/mqtt.conf"
 printf 'BROKER=override.example\nPORT=8883\n' > "$T2/run/mqtt.conf"
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T2/mqtt.conf TSX_RUN_DIR=$T2/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$O/etc/tsx/buttons.conf TSX_KIOSK_CONF=$O/etc/kiosk.conf TSX_BACKLIGHT_DIR=$T/bl \
-	sh "$O/usr/local/sbin/tsx-mqtt" < /dev/null > "$T2/out" 2>&1
+	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T2/out" 2>&1
 grep -q '^-h override.example$' "$T2/run/mqtt/mosquitto_pub" || { echo "FAIL: panel.conf override: BROKER not read from /run/tsx/mqtt.conf ($(cat "$T2/run/mqtt/mosquitto_pub" 2>/dev/null))"; fail=1; }
 grep -q '^-p 8883$' "$T2/run/mqtt/mosquitto_pub" || { echo "FAIL: panel.conf override: PORT not read from /run/tsx/mqtt.conf"; fail=1; }
 rm -rf "$T2"

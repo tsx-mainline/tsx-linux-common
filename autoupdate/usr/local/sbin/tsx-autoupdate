@@ -205,7 +205,7 @@ write_ha_json() {
 	hold) d=${cd#* }; summary="${summary:+$summary; }chromium $cc held since $ch (day $d)";;
 	unpatched) summary="${summary:+$summary; }chromium $cc installed unpatched (software rendering) since $ch";;
 	patch) summary="${summary:+$summary; }chromium $cc: ES2 patch re-applied";;
-	migrate) summary="${summary:+$summary; }chromium: switch to $CHROMIUM_PKG (ES2 patch built in)";;
+	migrate) summary="${summary:+$summary; }chromium: switch to $CHROMIUM_PKG (the project's build)";;
 	esac
 	rw=$(get_field "$f" repo_warning)
 	[ -n "$rw" ] && summary="${summary:+$summary; }WARNING: $rw"
@@ -292,7 +292,7 @@ chromium_migrate() {  # Alpine chromium (pinned, patched in place) -> $CHROMIUM_
 		# No package owned the sidecar of the in-place patch. Take the copy of the package.
 		[ -e "$ES2_MARKER.apk-new" ] && mv -f "$ES2_MARKER.apk-new" "$ES2_MARKER"
 		rm -f "$STATE/chromium-hold"
-		log "chromium: now $CHROMIUM_PKG (ES2 patch built in, upgrades with the other packages)"
+		log "chromium: now $CHROMIUM_PKG (the project's build, upgrades with the other packages)"
 	else
 		log "chromium: switching to $CHROMIUM_PKG FAILED, keeping the pinned Alpine chromium"
 	fi
@@ -347,14 +347,18 @@ do_check() {
 
 	oldver=$(pinned_chromium_ver)
 	since=
-	if tsx_chromium_installed || [ -z "$oldver" ]; then
-		# tsx-xx60-chromium (or no pin at all) is an ordinary package. Its
-		# upgrades are in the list above already.
-		tsx_chromium_installed && oldver=$CHROMIUM_PKG
-		candver= decision=none
+	if tsx_chromium_installed; then
+		# $CHROMIUM_PKG is an ordinary package. Its upgrades are in the list
+		# above already.
+		oldver=$CHROMIUM_PKG candver= decision=none
 		rm -f "$STATE/chromium-hold"
 	elif tsx_chromium_offered; then
+		# The project's own build is offered. Move to it, pinned or not.
 		candver=$CHROMIUM_PKG decision=migrate
+		rm -f "$STATE/chromium-hold"
+	elif [ -z "$oldver" ]; then
+		# Alpine's chromium with no pin is an ordinary package.
+		candver= decision=none
 		rm -f "$STATE/chromium-hold"
 	else
 		candver=$(candidate_chromium_ver)
@@ -446,7 +450,9 @@ cmd_status() {
 	pl=$(get_field "$f" pending_list); [ -n "$pl" ] && echo "  $pl"
 	rb=$(get_field "$f" reboot_pending); echo "reboot pending: $([ "$rb" = 1 ] && echo yes || echo no)"
 	if [ "$(get_field "$f" chromium_pinned)" = $CHROMIUM_PKG ]; then
-		echo "chromium:       $CHROMIUM_PKG (ES2 patch built in. Upgrades with the other packages)"
+		echo "chromium:       $CHROMIUM_PKG (the project's build. Upgrades with the other packages)"
+	elif [ -z "$(get_field "$f" chromium_pinned)" ]; then
+		echo "chromium:       Alpine's chromium, not pinned. Decision $(get_field "$f" chromium_decision)"
 	else
 		echo "chromium:       pinned $(get_field "$f" chromium_pinned), candidate $(get_field "$f" chromium_candidate), decision $(get_field "$f" chromium_decision)"
 	fi

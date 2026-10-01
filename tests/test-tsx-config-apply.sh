@@ -4,11 +4,11 @@
 # TSX_APPLY_PREFIX/TSX_RUN/TSX_STATE_DIR/TSX_APPLY_ALLOW_NONROOT. No docker,
 # no real /etc/shadow or /root/.ssh is ever touched.
 set -uo pipefail
-# The board file (rootfs/overlay/usr/local/lib/tsx/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/lib/tsx/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/bin/tsx-board
+# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
+export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
+export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-SCRIPT="$HERE/overlay/usr/local/sbin/tsx-config"
+SCRIPT="$HERE/base/usr/local/sbin/tsx-config"
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-tsx-config-apply: no busybox on this host"; exit 0; }
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 CFG="$W/panel.conf"

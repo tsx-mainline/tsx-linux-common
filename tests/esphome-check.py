@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Client-side checks for rootfs/tests/test-esphome.sh: connects to the
+"""Client-side checks for tests/test-esphome.sh: connects to the
 tsx-esphome standalone server under test with aioesphomeapi (the same client
 library Home Assistant's ESPHome integration uses) and exercises the panel
 entity list of the panel: list entities, toggle the LED bar

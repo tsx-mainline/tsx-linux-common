@@ -6,7 +6,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d); PID=; trap '[ -n "$PID" ] && kill $PID 2>/dev/null; rm -rf $T' EXIT
 BIN=${1:-}
-if [ -z "$BIN" ]; then gcc -O2 -Wall -o $T/tsx-idled $HERE/src/tsx-idled.c; BIN=$T/tsx-idled; fi
+if [ -z "$BIN" ]; then gcc -O2 -Wall -o $T/tsx-idled $HERE/kiosk/src/tsx-idled.c; BIN=$T/tsx-idled; fi
 mkdir -p $T/bl/mp3309c $T/input
 echo 31 > $T/bl/mp3309c/max_brightness; echo 17 > $T/bl/mp3309c/brightness
 mkfifo $T/input/event0

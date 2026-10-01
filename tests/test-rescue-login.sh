@@ -1,5 +1,5 @@
 #!/bin/sh
-# Host test for the rescue login (rootfs/initramfs/overlay/usr/sbin/tsx-rescue-login).
+# Host test for the rescue login (rescue/usr/sbin/tsx-rescue-login).
 # It needs no panel, no compiler and no container.
 #   - /data readable with a hash and a key: the rescue takes both
 #   - a key only: the password stays locked, ssh takes the key
@@ -9,9 +9,9 @@
 #   - a test build with a baked hash keeps it
 #   - nothing in the rescue sources has the fixed password any more
 set -u
-HERE=$(cd "$(dirname "$0")/../.." && pwd)
-RL=$HERE/rootfs/initramfs/overlay/usr/sbin/tsx-rescue-login
-RS=$HERE/rootfs/initramfs/overlay/usr/sbin/tsx-rescue-status
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+RL=$HERE/rescue/usr/sbin/tsx-rescue-login
+RS=$HERE/rescue/usr/sbin/tsx-rescue-status
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 N=0 F=0
 ok()  { N=$((N + 1)); echo "  ok: $*"; }
@@ -126,17 +126,10 @@ eq "$(mode)" "build" "baked hash: the case is build"
 eq "$(field)" "$HASH" "baked hash: kept"
 [ ! -e "$T/run/tsx-rescue-otp" ] && ok "baked hash: no OTP" || bad "baked hash: an OTP"
 
-echo "== wiring: no fixed password anywhere in the rescue =="
-RCS=$HERE/rootfs/initramfs/overlay/etc/init.d/rcS
-MK=$HERE/rootfs/initramfs/mkinitramfs-switchroot.sh
-grep -q "tsx-rescue-login" "$RCS" && ok "rcS runs tsx-rescue-login" || bad "rcS does not run tsx-rescue-login"
-awk '/tsx-rescue-login/ { l = NR } /^dropbear/ { d = NR } END { exit !(l && d && l < d) }' "$RCS" && ok "the login is chosen before dropbear starts" || bad "dropbear starts before the login is chosen"
-grep -q "password 'tsx'\|echo tsx |" "$RCS" "$MK" && bad "a fixed rescue password is still in rcS or the build" || ok "no fixed rescue password in rcS or the build"
-grep -rn "(password tsx)\|(password: tsx)\|root/tsx" "$HERE/rootfs/initramfs" "$HERE/installer/initramfs" "$HERE/installer/rescue" "$HERE/installer/rescue-v2" >/dev/null 2>&1 && bad "the rescue sources still name the password tsx" || ok "the rescue sources do not name the password tsx"
-grep -q 'TSX_DEV_RESCUE_HASH' "$MK" && ok "the test-build override is TSX_DEV_RESCUE_HASH" || bad "no TSX_DEV_RESCUE_HASH"
-grep -q 'TSX_DEV_RESCUE_HASH' "$HERE/rootfs/build-rootfs.sh" && ok "build-rootfs.sh passes TSX_DEV_RESCUE_HASH" || bad "build-rootfs.sh does not pass it"
-# the OTP file is written by tsx-rescue-login and read by the screen, nothing else
-others=$(grep -rln "tsx-rescue-otp" "$HERE/rootfs" "$HERE/installer" --include='*' 2>/dev/null | grep -v '/tests/' | sort | tr '\n' ' ')
+echo "== wiring: the OTP file =="
+# the OTP file is written by tsx-rescue-login and read by the screen, nothing else.
+# The family repos check that the initramfs runs tsx-rescue-login before dropbear.
+others=$(grep -rln "tsx-rescue-otp" "$HERE/rescue" 2>/dev/null | sort | tr '\n' ' ')
 case "$others" in "$RL $RS "*|"$RS $RL "*) ok "only tsx-rescue-login and tsx-rescue-status use the OTP file";; *) bad "files that name the OTP file: $others";; esac
 grep -n 'tsx-rescue-otp' "$RS" | grep -q 'kmsg' && bad "the screen sends the OTP to the kernel log" || ok "the screen never writes the OTP to the kernel log"
 

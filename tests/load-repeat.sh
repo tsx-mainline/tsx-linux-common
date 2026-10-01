@@ -2,7 +2,7 @@
 # Page-load repeat: N loads each of the HA dashboard and cards.html, median/min/max
 # of FCP and load event (ms). Usage: load-repeat.sh CFG [N]  -> results/load-CFG.txt
 HERE=$(cd "$(dirname "$0")" && pwd); R=$HERE/../results; CFG=$1; N=${2:-5}
-CDP="python3 $HERE/../../rootfs/tests/cdp.py 9222"
+CDP="python3 $HERE/../tests/cdp.py 9222"
 URL=${LOAD_URL:-https://ha.example.org/tsx-default/0}
 {
 echo "### load-repeat $CFG $(date) N=$N"

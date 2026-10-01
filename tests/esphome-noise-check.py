@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Client-side checks for rootfs/tests/test-esphome.sh's encryption tests
-(HA_API_KEY, rootfs/voice/shim/tsx_panel/noise.py): each mode connects with
+"""Client-side checks for tests/test-esphome.sh's encryption tests
+(HA_API_KEY, ha/voice/shim/tsx_panel/noise.py): each mode connects with
 aioesphomeapi (Home Assistant's own client) and expects exactly the error
 Home Assistant's ESPHome integration keys its behavior on -- a quick,
 specific refusal, never a hang.

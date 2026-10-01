@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A fake Bluetooth controller for the host tests of tsx-btscan
-(rootfs/overlay/usr/local/lib/tsx/btscan.py, TSX_BTSCAN_FAKE_HCI).
+(ha/usr/local/lib/tsx/btscan.py, TSX_BTSCAN_FAKE_HCI).
 
   bt-fake-hci.py SOCKET LOG [BD_ADDR]
 

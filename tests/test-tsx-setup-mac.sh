@@ -1,21 +1,18 @@
 #!/bin/bash
-# Host test: the eth0-MAC selection in rootfs/overlay/etc/init.d/tsx-setup
+# Host test: the eth0-MAC selection in base/etc/init.d/tsx-setup
 # (docs/recovery.md "Random MAC in the rescue, and the fix"). The test runs the
 # same script that the panel runs. It uses the TSX_MMCBLK0 and
 # TSX_ETH0_MAC_FILE host-test hooks (the same idea as TSX_APPLY_PREFIX of
 # tsx-config). A fake env image stands in for /dev/mmcblk0. The test needs no
 # docker, no real block device and no root.
-#
-# The test also checks that every rescue path sets the same MAC. The logic
-# lives in the base rcS of the initramfs. Before, a force-rescue on a TSS-10
-# got a random MAC and a different DHCP address. The logic lived only in the
-# rcS of the rescue image.
+# The test uses the xx60 board file (U-Boot env). The rescue side of the MAC
+# has its test in tsx-xx60-linux.
 set -uo pipefail
-# The board file (rootfs/overlay/usr/local/lib/tsx/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/lib/tsx/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/overlay/usr/local/bin/tsx-board
+# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
+export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
+export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-SCRIPT="$HERE/overlay/etc/init.d/tsx-setup"
+SCRIPT="$HERE/base/etc/init.d/tsx-setup"
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-tsx-setup-mac: no busybox on this host"; exit 0; }
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 N=0 F=0
@@ -88,12 +85,6 @@ MF5="$W/eth0.mac.5"; echo "02:66:77:88:99:aa" > "$MF5"
 OUT=$(run_setup "$BADMAC" "$MF5")
 GOT=$(echo "$OUT" | sed -n 's/^MAC=//p')
 [ "$GOT" = "02:66:77:88:99:aa" ] && ok "a malformed env ethaddr falls back to the persisted MAC" || bad "malformed ethaddr accepted: got $GOT"
-
-RCS="$HERE/initramfs/overlay/etc/init.d/rcS"
-grep -q 'ethaddr' "$RCS" && grep -q 'ip link set dev eth0 address' "$RCS" \
-	&& ok "the initramfs's base rcS (every rescue path) sets eth0's MAC from the env" || bad "base rcS does not set the MAC"
-[ ! -e "$HERE/../installer/rescue/overlay/etc/init.d/rcS" ] && ok "the rescue image does not override the base rcS" || bad "installer/rescue overrides rcS again"
-grep -q "BASE's rcS does not set the eth0 MAC" "$HERE/../installer/rescue/mkrescue.sh" && ok "mkrescue.sh refuses a base image without it" || bad "mkrescue.sh has no rcS check"
 
 echo "== $N ok, $F failed =="
 [ $F = 0 ] && echo "PASS test-tsx-setup-mac" || { echo "FAIL test-tsx-setup-mac"; exit 1; }

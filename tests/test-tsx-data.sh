@@ -8,12 +8,11 @@
 # test-initramfs-qemu.sh. That harness boots a whole-disk rootfs-p2.ext4 image
 # with no spare partition to stand in for tsxdata. A loop-mounted ext4 in a
 # privileged container is the cheap way to exercise the real script. The test
-# reads the script straight from the rootfs overlay and not from a copy. It
+# reads the script straight from base/ and not from a copy. It
 # checks real bind mounts, ownership and the marker (idempotency) file.
 # The test needs docker --privileged. Usage: tests/test-tsx-data.sh
 set -uo pipefail
-ROOTFS_DIR=$(cd "$(dirname "$0")/../../rootfs" && pwd)
-SCRIPT="$ROOTFS_DIR/overlay/etc/init.d/tsx-data"
+SCRIPT="$(cd "$(dirname "$0")/.." && pwd)/base/etc/init.d/tsx-data"
 [ -f "$SCRIPT" ] || { echo "FAIL: $SCRIPT not found"; exit 1; }
 
 docker run --rm --privileged --platform linux/amd64 -v "$SCRIPT:/tsx-data.src:ro" alpine:3.24 sh -euc '

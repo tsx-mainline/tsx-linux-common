@@ -5,17 +5,17 @@
 #     fb0/virtual_size. If nothing fits, or there is no fb or no font,
 #     tsx-confont falls back to the default font of the kernel. It calls
 #     setfont on the right tty and never fails.
-#   - every text-console path loads the font (/init text_console,
-#     tsx-autoinstall, tsx-rescue-status), and the initramfs build ships the
-#     fonts.
+#   - the rescue screen (tsx-rescue-status) loads the font. The family repos
+#     check that their own text consoles do the same, and that the initramfs
+#     ships the fonts.
 #   - the rescue screen banner and /etc/motd show Tux and the figlet smslant
 #     "TSX - LINUX" (spaces around the dash), at most 80 columns. Both use the
 #     same art. test-rescue-screen.sh checks the whole screen.
 set -eu
-HERE=$(cd "$(dirname "$0")/../.." && pwd)
-CF=$HERE/rootfs/initramfs/overlay/usr/sbin/tsx-confont
-RS=$HERE/rootfs/initramfs/overlay/usr/sbin/tsx-rescue-status
-MOTD=$HERE/rootfs/overlay/etc/motd
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+CF=$HERE/rescue/usr/sbin/tsx-confont
+RS=$HERE/rescue/usr/sbin/tsx-rescue-status
+MOTD=$HERE/kiosk/etc/motd
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 N=0 F=0
 ok()  { N=$((N + 1)); echo "  ok: $*"; }
@@ -72,18 +72,8 @@ rm -f "$T/setfont.args"
 TSX_SETFONT=$T/bin/setfont TSX_SYSFS=$T/nofb TSX_CONFONT_DIR=$T/fonts sh "$CF" && rc=0 || rc=$?
 [ "$rc" = 0 ] && [ ! -e "$T/setfont.args" ] && ok "no framebuffer -> no setfont, exit 0" || bad "no fb: rc $rc, setfont called: $(cat "$T/setfont.args" 2>/dev/null)"
 
-echo "== every text-console path loads the font =="
-sed -n '/^text_console() {/,/^}/p' "$HERE/rootfs/initramfs/overlay/init" | tr '\n' ' ' > "$T/tc"
-grep -q 'tsx-splash console.*rotate_all.*/usr/sbin/tsx-confont' "$T/tc" && ok "/init text_console: bind, turn (fbcon rotate_all), then the font" || bad "/init text_console does not bind + rotate + run tsx-confont in that order"
-grep -q '^rescue() {' "$HERE/rootfs/initramfs/overlay/init" && sed -n '/^rescue() {/,/^}/p' "$HERE/rootfs/initramfs/overlay/init" | tr '\n' ' ' | grep -q 'fbrot=0.*text_console' && ok "/init rescue(): landscape text console" || bad "/init rescue() does not reset the console orientation"
-for f in "$HERE/installer/initramfs/tsx-autoinstall" "$HERE/rootfs/initramfs/overlay/usr/sbin/tsx-autoinstall"; do
-	grep -q 'tsx-splash console.*/usr/sbin/tsx-confont' "$f" && ok "${f#"$HERE"/}" || bad "${f#"$HERE"/} binds the console without tsx-confont"
-done
+echo "== the rescue screen loads the font =="
 sed -n '/^loop)/,/;;/p' "$RS" | grep -q 'lcd_font' && ok "tsx-rescue-status loop" || bad "tsx-rescue-status loop does not load the font"
-MK=$HERE/rootfs/initramfs/mkinitramfs-switchroot.sh
-for f in ter-124b ter-132b; do
-	grep -q "for f in .*$f" "$MK" && ok "initramfs ships $f" || bad "initramfs does not ship $f"
-done
 
 echo "== banners: Tux + \"TSX - LINUX\" =="
 ( sed -n '/^splash() {/,/^}/p' "$RS"; echo splash ) > "$T/splash.sh"
@@ -105,7 +95,7 @@ else
 	echo "  skip: figlet smslant not installed"
 fi
 
-# the whole rescue screen (idle, install running, both console widths): rootfs/tests/test-rescue-screen.sh
+# the whole rescue screen (idle, install running, both console widths): tests/test-rescue-screen.sh
 
 echo "$N ok, $F failed"
 [ "$F" -eq 0 ]

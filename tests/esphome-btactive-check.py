@@ -4,7 +4,7 @@
 the client code of Home Assistant: aioesphomeapi for the API and the
 ESPHomeClient of bleak-esphome (the bleak backend that Home Assistant uses
 for an ESPHome proxy) for the BLE link. The peer is bt-gatt-peer.py: the
-fake one in rootfs/tests/test-esphome.sh, or a real peripheral on a panel.
+fake one in tests/test-esphome.sh, or a real peripheral on a panel.
 
   esphome-btactive-check.py HOST PORT --addr C0:FF:EE:00:00:01 [--atype 1]
       [--silent C0:FF:EE:00:00:EE] [--cycles 5] [--limit 3] [--key BASE64]
