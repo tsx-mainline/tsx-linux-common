@@ -27,7 +27,11 @@
 # (state=up|failed|down, reason=, hci=, mac=, psr=) and exits 1 on a failure.
 # The init script never fails the boot on that exit status.
 #
-# Files: /run/tsx/bt.conf (PROXY=, MAC=, written by tsx-config apply),
+# A panel with androidboot.government=1 on the kernel command line (the
+# TSW-760-NC) has no working Bluetooth chip: "up" then fails, and the reason
+# says so.
+#
+# Files: /run/tsx/bt.conf (PROXY=, ACTIVE=, MAC=, written by tsx-config apply),
 # /usr/local/share/tsx/csr8811/PSR-CSR8811.psr (+ SOURCE, from the
 # installer). Test hooks: TSX_RUN_DIR, TSX_SYSFS, TSX_PROC, TSX_BT_TTY, TSX_BT_PSR,
 # TSX_BT_LIB, TSX_BT_SETTLE.
@@ -178,7 +182,12 @@ do_up() {
 
 	out=$(python3 "$LIB/csr_psload.py" --device "$TTY" --baud "$BAUD" "$@" 2>&1) || {
 		echo "$out" | sed 's/^/  /'
-		fail "PSR upload: $(echo "$out" | tail -n 1)"
+		# A panel with U-Boot env government=1 (the NC model) has no
+		# working Bluetooth chip (docs/hardware.md "Bluetooth (CSR8811)").
+		gov=
+		grep -qw 'androidboot.government=1' "$PROC/cmdline" 2>/dev/null \
+			&& gov=" (government=1 on this panel: the NC model has no Bluetooth chip)"
+		fail "PSR upload: $(echo "$out" | tail -n 1)$gov"
 	}
 	log "PSR upload: $(echo "$out" | tail -n 1)"
 
