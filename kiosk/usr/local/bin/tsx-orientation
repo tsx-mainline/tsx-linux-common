@@ -19,10 +19,15 @@
 #   tsx-orientation [-f FILE] info [NAME]  KEY=VALUE lines (sourceable):
 #       ORIENTATION     the name
 #       ROTATE          0..3, quarter turns clockwise of the picture on the LCD
+#                       (with the mounting of the LCD added)
+#       MOUNT           0..3, the mounting of the LCD (fbcon=rotate:N of the
+#                       kernel command line). 0 when the LCD sits upright.
 #       SWAY_TRANSFORM  sway "output * transform" (sway rotates clockwise)
 #       TOUCH_MATRIX    libinput calibration matrix (6 values, sway
 #                       "input type:touch calibration_matrix"): the identity
-#                       in every orientation. sway maps the touchscreen to
+#                       in every orientation when the LCD sits upright (a
+#                       mounting turns it, KIOSK_TOUCH_MATRIX of kiosk.conf
+#                       replaces it). sway maps the touchscreen to
 #                       the built-in output, and wlroots then turns every
 #                       touch by the transform of that output (measured on
 #                       a TSS-10: a turned matrix on top of that turned the
@@ -32,7 +37,8 @@
 #                       3 = counter-clockwise, the same number as ROTATE)
 #       SLIDE_INVERT    1 = tsx-buttons turns the key-strip slide around, so
 #                       sliding up or right is brighter in every orientation
-#   tsx-orientation [-f FILE] sway [NAME]  the sway config lines (kiosk-session)
+#   tsx-orientation [-f FILE] sway [NAME]  the sway config lines (kiosk-session).
+#                                          Nothing when the screen needs no turn
 #   tsx-orientation [-f FILE] apply        (root or the kiosk user) turn the
 #                                          running kiosk (sway) to the configured
 #                                          orientation now: output transform and
@@ -43,7 +49,7 @@
 # panel.conf. `tsx-config apply` keeps it on the root file system, so the
 # initramfs (which cannot read /data) finds it too. Absent = landscape.
 # Env for tests: TSX_SWAYMSG (swaymsg), TSX_RUN_USER_DIR (/run/user),
-# TSX_KIOSK_USER (kiosk).
+# TSX_KIOSK_USER (kiosk), TSX_PANEL_ROTATE, TSX_CMDLINE, TSX_KIOSK_CONF.
 set -u
 FILE=${TSX_ORIENTATION_FILE:-/etc/tsx/orientation}
 if [ "${1:-}" = -f ]; then
@@ -63,10 +69,27 @@ configured() {
 	valid "${o:-}" && echo "$o" || echo landscape
 }
 
+# The mounting of the LCD: fbcon=rotate:N on the kernel command line (0 when
+# the LCD sits upright in the housing). Test hooks: TSX_PANEL_ROTATE and
+# TSX_CMDLINE.
+mount_rot() {
+	if [ -n "${TSX_PANEL_ROTATE:-}" ]; then echo $((TSX_PANEL_ROTATE & 3)); return; fi
+	n=$(tr ' ' '\n' < "${TSX_CMDLINE:-/proc/cmdline}" 2>/dev/null | sed -n 's/^fbcon=rotate:\([0-3]\)$/\1/p' | tail -n 1)
+	echo "${n:-0}"
+}
+
+# KIOSK_TOUCH_MATRIX from kiosk.conf (six numbers), else nothing
+touch_override() {
+	v=$(sed -n 's/^KIOSK_TOUCH_MATRIX=//p' "${TSX_KIOSK_CONF:-/etc/kiosk.conf}" 2>/dev/null | tail -n 1 | tr -d '"'"'"'')
+	set -- $v
+	[ $# = 6 ] && echo "$*"
+}
+
 # info NAME: the table. Only ROTATE is chosen per name. Everything else
-# follows from it. Checked on the panels (raw scanout dumps): sway transform
-# 270 and fbcon rotate 3 put the top of the picture at the left edge of the
-# native LCD. That is upright on a panel turned clockwise (portrait).
+# follows from it. Checked on the xx60 panels (raw scanout dumps): sway
+# transform 270 and fbcon rotate 3 put the top of the picture at the left
+# edge of the native LCD. That is upright on a panel turned clockwise
+# (portrait).
 info() {
 	case "$1" in
 	landscape) r=0;;
@@ -75,17 +98,33 @@ info() {
 	portrait-flipped) r=1;;
 	*) return 1;;
 	esac
-	# The picture turns r quarter turns clockwise on the LCD. The touch matrix
-	# stays the identity (wlroots turns touches by the output transform).
-	m="1 0 0 0 1 0"
+	case $r in 1|2) inv=1;; *) inv=0;; esac
+	# The LCD can sit turned in the housing (the mounting). The picture turns
+	# by the mounting too.
+	mt=$(mount_rot)
+	r=$(( (r + mt) % 4 ))
+	# The picture turns r quarter turns clockwise on the LCD.
 	case $r in
-	0) t=normal inv=0;;
-	1) t=90 inv=1;;
-	2) t=180 inv=1;;
-	3) t=270 inv=0;;
+	0) t=normal;;
+	1) t=90;;
+	2) t=180;;
+	3) t=270;;
 	esac
+	# A touch controller that reports in the mounted frame needs a matrix that
+	# turns the touches back by the mounting. wlroots then turns them by the
+	# output transform, like the picture. Sway's "transform 90" turns a touch
+	# (x, y) into (y, 1-x) (measured on the xx60). These matrices undo the
+	# quarter turns of the mounting before that. Mounting 0 gives the identity.
+	case $mt in
+	0) m="1 0 0 0 1 0";;
+	1) m="0 -1 1 1 0 0";;
+	2) m="-1 0 1 0 -1 1";;
+	3) m="0 1 0 -1 0 1";;
+	esac
+	o=$(touch_override) && m=$o
 	echo "ORIENTATION=$1"
 	echo "ROTATE=$r"
+	echo "MOUNT=$mt"
 	echo "SWAY_TRANSFORM=$t"
 	echo "TOUCH_MATRIX=\"$m\""
 	echo "FBCON_ROTATE=$r"
@@ -132,8 +171,10 @@ info) n=$(name_arg "${1:-}") || exit 2; info "$n";;
 sway)
 	n=$(name_arg "${1:-}") || exit 2
 	eval "$(info "$n")"
+	# Nothing to turn: no lines (the sway default is the same).
+	[ "$SWAY_TRANSFORM" = normal ] && [ "$TOUCH_MATRIX" = "1 0 0 0 1 0" ] && exit 0
 	echo "output * transform $SWAY_TRANSFORM"
 	echo "input type:touch calibration_matrix $TOUCH_MATRIX";;
 apply) apply_live;;
-*) sed -n '2,46p' "$0" >&2; exit 2;;
+*) sed -n '2,52p' "$0" >&2; exit 2;;
 esac

@@ -30,6 +30,10 @@
  *    the screen is blank or the daemon swallows a gesture.
  *    The default is three fingers, because Chromium opens its context menu on
  *    a two-finger tap.
+ *  - Quick-settings overlay (OVERLAY_GESTURE=fourfinger|threefinger|off,
+ *    default off): the same kind of tap runs OVERLAY_CMD (default: "toggle"
+ *    to the FIFO /run/tsx/overlay.ctl of tsx-overlay). For a panel without
+ *    front keys to show the overlay with.
  *  - Signals: SIGUSR1 = wake now, SIGUSR2 = blank now, SIGHUP = reload config.
  *  - The daemon writes its state to /run/tsx-idled.state ("on <level>" or
  *    "blank").
@@ -60,7 +64,11 @@
  *  "override V" (0 = none), "max M", "blank_timeout T") and last-input
  *  (epoch seconds of the last real input event, at most once per second).
  *
- * Config: shell-style KEY=VALUE file (default /etc/kiosk.conf).
+ * Config: shell-style KEY=VALUE files, read in the order of the -c options
+ * (default /etc/kiosk.conf). A later file wins. A file that is missing after the
+ * first one is no error: the board file /etc/tsx/kiosk-board.conf is optional.
+ * ALS_WATCH=1 makes a change of als-level apply at once (for a light sensor
+ * service that writes the file only when the level changes).
  * Env overrides for testing: TSX_INPUT_DIR, TSX_BACKLIGHT_DIR, TSX_STATE_FILE,
  * TSX_RUN_DIR, TSX_DISPLAY_REPEAT_MS (the 30 s "off" repeat while blank).
  */
@@ -98,12 +106,17 @@ struct cfg {
 	int osk_gesture;        /* fingers of the tap that runs osk_cmd, 0 = off */
 	int osk_tap_ms;
 	char osk_cmd[512];
+	int overlay_gesture;    /* fingers of the tap that runs overlay_cmd, 0 = off */
+	char overlay_cmd[512];
+	int als_watch;          /* 1 = a change of als-level applies at once */
 	char disp_cmd[512];     /* display output on/off command, "" = none */
 	int disp_timeout_ms;
 };
 
 static struct cfg C;
-static const char *cfgfile = "/etc/kiosk.conf";
+#define MAXCFG 4
+static const char *cfgfiles[MAXCFG] = { "/etc/kiosk.conf" };
+static int ncfg = 1;
 static const char *indir = "/dev/input";
 static const char *statefile = "/run/tsx-idled.state";
 static const char *ovrdir = "/run/tsx";   /* brightness override (tsx-buttons) */
@@ -141,16 +154,17 @@ static void cfg_defaults(struct cfg *c)
 	strcpy(c->backlight, "auto");
 	c->osk_gesture = 3; c->osk_tap_ms = 500;
 	strcpy(c->osk_cmd, "/usr/local/bin/tsx-osk toggle");
+	c->overlay_gesture = 0;
+	strcpy(c->overlay_cmd, "timeout 2 sh -c 'echo toggle > /run/tsx/overlay.ctl'");
 	strcpy(c->disp_cmd, "/usr/local/bin/tsx-display-power");
 	c->disp_timeout_ms = 3000;
 }
 
-static void cfg_load(struct cfg *c)
+static void cfg_parse(struct cfg *c, const char *cfgfile, int first)
 {
 	FILE *f = fopen(cfgfile, "r");
 	char line[512];
-	cfg_defaults(c);
-	if (!f) { logm("no %s, using defaults", cfgfile); return; }
+	if (!f) { if (first) logm("no %s, using defaults", cfgfile); return; }
 	while (fgets(line, sizeof line, f)) {
 		char *p = line, *eq, *v, *e;
 		while (isspace((unsigned char)*p)) p++;
@@ -169,12 +183,21 @@ static void cfg_load(struct cfg *c)
 		if (!strcmp(p, "OSK_GESTURE")) c->osk_gesture = !strcmp(v, "threefinger") ? 3 : !strcmp(v, "twofinger") ? 2 : 0;
 		I("OSK_TAP_MS", osk_tap_ms);
 		if (!strcmp(p, "OSK_TOGGLE_CMD") && *v) snprintf(c->osk_cmd, sizeof c->osk_cmd, "%s", v);
+		if (!strcmp(p, "OVERLAY_GESTURE")) c->overlay_gesture = !strcmp(v, "fourfinger") ? 4 : !strcmp(v, "threefinger") ? 3 : 0;
+		if (!strcmp(p, "OVERLAY_CMD") && *v) snprintf(c->overlay_cmd, sizeof c->overlay_cmd, "%s", v);
+		I("ALS_WATCH", als_watch);
 		/* An empty value turns the display power control off. */
 		if (!strcmp(p, "DISPLAY_POWER_CMD")) snprintf(c->disp_cmd, sizeof c->disp_cmd, "%s", v);
 		I("DISPLAY_POWER_TIMEOUT_MS", disp_timeout_ms);
 #undef I
 	}
 	fclose(f);
+}
+
+static void cfg_load(struct cfg *c)
+{
+	cfg_defaults(c);
+	for (int i = 0; i < ncfg; i++) cfg_parse(c, cfgfiles[i], i == 0);
 }
 
 static int read_int(const char *dir, const char *name)
@@ -447,21 +470,22 @@ static void scan_devices(int want_grab)
 	closedir(d);
 }
 
-static void run_osk_cmd(void)
+static void run_tap_cmd(int fingers, const char *cmd)
 {
 	pid_t pid;
-	if (!C.osk_cmd[0]) return;
-	logm("%d-finger tap: %s", C.osk_gesture, C.osk_cmd);
+	if (!cmd[0]) return;
+	logm("%d-finger tap: %s", fingers, cmd);
 	if ((pid = fork()) == 0) {
 		setsid();
-		execl("/bin/sh", "sh", "-c", C.osk_cmd, (char *)NULL);
+		execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
 		_exit(127);
 	}
 	if (pid < 0) logm("fork: %s", strerror(errno));
 }
 
-/* Multitouch type B tracking for the OSK tap. Return 1 when a tap with
- * exactly OSK_GESTURE fingers has just ended. */
+/* Multitouch type B tracking for the tap gestures. Returns the number of
+ * fingers when a tap (all down and up within OSK_TAP_MS, none moved) has just
+ * ended, else 0. */
 static int mt_event(struct dev *d, const struct input_event *e, long long t)
 {
 	int s = d->slot, n = 0, fired = 0;
@@ -489,7 +513,7 @@ static int mt_event(struct dev *d, const struct input_event *e, long long t)
 	if (n > 0 && d->maxc == 0) { d->t0 = t; d->moved = 0; }
 	if (n > d->maxc) d->maxc = n;
 	if (n == 0 && d->maxc > 0) {
-		fired = C.osk_gesture && d->maxc == C.osk_gesture && !d->moved && t - d->t0 <= C.osk_tap_ms;
+		if (!d->moved && t - d->t0 <= C.osk_tap_ms) fired = d->maxc;
 		d->maxc = 0;
 	}
 	return fired;
@@ -539,7 +563,8 @@ static int read_inotify(void)
 		for (char *p = buf; p < buf + n; ) {
 			struct inotify_event *e = (struct inotify_event *)p;
 			if (e->len) {
-				if (!strcmp(e->name, "brightness") || !strcmp(e->name, "brightness-offset")) m |= 1;
+				if (!strcmp(e->name, "brightness") || !strcmp(e->name, "brightness-offset") ||
+				    (C.als_watch && !strcmp(e->name, "als-level"))) m |= 1;
 				else if (!strcmp(e->name, "blank-timeout")) m |= 2;
 			}
 			p += sizeof *e + e->len;
@@ -557,12 +582,15 @@ static void on_sig(int s)
 
 int main(int argc, char **argv)
 {
-	int opt;
+	int opt, cfgfiles_set = 0;
 	struct sigaction sa = { .sa_handler = on_sig };
 	while ((opt = getopt(argc, argv, "c:v")) != -1) {
-		if (opt == 'c') cfgfile = optarg;
+		if (opt == 'c') {
+			if (ncfg == 1 && !cfgfiles_set) { cfgfiles[0] = optarg; cfgfiles_set = 1; }
+			else if (ncfg < MAXCFG) cfgfiles[ncfg++] = optarg;
+		}
 		else if (opt == 'v') verbose = 1;
-		else { fprintf(stderr, "usage: %s [-c config] [-v]\n", argv[0]); return 2; }
+		else { fprintf(stderr, "usage: %s [-c config]... [-v]\n", argv[0]); return 2; }
 	}
 	if (getenv("TSX_INPUT_DIR")) indir = getenv("TSX_INPUT_DIR");
 	if (getenv("TSX_STATE_FILE")) statefile = getenv("TSX_STATE_FILE");
@@ -572,7 +600,7 @@ int main(int argc, char **argv)
 	sigaction(SIGUSR1, &sa, NULL); sigaction(SIGUSR2, &sa, NULL);
 	sigaction(SIGHUP, &sa, NULL); sigaction(SIGTERM, &sa, NULL); sigaction(SIGINT, &sa, NULL);
 	/* SIGCHLD stays at the default: display_power() waits for its child. The
-	 * main loop reaps the OSK_TOGGLE_CMD children (and a display command that
+	 * main loop reaps the OSK_TOGGLE_CMD and OVERLAY_CMD children (and a display command that
 	 * did not end in time). */
 	signal(SIGCHLD, SIG_DFL);
 
@@ -655,7 +683,8 @@ int main(int argc, char **argv)
 			while ((r = read(devs[i].fd, ev, sizeof ev)) > 0) {
 				raw = 1;
 				for (size_t k = 0; k < (size_t)r / sizeof ev[0]; k++) {
-					if (mt_event(&devs[i], &ev[k], t)) osk = 1;
+					int f = mt_event(&devs[i], &ev[k], t);
+					if (f) osk = f;
 					if (ev[k].type == EV_SYN) continue;
 					if (ev[k].type == EV_KEY && ev[k].code == KEY_POWER) {
 						if (ev[k].value == 1) { power = 1; got = 1; }
@@ -688,8 +717,10 @@ int main(int argc, char **argv)
 				if (verbose) logm("wake");
 			} else if (swallowing) {
 				swallow_until = t + C.swallow_ms; /* extend the swallow until the gesture ends */
-			} else if (osk && C.osk_gesture) {
-				run_osk_cmd();
+			} else if (osk && osk == C.osk_gesture) {
+				run_tap_cmd(osk, C.osk_cmd);
+			} else if (osk && osk == C.overlay_gesture) {
+				run_tap_cmd(osk, C.overlay_cmd);
 			}
 		}
 	}

@@ -1,7 +1,7 @@
 #!/sbin/openrc-run
-# Browser kiosk: cage (single-app Wayland compositor) + Chromium. The service
-# restarts it after a crash.
-description="TSX kiosk (cage + browser)"
+# Browser kiosk: a Wayland compositor (sway, or cage with KIOSK_OSK=off where
+# it is installed) + Chromium. The service restarts it after a crash.
+description="TSX kiosk (compositor + browser)"
 supervisor=supervise-daemon
 command=/usr/local/bin/kiosk-session
 command_user="kiosk:kiosk"
@@ -23,7 +23,14 @@ start_pre() {
 	checkpath -d -m 0700 -o kiosk:kiosk /run/user/$uid
 	checkpath -d -m 0755 -o kiosk:kiosk /var/lib/kiosk
 	checkpath -f -m 0644 -o kiosk:kiosk /var/log/kiosk.log
+	# The control FIFO of the quick-settings overlay. tsx-overlay reads it as
+	# kiosk. Root writes it: tsx-idled (OVERLAY_GESTURE), tsx-panelctl and
+	# tsx-buttons.
+	checkpath -d -m 0755 /run/tsx
+	[ -p /run/tsx/overlay.ctl ] || { rm -f /run/tsx/overlay.ctl; mkfifo -m 0660 /run/tsx/overlay.ctl; }
+	chown root:kiosk /run/tsx/overlay.ctl
 	. /etc/kiosk.conf
+	[ -r /etc/tsx/kiosk-board.conf ] && . /etc/tsx/kiosk-board.conf   # the values of the board
 	[ -r /run/tsx/kiosk.conf ] && . /run/tsx/kiosk.conf   # panel.conf overrides (tsx-config apply)
 	[ -n "${KIOSK_CACHE_DIR:-}" ] && checkpath -d -m 0700 -o kiosk:kiosk "$KIOSK_CACHE_DIR"
 	# Boot splash status line. It does nothing once sway has the screen, or
@@ -38,7 +45,8 @@ start_pre() {
 	# wait up to 20 s as before.
 	tw=${KIOSK_TIME_WAIT:-}
 	if [ -z "$tw" ]; then
-		if [ "${KIOSK_OSK:-squeekboard}" != off ] && [ "${KIOSK_DEVTOOLS:-1}" = 1 ] && [ "${KIOSK_SPLASH:-on}" != off ]; then
+		# The reveal watch needs sway. KIOSK_OSK=off gets sway only where cage is not installed.
+		if { [ "${KIOSK_OSK:-squeekboard}" != off ] || [ ! -x /usr/bin/cage ]; } && [ "${KIOSK_DEVTOOLS:-1}" = 1 ] && [ "${KIOSK_SPLASH:-on}" != off ]; then
 			tw=0
 		else
 			tw=20
@@ -61,11 +69,12 @@ start_pre() {
 		h=${KIOSK_RESTART_AT%%:*}; m=${KIOSK_RESTART_AT##*:}; h=${h#0}; m=${m#0}
 		echo "$m $h * * * /sbin/rc-service kiosk restart >/dev/null 2>&1 # tsx-kiosk-restart" >> /etc/crontabs/root
 	fi
-	# Marker on the serial console (boot timing). The dmesg service of OpenRC
-	# sets the console loglevel to 1, so also write to the serial port
-	# directly.
-	m="tsx: starting kiosk (KIOSK_GPU=${KIOSK_GPU:-auto}) uptime $(cut -d' ' -f1 /proc/uptime)"
-	echo "$m" > /dev/kmsg 2>/dev/null; [ -c /dev/ttyAML0 ] && echo "$m" > /dev/ttyAML0 2>/dev/null
+	# Marker in the kernel log and on the serial console (boot timing). The
+	# dmesg service of OpenRC sets the console loglevel to 1, so the function
+	# also writes to the serial port directly.
+	. "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}" 2>/dev/null
+	. /usr/local/lib/tsx/serial.sh
+	tsx_serial_say "tsx: starting kiosk (KIOSK_GPU=${KIOSK_GPU:-auto}) uptime $(cut -d' ' -f1 /proc/uptime)"
 	return 0
 }
 

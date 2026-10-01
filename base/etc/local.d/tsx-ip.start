@@ -1,12 +1,15 @@
 #!/bin/sh
-# Print the DHCP address on the serial console (kernel log). The host TFTP
-# boot loop (tools/bench/tftpboot.sh) looks for this format: "eth0: A.B.C.D/NN".
+# Print the DHCP address in the kernel log and on the serial console, as
+# "tsx: eth0: A.B.C.D/NN <MAC> uptime <s>". The host TFTP boot loop
+# (tools/bench/tftpboot.sh) looks for this format: "eth0: A.B.C.D/NN".
+# serial.sh picks the serial console (TSX_SERIAL_CONSOLE of the board file).
 (
+. "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}" 2>/dev/null
+. /usr/local/lib/tsx/serial.sh
 for i in $(seq 1 60); do
 	a=$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4; exit}')
 	if [ -n "$a" ]; then
-		m="tsx: eth0: $a $(cat /sys/class/net/eth0/address) uptime $(cut -d' ' -f1 /proc/uptime)"
-		echo "$m" > /dev/kmsg; [ -c /dev/ttyAML0 ] && echo "$m" > /dev/ttyAML0
+		tsx_serial_say "tsx: eth0: $a $(cat /sys/class/net/eth0/address) uptime $(cut -d' ' -f1 /proc/uptime)"
 		exit 0
 	fi
 	sleep 1

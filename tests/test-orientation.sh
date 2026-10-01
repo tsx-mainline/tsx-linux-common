@@ -26,6 +26,8 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 N=0 F=0
 ok()  { N=$((N + 1)); echo "  ok: $*"; }
 bad() { F=$((F + 1)); echo "  FAIL: $*"; }
+# TSX_CMDLINE: no mounting of the LCD, whatever the command line of this host says
+export TSX_CMDLINE=/dev/null TSX_KIOSK_CONF=/dev/null
 o() { TSX_ORIENTATION_FILE=$T/none busybox sh "$ORI" "$@"; }
 
 echo "== the table =="
@@ -34,9 +36,31 @@ for row in "landscape 0 normal 1_0_0_0_1_0 0" "portrait 3 270 1_0_0_0_1_0 0" \
 	"landscape-flipped 2 180 1_0_0_0_1_0 1" "portrait-flipped 1 90 1_0_0_0_1_0 1"; do
 	set -- $row
 	got=$(o info "$1" | tr '\n' ' ')
-	want="ORIENTATION=$1 ROTATE=$2 SWAY_TRANSFORM=$3 TOUCH_MATRIX=\"$(echo "$4" | tr _ ' ')\" FBCON_ROTATE=$2 SLIDE_INVERT=$5 "
+	want="ORIENTATION=$1 ROTATE=$2 MOUNT=0 SWAY_TRANSFORM=$3 TOUCH_MATRIX=\"$(echo "$4" | tr _ ' ')\" FBCON_ROTATE=$2 SLIDE_INVERT=$5 "
 	[ "$got" = "$want" ] && ok "$1: rotate $2, sway $3, matrix $4, slide inverted $5" || bad "$1: got '$got'"
 done
+echo "== the mounting of the LCD (fbcon=rotate:N) =="
+# A mounted LCD adds its quarter turns. The touch matrix undoes the mounting.
+for row in "0 landscape 0 normal 1_0_0_0_1_0" "1 landscape 1 90 0_-1_1_1_0_0" "2 landscape 2 180 -1_0_1_0_-1_1" \
+	"3 landscape 3 270 0_1_0_-1_0_1" "1 portrait 0 normal 0_-1_1_1_0_0" "1 landscape-flipped 3 270 0_-1_1_1_0_0"; do
+	set -- $row
+	got=$(TSX_PANEL_ROTATE=$1 o info "$2" | tr '\n' ' ')
+	case "$2" in landscape-flipped|portrait-flipped) inv=1;; *) inv=0;; esac
+	[ "$2" = portrait ] && inv=0
+	want="ORIENTATION=$2 ROTATE=$3 MOUNT=$1 SWAY_TRANSFORM=$4 TOUCH_MATRIX=\"$(echo "$5" | tr _ ' ')\" FBCON_ROTATE=$3 SLIDE_INVERT=$inv "
+	[ "$got" = "$want" ] && ok "mounting $1 + $2: rotate $3, sway $4" || bad "mounting $1 + $2: got '$got'"
+done
+echo "quiet fbcon=rotate:1 root=x" > "$T/cmdline"
+[ "$(TSX_CMDLINE=$T/cmdline o info landscape | sed -n 3p)" = MOUNT=1 ] && ok "fbcon=rotate:1 on the command line is the mounting" || bad "command line mounting"
+echo "quiet myfbcon=rotate:1 root=x" > "$T/cmdline2"
+[ "$(TSX_CMDLINE=$T/cmdline2 o info landscape | sed -n 3p)" = MOUNT=0 ] && ok "only a word of its own counts" || bad "command line word match"
+[ -z "$(o sway)" ] && ok "sway: no lines when nothing turns (the sway default is the same)" || bad "sway landscape: $(o sway)"
+[ "$(TSX_PANEL_ROTATE=1 o sway)" = "output * transform 90
+input type:touch calibration_matrix 0 -1 1 1 0 0" ] && ok "sway: the lines of a mounted LCD, also in landscape" || bad "sway mounted: $(TSX_PANEL_ROTATE=1 o sway)"
+echo 'KIOSK_TOUCH_MATRIX="1 0 0 0 -1 1"' > "$T/kc"
+[ "$(TSX_KIOSK_CONF=$T/kc TSX_PANEL_ROTATE=1 o info landscape | sed -n 5p)" = 'TOUCH_MATRIX="1 0 0 0 -1 1"' ] && ok "KIOSK_TOUCH_MATRIX replaces the matrix" || bad "touch override"
+echo 'KIOSK_TOUCH_MATRIX="1 0 0"' > "$T/kc2"
+[ "$(TSX_KIOSK_CONF=$T/kc2 TSX_PANEL_ROTATE=1 o info landscape | sed -n 5p)" = 'TOUCH_MATRIX="0 -1 1 1 0 0"' ] && ok "a matrix with fewer than six numbers is ignored" || bad "touch override check"
 o info sideways >/dev/null 2>&1 && bad "info sideways accepted" || ok "info: unknown name refused (exit 2)"
 for v in landscape portrait landscape-flipped portrait-flipped; do o check "$v" || bad "check $v"; done
 if o check "" || o check Portrait || o check "portrait x"; then bad "check accepted a bad name"; else ok "check: only the four names"; fi

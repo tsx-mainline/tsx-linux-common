@@ -79,16 +79,18 @@ mkdrm() { d=$1; shift; rm -rf "$d"; mkdir -p "$d"
 	for a in "$@"; do
 		case "$a" in
 		render:*) drv=${a#render:}; mkdir -p "$d/renderD128/device"; ln -s "$T/drivers/$drv" "$d/renderD128/device/driver";;
-		*) c=${a%%:*}; drv=${a#*:}; mkdir -p "$d/$c/device"; ln -s "$T/drivers/$drv" "$d/$c/device/driver"; mkdir -p "$d/$c-CONN-1";;
+		*) c=${a%%:*}; drv=${a#*:}; mkdir -p "$d/$c/device"; ln -s "$T/drivers/$drv" "$d/$c/device/driver"; mkdir -p "$d/$c-CONN-1"
+			# a display driver has a connector inside its card. A GPU with no display (lima) has none.
+			case "$drv" in lima) ;; *) mkdir -p "$d/$c/$c-CONN-1";; esac;;
 		esac
 	done; }
 sel() { # DRMDIR BOARDFILE [KIOSK_GPU]
-	env -i PATH="$PATH" TSX_BOARD_CONF="$2" TSX_DRM_SYS="$1" KIOSK_GPU="${3:-auto}" sh -c '
+	env -i PATH="$PATH" TSX_BOARD_CONF="$2" TSX_DRM_SYS="$1" KIOSK_GPU="${3:-auto}" KIOSK_RENDER_ENV="${KIOSK_RENDER_ENV:-auto}" sh -c '
 		KIOSK_OSK=off KIOSK_URL=u ROLE=session
 		log() { echo "log: $*"; }
 		. "$TSX_BOARD_CONF"
 		. '"$T"'/sel.sh
-		echo "WLR_RENDERER=$WLR_RENDERER WLR_DRM_DEVICES=${WLR_DRM_DEVICES:-} NOMOD=${WLR_DRM_NO_MODIFIERS:-} FMT=${CAGE_RENDER_FORMAT:-}"
+		echo "WLR_RENDERER=$WLR_RENDERER WLR_DRM_DEVICES=${WLR_DRM_DEVICES:-} NOMOD=${WLR_DRM_NO_MODIFIERS:-} FMT=${CAGE_RENDER_FORMAT:-} RENV=${FAKE_GPU_DEBUG:-}"
 		echo "comp_gl=$comp_gl browser_gl=$browser_gl"' 2>&1; }
 BOARD60=$TSX_ROOT/tests/boards/xx60/board.sh
 mkdrm "$T/drm60" card0:lima card2:meson render:lima
@@ -105,7 +107,17 @@ mkdrm "$T/drmxs" card0:simple-framebuffer
 out=$(sel "$T/drmxs" "$BOARDX")
 echo "$out" | grep -q "renderer=pixman" && ok "fake board: only a simple framebuffer: pixman" || bad "fake board, simple framebuffer: $out"
 out=$(sel "$T/drm60" "$BOARDX")
-echo "$out" | grep -q "^log: display=/dev/dri/card0 (lima) render=none" && ok "fake board on xx60 hardware: nothing of the xx60 is assumed" || bad "fake board on xx60 hardware: $out"
+echo "$out" | grep -q "^log: display=/dev/dri/card2 (meson) render=none" && ok "fake board on xx60 hardware: nothing of the xx60 is assumed, the card with no connector is no display" || bad "fake board on xx60 hardware: $out"
+# a board with no TSX_RENDER_DRM takes any render node. TSX_RENDER_ENV names the GPU variables.
+sed -e 's/^TSX_RENDER_DRM=.*/TSX_RENDER_DRM=/' -e '/^TSX_RENDER_DRM=/a TSX_RENDER_ENV="FAKE_GPU_DEBUG=sysmem"\nTSX_BROWSER_GL_FLAGS="--use-angle=gles"' "$BOARDX" > "$T/board-anyrender.sh"
+out=$(sel "$T/drmx" "$T/board-anyrender.sh")
+echo "$out" | grep -q "render=/dev/dri/renderD128" && ok "an empty TSX_RENDER_DRM takes the first render node" || bad "any render node: $out"
+echo "$out" | grep -q "RENV=sysmem" && ok "TSX_RENDER_ENV is exported with a render node" || bad "TSX_RENDER_ENV: $out"
+out=$(KIOSK_RENDER_ENV=0 sel "$T/drmx" "$T/board-anyrender.sh")
+echo "$out" | grep -q "RENV=$" && ok "KIOSK_RENDER_ENV=0 keeps the GPU variables out" || bad "KIOSK_RENDER_ENV=0: $out"
+mkdrm "$T/drmxn" card0:fakedrm
+out=$(sel "$T/drmxn" "$T/board-anyrender.sh")
+echo "$out" | grep -q "RENV=$" && ok "no render node: the GPU variables stay out" || bad "no render node: $out"
 
 echo "== tsx-config apply =="
 CFG=$T/panel.conf; FX=$T/fixture

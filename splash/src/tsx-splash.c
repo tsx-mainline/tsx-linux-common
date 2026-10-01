@@ -39,6 +39,11 @@
  * framebuffer by ROTATE quarter turns clockwise (portrait 3, portrait-flipped
  * 1, landscape-flipped 2, the table of tsx-orientation). "png" writes the
  * upright frame, because the compositor turns its output itself.
+ * An LCD that is mounted turned in its housing (a portrait LCD in a landscape
+ * panel) adds its mounting: the quarter turns clockwise of fbcon=rotate:N on
+ * the kernel command line (the number that turns the text console upright).
+ * The env TSX_PANEL_ROTATE overrides it. TSX_CMDLINE names another command
+ * line file (tests).
  * The background of the artwork is black. The tool redraws the status band on
  * black, so "status" needs no image. "show" and "status" do nothing while the
  * text console owns the screen (fbcon bound: the rescue, BOOT_VERBOSE, an
@@ -95,6 +100,27 @@ static int orient_file_rot(void)
 	fclose(f);
 	b[strcspn(b, "\r\n")] = 0;
 	return (r = orient_rot(b)) < 0 ? 0 : r;
+}
+
+/* The quarter turns clockwise of the mounting of the LCD (see the top). */
+static int mount_rot(void)
+{
+	const char *e = getenv("TSX_PANEL_ROTATE"), *path;
+	char b[4096], *p;
+	FILE *f;
+	size_t n;
+	if (e && *e) return atoi(e) & 3;
+	path = getenv("TSX_CMDLINE") ? getenv("TSX_CMDLINE") : "/proc/cmdline";
+	if (!(f = fopen(path, "r"))) return 0;
+	n = fread(b, 1, sizeof b - 1, f);
+	fclose(f);
+	b[n] = 0;
+	for (p = b; (p = strstr(p, "fbcon=")); p += 6) {
+		/* fbcon=rotate:N as a word of its own */
+		if ((p == b || p[-1] == ' ') && !strncmp(p + 6, "rotate:", 7))
+			return atoi(p + 13) & 3;
+	}
+	return 0;
 }
 
 /* The framebuffer size is known. The frame has the same size, turned by rot. */
@@ -424,6 +450,7 @@ int main(int argc, char **argv)
 	if (optind >= argc) usage();
 	cmd = argv[optind];
 	if (rot < 0) rot = orient_file_rot();
+	rot = (rot + mount_rot()) & 3;
 
 	if (!strcmp(cmd, "console")) {
 		/* FBIOPUT_CON2FBMAP: the first call takes over all consoles. */

@@ -116,6 +116,16 @@ expect "$W/lf.png" 518 174 9aa3ad "landscape-flipped on the LCD: text (half a tu
 expect "$W/lf.png" 623 154 3fa7e0 "landscape-flipped on the LCD: bar filled part"
 "$W/tsx-splash" -d "$W/d" -g 1024x600 -o landscape -s AB -p 50 fbpng "$W/l.png"
 cmp -s "$W/l.png" "$W/a.png" && ok "landscape fbpng == png (no turn)" || bad "landscape fbpng differs from png"
+# the mounting of the LCD (fbcon=rotate:N) adds to the turn of the orientation
+"$W/tsx-splash" -d "$W/d" -g 1024x600 -o portrait-flipped -s AB -p 50 fbpng "$W/m1.png"
+TSX_PANEL_ROTATE=1 "$W/tsx-splash" -d "$W/d" -g 1024x600 -o landscape -s AB -p 50 fbpng "$W/m2.png"
+cmp -s "$W/m1.png" "$W/m2.png" && ok "mounting 1 + landscape == portrait-flipped" || bad "TSX_PANEL_ROTATE did not turn the frame"
+echo "quiet loglevel=3 fbcon=rotate:1 root=/dev/x" > "$W/cmdline"
+TSX_CMDLINE="$W/cmdline" "$W/tsx-splash" -d "$W/d" -g 1024x600 -o landscape -s AB -p 50 fbpng "$W/m3.png"
+cmp -s "$W/m1.png" "$W/m3.png" && ok "fbcon=rotate:1 on the command line turns the frame" || bad "the command line mounting is not read"
+TSX_PANEL_ROTATE=1 "$W/tsx-splash" -d "$W/d" -g 1024x600 -o landscape-flipped -s AB -p 50 fbpng "$W/m4.png"
+"$W/tsx-splash" -d "$W/d" -g 1024x600 -o portrait -s AB -p 50 fbpng "$W/m5.png"
+cmp -s "$W/m4.png" "$W/m5.png" && ok "mounting 1 + landscape-flipped == portrait (the turns add)" || bad "the turns do not add"
 "$W/tsx-splash" -o sideways -g 1024x600 size 2>/dev/null && bad "-o sideways accepted" || ok "-o sideways rejected"
 
 echo "== bad usage =="
