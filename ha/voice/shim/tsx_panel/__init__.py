@@ -1,5 +1,5 @@
 """tsx_panel: the xx60 panel as one Home Assistant device over the ESPHome
-native API (PLAN.md section 18). Shared by two front ends that never run at
+native API. Shared by two front ends that never run at
 the same time (see docs/ha.md "One Home Assistant device"):
 
   tsx-esphome           standalone server, used when VOICE=off
@@ -23,6 +23,7 @@ Modules:
                shared linux_voice_assistant APIServer for both front ends.
   noise.py     the server side of ESPHome's "noise" API encryption.
   naming.py    the one ESPHome device name both front ends present.
+  hw.py        the parts that the panel has (/run/tsx/hw.conf, tsx-hw).
   bluetooth.py the Bluetooth proxy (BT_PROXY and BT_ACTIVE in panel.conf):
                the feature flags in the device info, the advertisements
                from tsx-btscan and the BLE links (GATT) through it.

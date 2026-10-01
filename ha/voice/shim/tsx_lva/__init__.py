@@ -23,7 +23,7 @@ esphome), this also appends the panel's own Home Assistant entities (LED
 bar, key LEDs, screen, backlight, kiosk URL, front-key events, sensors --
 see rootfs/voice/shim/tsx_panel/) into this SAME process's ESPHome device,
 so Home Assistant discovers exactly one device whether or not voice is on
-(PLAN.md section 18; the standalone tsx-esphome serves the same entities
+(the standalone tsx-esphome serves the same entities
 when VOICE=off instead -- see docs/ha.md "One Home Assistant device"). This
 is why the plugin patches VoiceSatelliteProtocol rather than starting a
 second ESPHome server: a second TCP listener on the same port would just
@@ -280,6 +280,15 @@ def _patch_names():
 
 
 def _patch():
+    # No microphone (MIC=no in /run/tsx/hw.conf, government=1): no voice
+    # satellite. /etc/init.d/tsx-voice already refuses to start. This
+    # covers a start by hand, so the device never offers voice features.
+    from tsx_panel import hw  # noqa: WPS433
+
+    if not hw.present("MIC"):
+        print(f"tsx_lva: no microphone on this panel ({hw.reason()}). The voice satellite does not start",
+              file=sys.stderr, flush=True)
+        sys.exit(1)
     # HA_API_KEY + HA_ALLOW_FROM (panel.conf): enforced unconditionally,
     # even when HA_TRANSPORT=mqtt opted the panel entities out -- the
     # satellite's own entities (assist_satellite, its media player, ...)
