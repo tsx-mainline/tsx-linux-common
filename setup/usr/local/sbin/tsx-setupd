@@ -878,6 +878,7 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
 
     <details id="sensors-wrap"><summary>Sensors</summary>
       <div class="card">
+        <div id="presence-wrap">
         <label for="f-pwake">Wake the screen when someone comes near</label>
         <select id="f-pwake" name="PRESENCE_WAKE">
           <option value="">(default: on)</option>
@@ -888,6 +889,7 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
         <input id="f-pdist" name="PRESENCE_DISTANCE_MM" type="number" min="100" max="4000" placeholder="(default of the unit)">
         <label for="f-phold">Away after (seconds without a target, 1 to 3600)</label>
         <input id="f-phold" name="PRESENCE_HOLD_S" type="number" min="1" max="3600" placeholder="(default: 30)">
+        </div>
         <label for="f-autobri">Backlight follows the ambient light</label>
         <select id="f-autobri" name="AUTO_BRIGHTNESS">
           <option value="">(default: on)</option>
@@ -996,6 +998,7 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     }
     if (u.PRESENCE_WAKE) {
       ["f-pwake", "f-pdist", "f-phold"].forEach(function(id){ $(id).disabled = true; });
+      $("presence-wrap").style.display = "none";
     }
     /*SLOT:unavailable*/
   }

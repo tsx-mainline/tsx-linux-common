@@ -115,6 +115,8 @@ class PanelBackend:
         self.idled_state = Path(_env("TSX_IDLED_STATE", "/run/tsx-idled.state"))
         self.buttons_conf = Path(_env("TSX_BUTTONS_CONF", "/etc/tsx/buttons.conf"))
         self.kiosk_conf = Path(_env("TSX_KIOSK_CONF", "/etc/kiosk.conf"))
+        # the board layer of kiosk.conf (it wins over kiosk.conf)
+        self.panel_board_conf = Path(_env("TSX_PANEL_BOARD_CONF", "/etc/tsx/panel-board.conf"))
         self.als_conf = Path(_env("TSX_ALS_CONF", "/etc/tsx/als.conf"))
         self.orientation_file = Path(_env("TSX_ORIENTATION_FILE", "/etc/tsx/orientation"))
         self.backlight_dir = Path(_env("TSX_BACKLIGHT_DIR", "/sys/class/backlight"))
@@ -213,17 +215,19 @@ class PanelBackend:
     # ---- screen / backlight ------------------------------------------------
     def get_backlight_max(self) -> int:
         """The top level of the backlight. tsx-idled reports it ("max M" in
-        brightness.state). Before that, BACKLIGHT_MAX of kiosk.conf, then the
+        brightness.state). Before that, BACKLIGHT_MAX of kiosk.conf and of the
+        board file, then the
         max_brightness of the first backlight device. 31 is the last resort."""
         val = _field(self.run_dir / "brightness.state", "max")
         if not val:
-            try:
-                for line in self.kiosk_conf.read_text(encoding="utf-8", errors="replace").splitlines():
-                    line = line.strip()
-                    if line.startswith("BACKLIGHT_MAX="):
-                        val = line.split("=", 1)[1].split("#", 1)[0].strip()
-            except OSError:
-                pass
+            for conf in (self.kiosk_conf, self.panel_board_conf):
+                try:
+                    for line in conf.read_text(encoding="utf-8", errors="replace").splitlines():
+                        line = line.strip()
+                        if line.startswith("BACKLIGHT_MAX="):
+                            val = line.split("=", 1)[1].split("#", 1)[0].strip()
+                except OSError:
+                    pass
         if not val:
             try:
                 for dev in sorted(self.backlight_dir.iterdir()):

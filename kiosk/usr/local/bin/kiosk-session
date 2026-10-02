@@ -22,7 +22,7 @@ set -u
 # The board values: the DRM driver names and the sound card. Test hook: TSX_BOARD_CONF.
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 . /etc/kiosk.conf
-[ -r /etc/tsx/kiosk-board.conf ] && . /etc/tsx/kiosk-board.conf   # the values of the board
+[ -r /etc/tsx/panel-board.conf ] && . /etc/tsx/panel-board.conf   # the values of the board
 # panel.conf overrides (KIOSK_URL, TZ_NAME). tsx-config apply generates them
 # at boot. See docs/rootfs.md "Panel configuration".
 [ -r /run/tsx/kiosk.conf ] && . /run/tsx/kiosk.conf

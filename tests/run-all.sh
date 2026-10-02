@@ -7,7 +7,7 @@
 # The lists are explicit. A new test goes into one of them.
 set -u
 cd "$(dirname "$0")/.."
-PLAIN="test-autoupdate-logic test-autoupdate-flow test-board-fake test-bt test-clock test-confont
+PLAIN="test-autoupdate-logic test-autoupdate-flow test-board-fake test-bt test-clock test-confont test-panel-board
 test-panelctl test-rescue-login test-rescue-screen test-root-login test-setup test-shim-sensors
 test-tsx-config test-tsx-config-apply test-tsx-data test-tsx-setup-mac
 test-voice-esphome-run mqtt-dry mqtt-stop-timeout"

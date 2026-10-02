@@ -30,7 +30,7 @@ printf '%s\n' 'tsx/tsx-kiosk/ledbar/rgb/set 255,0,0' 'tsx/tsx-kiosk/ledbar/brigh
 	'tsx/tsx-kiosk/keypad/set OFF' 'tsx/tsx-kiosk/screen/set OFF' 'tsx/tsx-kiosk/backlight/set 30' 'tsx/tsx-kiosk/bogus/set x' \
 	'tsx/tsx-kiosk/update/set INSTALL' 'tsx/tsx-kiosk/blank_timeout/set 600.0' 'tsx/tsx-kiosk/blank_timeout/set 99999' |
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_PANEL_BOARD_CONF=$TSX_ROOT/tests/boards/xx60/panel-board.conf TSX_BACKLIGHT_DIR=$T/bl \
 	TSX_MQTT_PREV_KEY="power short 11:59:00" sh "$(P usr/local/sbin/tsx-mqtt)" > "$T/out" 2>&1
 sleep 0.3   # let the backgrounded "tsx-autoupdate now &" (update/set) finish logging
 fail=0

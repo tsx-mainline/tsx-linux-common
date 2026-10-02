@@ -30,7 +30,7 @@ start_pre() {
 	[ -p /run/tsx/overlay.ctl ] || { rm -f /run/tsx/overlay.ctl; mkfifo -m 0660 /run/tsx/overlay.ctl; }
 	chown root:kiosk /run/tsx/overlay.ctl
 	. /etc/kiosk.conf
-	[ -r /etc/tsx/kiosk-board.conf ] && . /etc/tsx/kiosk-board.conf   # the values of the board
+	[ -r /etc/tsx/panel-board.conf ] && . /etc/tsx/panel-board.conf   # the values of the board
 	[ -r /run/tsx/kiosk.conf ] && . /run/tsx/kiosk.conf   # panel.conf overrides (tsx-config apply)
 	[ -n "${KIOSK_CACHE_DIR:-}" ] && checkpath -d -m 0700 -o kiosk:kiosk "$KIOSK_CACHE_DIR"
 	# Boot splash status line. It does nothing once sway has the screen, or

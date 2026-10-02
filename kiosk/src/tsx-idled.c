@@ -66,7 +66,7 @@
  *
  * Config: shell-style KEY=VALUE files, read in the order of the -c options
  * (default /etc/kiosk.conf). A later file wins. A file that is missing after the
- * first one is no error: the board file /etc/tsx/kiosk-board.conf is optional.
+ * first one is no error: the board file /etc/tsx/panel-board.conf is optional.
  * ALS_WATCH=1 makes a change of als-level apply at once (for a light sensor
  * service that writes the file only when the level changes).
  * Env overrides for testing: TSX_INPUT_DIR, TSX_BACKLIGHT_DIR, TSX_STATE_FILE,

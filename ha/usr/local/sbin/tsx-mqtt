@@ -51,6 +51,7 @@ R=${TSX_RUN_DIR:-/run/tsx}
 IDLED=${TSX_IDLED_STATE:-/run/tsx-idled.state}
 BCONF=${TSX_BUTTONS_CONF:-/etc/tsx/buttons.conf}
 KCONF=${TSX_KIOSK_CONF:-/etc/kiosk.conf}
+KBCONF=${TSX_PANEL_BOARD_CONF:-/etc/tsx/panel-board.conf}   # the board layer of kiosk.conf
 ACONF=${TSX_ALS_CONF:-/etc/tsx/als.conf}
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 PCTL=${TSX_PANELCTL_BIN:-tsx-panelctl}   # the hardware interface of the base system
@@ -109,10 +110,10 @@ pub() {  # pub [-r] TOPIC PAYLOAD
 # ---- helpers ---------------------------------------------------------------
 # The top level of the backlight, for the range of the Home Assistant number.
 # tsx-idled reports it in brightness.state ("max M"). Before that, BACKLIGHT_MAX
-# of kiosk.conf, then the max_brightness of the first backlight device.
+# of kiosk.conf and of the board file, then the max_brightness of the first backlight device.
 BL_MAX=$(sed -n 's/^max //p' "$R/brightness.state" 2>/dev/null | head -n 1)
 case $BL_MAX in ''|*[!0-9]*) BL_MAX=;; esac
-[ -z "$BL_MAX" ] && [ -r "$KCONF" ] && BL_MAX=$(sed -n 's/^BACKLIGHT_MAX=\([0-9][0-9]*\).*/\1/p' "$KCONF" | tail -1)
+[ -z "$BL_MAX" ] && BL_MAX=$(cat "$KCONF" "$KBCONF" 2>/dev/null | sed -n 's/^BACKLIGHT_MAX=\([0-9][0-9]*\).*/\1/p' | tail -1)
 if [ -z "$BL_MAX" ]; then
 	for _d in "${TSX_BACKLIGHT_DIR:-/sys/class/backlight}"/*; do
 		BL_MAX=$(cat "$_d/max_brightness" 2>/dev/null); break

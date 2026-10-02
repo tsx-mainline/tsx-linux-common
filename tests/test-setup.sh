@@ -509,6 +509,21 @@ out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"https://ha.example.org/l
 grep -q '^AUTO_BRIGHTNESS="on"$' "$CONF" && grep -q '^ALS_SCALE="3"$' "$CONF" && ok "a submit leaves the light sensor keys as they are" || bad "ALS=no submit changed them: $(grep -E '^(AUTO_BRIGHTNESS|ALS_SCALE)=' "$CONF" | tr '\n' ' ')"
 rm -f "$RUNDIR/hw.conf"
 
+echo "== PRESENCE (hw.conf): the presence fields show with yes and hide with no =="
+out=$(call GET /setup); page=$(body_of "$out")
+case "$page" in *'id="presence-wrap"'*'name="PRESENCE_WAKE"'*'name="PRESENCE_DISTANCE_MM"'*'name="PRESENCE_HOLD_S"'*'$("presence-wrap").style.display = "none"'*) ok "the page has the three presence fields in one block that the page script can hide";; *) bad "no presence block in the page";; esac
+printf 'GOVERNMENT=0\nMIC=yes\nBT=yes\nPRESENCE=yes\n' > "$RUNDIR/hw.conf"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget unavailable.PRESENCE_WAKE <<<"$body")" = "" ] && ok "PRESENCE=yes: the presence fields are available" || bad "PRESENCE=yes: unavailable = $(jget unavailable <<<"$body")"
+printf 'GOVERNMENT=0\nMIC=yes\nBT=yes\nCAMERA=yes\nPRESENCE=no\nREASON=\n' > "$RUNDIR/hw.conf"
+TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set PRESENCE_WAKE on >/dev/null 2>&1; TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set PRESENCE_HOLD_S 45 >/dev/null 2>&1
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget unavailable.PRESENCE_WAKE <<<"$body")" = "no distance sensor on this panel" ] && ok "PRESENCE=no: the presence fields are not available, with the reason" || bad "PRESENCE=no: unavailable = $(jget unavailable <<<"$body")"
+[ "$(jget unavailable.AUTO_BRIGHTNESS <<<"$body")" = "" ] && ok "PRESENCE=no: the light sensor fields are not touched" || bad "PRESENCE=no hides the light sensor: $(jget unavailable <<<"$body")"
+out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","PRESENCE_WAKE":"off","PRESENCE_HOLD_S":"90"}')
+grep -q '^PRESENCE_WAKE="on"$' "$CONF" && grep -q '^PRESENCE_HOLD_S="45"$' "$CONF" && ok "PRESENCE=no: a submit leaves the presence keys as they are" || bad "PRESENCE=no submit changed them: $(grep -E '^PRESENCE_' "$CONF" | tr '\n' ' ')"
+rm -f "$RUNDIR/hw.conf"
+
 # ---- 8. unconfigured trigger, from tsx-kiosk-url's own point of view ----
 echo "== tsx-kiosk-url: unconfigured always shows setup =="
 R=$(TSX_SETUP_CONF="$T/setup.conf" TSX_RUN_DIR="$RUNDIR" busybox sh "$KIOSKURL" "")
