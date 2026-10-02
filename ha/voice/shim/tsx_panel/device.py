@@ -18,6 +18,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
+from aioesphomeapi.api_pb2 import (  # pylint: disable=no-name-in-module
+    HomeassistantActionRequest,
+    HomeassistantServiceMap,
+)
 from linux_voice_assistant.entity import LEDLightEntity
 
 from .backend import PanelBackend
@@ -75,9 +79,16 @@ class PanelDevice:
     touched_recently: BinarySensorEntity
     update: UpdateEntity
     keys: List[KeyEventEntity]
+    lightbar: Optional[LEDLightEntity] = None
+    usb_power: Optional[SwitchEntity] = None
+    presence: Optional[BinarySensorEntity] = None
+    distance: Optional[SensorEntity] = None
+    poe_class: Optional[TextSensorEntity] = None
     emmc_life_a: Optional[SensorEntity] = None
     emmc_life_b: Optional[SensorEntity] = None
     emmc_eol: Optional[TextSensorEntity] = None
+    nfc: bool = False
+    _last_lightbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar: Optional[tuple] = field(default=None, repr=False)
     _last_keypad: Optional[tuple] = field(default=None, repr=False)
     _pulse_since: float = field(default=0.0, repr=False)
@@ -240,7 +251,56 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     )
     entities.append(update)
 
-    # ---- eMMC health: only where the eMMC reports it (tsx-emmc-state writes the file; docs/ha.md "Sensors")
+    # ---- sensors and board I/O: each one only where its device is --------
+    # (the daemons of the board write the state files; docs/ha.md "Sensors")
+    presence = distance = None
+    if backend.presence_present():
+        presence = BinarySensorEntity(
+            server, next_key(), "Presence", "presence",
+            get_state=backend.get_presence, device_class="occupancy", icon="mdi:account-eye",
+        )
+        entities.append(presence)
+        distance = SensorEntity(
+            server, next_key(), "Distance", "distance",
+            get_state=backend.get_distance, unit="mm", device_class="distance", icon="mdi:ruler",
+        )
+        entities.append(distance)
+
+    lightbar = None
+    if backend.lightbar_present():
+        lb_on, lb_bri, lb_r, lb_g, lb_b = backend.get_lightbar()
+        lightbar = LEDLightEntity(
+            server, next_key(), "Light bar", "lightbar",
+            supports_rgb=True, supports_brightness=True, icon="mdi:led-strip-variant",
+        )
+        lightbar.is_on, lightbar.brightness = lb_on, lb_bri / 255.0
+        lightbar.red, lightbar.green, lightbar.blue = lb_r / 255.0, lb_g / 255.0, lb_b / 255.0
+
+        def lightbar_changed(_lightbar=lightbar):
+            backend.set_lightbar(
+                _lightbar.is_on, round(_lightbar.brightness * 255),
+                round(_lightbar.red * 255), round(_lightbar.green * 255), round(_lightbar.blue * 255),
+            )
+
+        lightbar.update_on_changed(lightbar_changed)
+        entities.append(lightbar)
+
+    usb_power = None
+    if backend.usb_power_present():
+        usb_power = SwitchEntity(
+            server, next_key(), "USB power", "usb_power",
+            get_state=backend.get_usb_power, set_state=backend.set_usb_power, icon="mdi:usb-port",
+        )
+        entities.append(usb_power)
+
+    poe_class = None
+    if backend.poe_present():
+        poe_class = TextSensorEntity(
+            server, next_key(), "PoE class", "poe_class",
+            get_state=backend.get_poe_class, icon="mdi:ethernet-cable", entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        )
+        entities.append(poe_class)
+
     emmc_life_a = emmc_life_b = emmc_eol = None
     if backend.emmc_present():
         emmc_life_a = SensorEntity(
@@ -272,7 +332,8 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
         verbose_boot=verbose_boot, kiosk_url=kiosk_url, reload_button=reload_button, reboot_button=reboot_button,
         cpu_temp=cpu_temp, uptime=uptime, ip_address=ip_address, touched_recently=touched_recently,
         update=update, keys=keys, orientation=orientation, _pulse_since=time.time(),
-        emmc_life_a=emmc_life_a, emmc_life_b=emmc_life_b, emmc_eol=emmc_eol,
+        lightbar=lightbar, usb_power=usb_power, presence=presence, distance=distance, poe_class=poe_class,
+        emmc_life_a=emmc_life_a, emmc_life_b=emmc_life_b, emmc_eol=emmc_eol, nfc=backend.nfc_present(),
     )
 
 
@@ -280,10 +341,22 @@ def _light_tuple(light: LEDLightEntity) -> tuple:
     return (light.is_on, round(light.brightness, 3), round(light.red, 3), round(light.green, 3), round(light.blue, 3))
 
 
-def poll(device: PanelDevice, broadcast: Callable[[list], None]) -> None:
+def tag_scanned_message(uid: str):
+    """Home Assistant's tag scan: what ESPHome's homeassistant.tag_scanned
+    action sends, the event "esphome.tag_scanned" with the tag id."""
+    return HomeassistantActionRequest(
+        service="esphome.tag_scanned", is_event=True,
+        data=[HomeassistantServiceMap(key="tag_id", value=uid)],
+    )
+
+
+def poll(device: PanelDevice, broadcast: Callable[[list], None],
+         broadcast_actions: Optional[Callable[[list], None]] = None) -> None:
     """Call about once a second. Pushes to `broadcast(messages)` only the
     entities whose value moved (the same change-only discipline tsx-mqtt
-    uses), plus any new front-key press as an Event.
+    uses), plus any new front-key press as an Event. A scanned NFC tag goes
+    to `broadcast_actions(messages)`, the clients that subscribed to
+    Home Assistant service calls.
     """
     backend = device.backend
     msgs = []
@@ -316,9 +389,19 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None]) -> None:
             device.keypad.is_on, device.keypad.brightness = kp_on, kp_bri / 255.0
             msgs.append(device.keypad._state_response())  # pylint: disable=protected-access
 
+    if device.lightbar is not None:
+        lb_on, lb_bri, lb_r, lb_g, lb_b = backend.get_lightbar()
+        lb_cur = (lb_on, round(lb_bri / 255.0, 3), round(lb_r / 255.0, 3), round(lb_g / 255.0, 3), round(lb_b / 255.0, 3))
+        if lb_cur != device._last_lightbar:
+            device._last_lightbar = lb_cur
+            device.lightbar.is_on, device.lightbar.brightness = lb_on, lb_bri / 255.0
+            device.lightbar.red, device.lightbar.green, device.lightbar.blue = lb_r / 255.0, lb_g / 255.0, lb_b / 255.0
+            msgs.append(device.lightbar._state_response())  # pylint: disable=protected-access
+
     for entity in (device.screen, device.backlight, device.blank_timeout, device.als_auto, device.illuminance,
                    device.volume, device.verbose_boot, device.cpu_temp, device.uptime, device.ip_address,
-                   device.touched_recently, device.update, device.emmc_life_a, device.emmc_life_b, device.emmc_eol):
+                   device.touched_recently, device.update, device.presence, device.distance, device.usb_power,
+                   device.poe_class, device.emmc_life_a, device.emmc_life_b, device.emmc_eol):
         if entity is None:
             continue
         before = getattr(entity, "_state", None)
@@ -340,6 +423,11 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None]) -> None:
                 if resp is not None:
                     msgs.append(resp)
                 break
+
+    if device.nfc:
+        uid = backend.poll_nfc_tag()
+        if uid and broadcast_actions is not None:
+            broadcast_actions([tag_scanned_message(uid)])
 
     if msgs:
         broadcast(msgs)

@@ -271,7 +271,7 @@ cfg3() { env PATH="$W/bin:$PATH" TSX_CONF="$CFG3" TSX_RUN="$FX3/run" TSX_STATE_D
 gov_conf 1
 for k in VOICE BT_PROXY BT_ACTIVE; do
 	out=$(cfg3 set "$k" on 2>&1); rc=$?
-	[ $rc = 0 ] && [ "$(cfg3 get "$k")" = on ] && case "$out" in *"WARNING: $k=on is saved, but this panel has no "*"(government=1). apply treats it as off"*) true;; *) false;; esac \
+	[ $rc = 0 ] && [ "$(cfg3 get "$k")" = on ] && case "$out" in *"WARNING: $k=on is saved, but this panel has no "*"(government=1). apply leaves it out"*) true;; *) false;; esac \
 		&& ok "set $k on: saved (a panel.conf from another panel loads), with a warning" || bad "set $k on: exit $rc, '$out'"
 done
 out=$(cfg3 set VOICE off 2>&1); [ -z "$out" ] && ok "set VOICE off: no warning" || bad "set VOICE off warns: $out"
@@ -286,7 +286,7 @@ grep -qx 'tsx-audio disable voice' "$W/audio.log" 2>/dev/null && ! grep -q 'enab
 	&& ok "apply: VOICE=on is treated as off (tsx-audio disable voice)" || bad "apply voice: $(cat "$W/audio.log" 2>/dev/null)"
 case "$out" in *"WARNING: VOICE=on is set, but this panel has no microphone"*"WARNING: BT_PROXY=on is set"*) ok "apply: the log says why";; *) bad "apply log: $out";; esac
 grep -q '|off|' "$FX3/run/tsx/.esphome-sig" && ok "apply: tsx-esphome sees VOICE off (it serves the entities)" || bad ".esphome-sig: $(cat "$FX3/run/tsx/.esphome-sig")"
-# a panel with ALS=no in hw.conf: AUTO_BRIGHTNESS=on is saved with a warning, apply treats it as off
+# a panel with ALS=no in hw.conf: AUTO_BRIGHTNESS=on is saved with a warning, apply leaves it out
 printf 'ALS=no\n' >> "$FX3/run/tsx/hw.conf"
 out=$(cfg3 set AUTO_BRIGHTNESS on 2>&1); rc=$?
 [ $rc = 0 ] && case "$out" in *"WARNING: AUTO_BRIGHTNESS=on is saved, but this panel has no ambient light sensor"*) true;; *) false;; esac \

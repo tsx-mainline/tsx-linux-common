@@ -59,10 +59,25 @@ fetch() {  # url file sha256
 }
 fetch https://github.com/OHF-Voice/linux-voice-assistant/archive/refs/tags/v$LVA.tar.gz \
 	linux-voice-assistant-$LVA.tar.gz 077696e60b57ae3a98aca3d49d1b9f9971ffd36d62f5c23b8603ccc4c9fcdbd8
-fetch $PYPI/0b/16/9d55765807a7e9c318e4636233c0d8b84768df366b5469a9727349109d80/aioesphomeapi-45.3.1-cp314-cp314-musllinux_1_2_armv7l.whl \
-	aioesphomeapi-45.3.1-cp314-cp314-musllinux_1_2_armv7l.whl 95d70a740ab15be4fed5c850d8161c9ee37f641184b30b8a39d64ddefdae81d8
-fetch $PYPI/52/7a/63c6607f5b12c2367d8bc37025bde067ec8eecad9b97c8d8c39eadd1411b/netifaces2-0.0.22-cp37-abi3-musllinux_1_1_armv7l.whl \
-	netifaces2-0.0.22-cp37-abi3-musllinux_1_1_armv7l.whl 03151c24171e6da9079e5abcd303f3e0d8ac275a8fe4e178f82fdf1590f989e4
+# The wheels follow the architecture of the target: ARCH=armv7l (default) or aarch64.
+ARCH=${ARCH:-armv7l}
+case "$ARCH" in
+armv7l)
+	AIO_PATH=0b/16/9d55765807a7e9c318e4636233c0d8b84768df366b5469a9727349109d80
+	AIO_SHA=95d70a740ab15be4fed5c850d8161c9ee37f641184b30b8a39d64ddefdae81d8
+	NET_PATH=52/7a/63c6607f5b12c2367d8bc37025bde067ec8eecad9b97c8d8c39eadd1411b
+	NET_SHA=03151c24171e6da9079e5abcd303f3e0d8ac275a8fe4e178f82fdf1590f989e4;;
+aarch64)
+	AIO_PATH=e1/b2/e0205b2e1d9a3235edb845d7b52e0fb6c882166ab4a9370c61f5948747bb
+	AIO_SHA=fcc7eeee35ccf7cbb8593c2f7059d0173058d307297fdc1a741508c370579189
+	NET_PATH=77/88/3e250f667ae24f8e30a651a938a27d8281e6e3c818b70e1151ba6a25654d
+	NET_SHA=e24c4089c743ad61c59e988d2c2de9ba2c91f1dccaecd57cf1d03c4414946a8f;;
+*) echo "install-lva.sh: unknown ARCH $ARCH (armv7l or aarch64)"; exit 1;;
+esac
+AIO_WHL=aioesphomeapi-45.3.1-cp314-cp314-musllinux_1_2_$ARCH.whl
+NET_WHL=netifaces2-0.0.22-cp37-abi3-musllinux_1_1_$ARCH.whl
+fetch $PYPI/$AIO_PATH/$AIO_WHL $AIO_WHL $AIO_SHA
+fetch $PYPI/$NET_PATH/$NET_WHL $NET_WHL $NET_SHA
 fetch $PYPI/18/85/4cdbc925381422397bd2b3280680e130091173f2c8dfafb9216eaaa91b00/getmac-0.9.5-py2.py3-none-any.whl \
 	getmac-0.9.5-py2.py3-none-any.whl 22b8a3e15bc0c6bfa94651a3f7f6cd91b59432e1d8199411d4fe12804423e0aa
 fetch $PYPI/79/4d/9cc401e7b07e80532ebc8c8e993f42541534da9e9249c59ee0139dcb0352/websockets-12.0-py3-none-any.whl \
@@ -94,8 +109,8 @@ O=$DEST/opt/lva; L=$O/lib; A=$O/app
 rm -rf "$O" && mkdir -p "$L" "$A"
 pip install -q --no-deps --no-compile --no-build-isolation --disable-pip-version-check \
 	--root-user-action=ignore --target "$L" \
-	"$W/aioesphomeapi-45.3.1-cp314-cp314-musllinux_1_2_armv7l.whl" \
-	"$W/netifaces2-0.0.22-cp37-abi3-musllinux_1_1_armv7l.whl" \
+	"$W/$AIO_WHL" \
+	"$W/$NET_WHL" \
 	"$W/getmac-0.9.5-py2.py3-none-any.whl" "$W/websockets-12.0-py3-none-any.whl" \
 	"$W/noiseprotocol-0.3.1-py3-none-any.whl" "$W/chacha20poly1305_reuseable-0.13.2-py3-none-any.whl" \
 	"$W/async_interrupt-1.2.2-py3-none-any.whl" \

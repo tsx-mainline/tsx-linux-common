@@ -404,13 +404,16 @@ PAIRING = Pairing()
 # base system. A plugin adds its own keys (see "plugins" below).
 BASE_SIMPLE_KEYS = ["PANEL_NAME", "TZ_NAME", "SSH_AUTHORIZED_KEY",
                     "KERNEL_FLAVOR", "BLANK_TIMEOUT", "ORIENTATION",
+                    "PRESENCE_WAKE", "PRESENCE_DISTANCE_MM", "PRESENCE_HOLD_S",
                     "AUTO_BRIGHTNESS", "ALS_SCALE"]
 # Empty = cleared. The page pre-fills these keys, so an empty one was cleared
 # on purpose, and the script removes the key.
-BASE_CLEARABLE_BLANK = {"AUTO_BRIGHTNESS", "ALS_SCALE"}
+BASE_CLEARABLE_BLANK = {"PRESENCE_WAKE", "PRESENCE_DISTANCE_MM",
+                        "PRESENCE_HOLD_S", "AUTO_BRIGHTNESS", "ALS_SCALE"}
 # the settings of the base that a panel can lack: name -> the keys that a save
 # leaves as they are
-BASE_UNAVAILABLE_DROPS = {"AUTO_BRIGHTNESS": ("AUTO_BRIGHTNESS", "ALS_SCALE")}
+BASE_UNAVAILABLE_DROPS = {"AUTO_BRIGHTNESS": ("AUTO_BRIGHTNESS", "ALS_SCALE"),
+                          "PRESENCE_WAKE": ("PRESENCE_WAKE", "PRESENCE_DISTANCE_MM", "PRESENCE_HOLD_S")}
 BASE_STATE_KEYS = ["KIOSK_URL"] + BASE_SIMPLE_KEYS
 
 # ---- plugins -------------------------------------------------------------------
@@ -485,8 +488,11 @@ def hw_unavailable():
     (hw.conf of tsx-hw. A missing file = a panel with all parts)."""
     hw = load_conf(HW_CONF_PATH)
     out = {}
-    if hw.get("ALS") == "no":
+    # ALS=no or LIGHT=no: a board names its light sensor part either way
+    if hw.get("ALS") == "no" or hw.get("LIGHT") == "no":
         out["AUTO_BRIGHTNESS"] = "no ambient light sensor on this panel"
+    if hw.get("PRESENCE") == "no":
+        out["PRESENCE_WAKE"] = "no distance sensor on this panel"
     for p in PLUGINS:
         if hasattr(p, "unavailable"):
             out.update(p.unavailable(hw))
@@ -497,9 +503,11 @@ def handle_submit(fields):
     errors = {}
     # A setting that this panel cannot use is not sent by the page. Keep what
     # panel.conf has (tsx-config apply treats VOICE=on as off).
+    gone = set()
     for name in hw_unavailable():
-        drop = UNAVAILABLE_DROPS.get(name, ())
-        fields = {k: v for k, v in fields.items() if k not in drop}
+        gone.add(name)
+        gone.update(UNAVAILABLE_DROPS.get(name, ()))
+    fields = {k: v for k, v in fields.items() if k not in gone}
     to_set = {}
     to_unset = []
     post_unset = []
@@ -870,6 +878,16 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
 
     <details id="sensors-wrap"><summary>Sensors</summary>
       <div class="card">
+        <label for="f-pwake">Wake the screen when someone comes near</label>
+        <select id="f-pwake" name="PRESENCE_WAKE">
+          <option value="">(default: on)</option>
+          <option value="on">On</option>
+          <option value="off">Off</option>
+        </select>
+        <label for="f-pdist">Near distance (millimeters, 100 to 4000)</label>
+        <input id="f-pdist" name="PRESENCE_DISTANCE_MM" type="number" min="100" max="4000" placeholder="(default of the unit)">
+        <label for="f-phold">Away after (seconds without a target, 1 to 3600)</label>
+        <input id="f-phold" name="PRESENCE_HOLD_S" type="number" min="1" max="3600" placeholder="(default: 30)">
         <label for="f-autobri">Backlight follows the ambient light</label>
         <select id="f-autobri" name="AUTO_BRIGHTNESS">
           <option value="">(default: on)</option>
@@ -961,6 +979,9 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     if (fields.KIOSK_URL) $("f-url").value = fields.KIOSK_URL;
     if (fields.PANEL_NAME) $("f-name").value = fields.PANEL_NAME;
     if (fields.ORIENTATION) $("f-orient").value = fields.ORIENTATION;
+    if (fields.PRESENCE_WAKE) $("f-pwake").value = fields.PRESENCE_WAKE;
+    if (fields.PRESENCE_DISTANCE_MM) $("f-pdist").value = fields.PRESENCE_DISTANCE_MM;
+    if (fields.PRESENCE_HOLD_S) $("f-phold").value = fields.PRESENCE_HOLD_S;
     if (fields.AUTO_BRIGHTNESS) $("f-autobri").value = fields.AUTO_BRIGHTNESS;
     if (fields.ALS_SCALE) $("f-alsscale").value = fields.ALS_SCALE;
     if (fields.SSH_AUTHORIZED_KEY__set) $("f-sshkey").placeholder = "(a key is already set; leave blank to keep it)";
@@ -972,6 +993,9 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     if (u.AUTO_BRIGHTNESS) {
       $("f-autobri").disabled = true; $("f-alsscale").disabled = true;
       $("als-hint").textContent = "Not available on this panel: " + u.AUTO_BRIGHTNESS + ".";
+    }
+    if (u.PRESENCE_WAKE) {
+      ["f-pwake", "f-pdist", "f-phold"].forEach(function(id){ $(id).disabled = true; });
     }
     /*SLOT:unavailable*/
   }
@@ -1024,6 +1048,9 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
       PANEL_NAME: $("f-name").value.trim(),
       TZ_NAME: $("f-tz").value,
       ORIENTATION: $("f-orient").value,
+      PRESENCE_WAKE: $("f-pwake").disabled ? undefined : $("f-pwake").value,
+      PRESENCE_DISTANCE_MM: $("f-pdist").disabled ? undefined : $("f-pdist").value.trim(),
+      PRESENCE_HOLD_S: $("f-phold").disabled ? undefined : $("f-phold").value.trim(),
       AUTO_BRIGHTNESS: $("f-autobri").disabled ? undefined : $("f-autobri").value,
       ALS_SCALE: $("f-alsscale").disabled ? undefined : $("f-alsscale").value.trim(),
       ROOT_PASSWORD: $("f-rootpw").value,

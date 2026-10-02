@@ -54,6 +54,7 @@ KCONF=${TSX_KIOSK_CONF:-/etc/kiosk.conf}
 ACONF=${TSX_ALS_CONF:-/etc/tsx/als.conf}
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 PCTL=${TSX_PANELCTL_BIN:-tsx-panelctl}   # the hardware interface of the base system
+STATE_DIR=${TSX_STATE_DIR:-/var/lib/tsx}
 DRY=${TSX_MQTT_DRY:-0}
 PUBTO=${TSX_MQTT_PUB_TIMEOUT:-5}
 LASTPUBOK=1   # 0 after a publish fails or times out. The stop trap then skips the LWT offline publish
@@ -106,9 +107,19 @@ pub() {  # pub [-r] TOPIC PAYLOAD
 }
 
 # ---- helpers ---------------------------------------------------------------
-BL_MAX=23
-[ -r "$KCONF" ] && BL_MAX=$(sed -n 's/^BACKLIGHT_MAX=\([0-9][0-9]*\).*/\1/p' "$KCONF" | tail -1)
-[ -n "$BL_MAX" ] || BL_MAX=23
+# The top level of the backlight, for the range of the Home Assistant number.
+# tsx-idled reports it in brightness.state ("max M"). Before that, BACKLIGHT_MAX
+# of kiosk.conf, then the max_brightness of the first backlight device.
+BL_MAX=$(sed -n 's/^max //p' "$R/brightness.state" 2>/dev/null | head -n 1)
+case $BL_MAX in ''|*[!0-9]*) BL_MAX=;; esac
+[ -z "$BL_MAX" ] && [ -r "$KCONF" ] && BL_MAX=$(sed -n 's/^BACKLIGHT_MAX=\([0-9][0-9]*\).*/\1/p' "$KCONF" | tail -1)
+if [ -z "$BL_MAX" ]; then
+	for _d in "${TSX_BACKLIGHT_DIR:-/sys/class/backlight}"/*; do
+		BL_MAX=$(cat "$_d/max_brightness" 2>/dev/null); break
+	done
+	case $BL_MAX in ''|*[!0-9]*) BL_MAX=;; esac
+fi
+[ -n "$BL_MAX" ] || BL_MAX=31
 # hardware only some panels have: an entity is announced only when it is
 # there, and its discovery topic is cleared otherwise (so Home Assistant
 # drops an entity an older build announced)
@@ -116,7 +127,12 @@ has_ledbar() { "$PCTL" has ledbar >/dev/null 2>&1; }
 has_sound() { "$PCTL" has sound >/dev/null 2>&1; }
 has_keypad() { [ -r "$BCONF" ]; }
 has_als() { [ -r "$ACONF" ] || [ -r "$R/als.state" ]; }
+has_presence() { [ -r "$R/presence.state" ]; }
+has_lightbar() { "$PCTL" has lightbar >/dev/null 2>&1; }
+has_usbpower() { [ -r "$R/usb-power.state" ]; }
+has_poe() { [ -r "$R/poe.state" ]; }
 has_emmc() { [ -r "$R/emmc.state" ]; }
+has_nfc() { "$PCTL" has nfc >/dev/null 2>&1; }
 
 keys() {  # names of the "button NAME KEY" lines of buttons.conf
 	[ -r "$BCONF" ] && sed -n 's/^[[:space:]]*button[[:space:]]\{1,\}\([A-Za-z0-9_-]\{1,\}\)[[:space:]].*/\1/p' "$BCONF"
@@ -127,7 +143,10 @@ field() {  # field FILE KEY -> rest of the first line "KEY ..."
 }
 
 # ---- discovery ---------------------------------------------------------------
-DEV="\"dev\":{\"ids\":[\"tsx_$NODE\"],\"name\":\"$DNAME\",\"mf\":\"Crestron\",\"mdl\":\"$TSX_HA_MODEL (mainline Linux)\"}"
+# The model name of Home Assistant: tsx_board_ha_model of the board file if
+# it has one, else TSX_HA_MODEL.
+MODEL=; type tsx_board_ha_model >/dev/null 2>&1 && MODEL=$(tsx_board_ha_model)
+DEV="\"dev\":{\"ids\":[\"tsx_$NODE\"],\"name\":\"$DNAME\",\"mf\":\"Crestron\",\"mdl\":\"${MODEL:-$TSX_HA_MODEL} (mainline Linux)\"}"
 AV="\"avty_t\":\"$BASE/availability\""
 
 discovery() {
@@ -143,6 +162,22 @@ discovery() {
 		pub -r "$DP/sensor/$NODE/illuminance/config" "{\"name\":\"Illuminance\",\"uniq_id\":\"${NODE}_illuminance\",\"stat_t\":\"$BASE/als/lux\",\"dev_cla\":\"illuminance\",\"unit_of_meas\":\"lx\",\"stat_cla\":\"measurement\",$AV,$DEV}"
 		pub -r "$DP/switch/$NODE/als_auto/config" "{\"name\":\"Auto brightness\",\"uniq_id\":\"${NODE}_als_auto\",\"cmd_t\":\"$BASE/als_auto/set\",\"stat_t\":\"$BASE/als_auto/state\",\"icon\":\"mdi:brightness-auto\",$AV,$DEV}"
 	fi
+	if has_sound; then
+		pub -r "$DP/number/$NODE/volume/config" "{\"name\":\"Volume\",\"uniq_id\":\"${NODE}_volume\",\"cmd_t\":\"$BASE/volume/set\",\"stat_t\":\"$BASE/volume/state\",\"min\":0,\"max\":100,\"step\":1,\"unit_of_meas\":\"%\",\"mode\":\"slider\",\"icon\":\"mdi:volume-high\",$AV,$DEV}"
+	fi
+	if has_presence; then
+		pub -r "$DP/binary_sensor/$NODE/presence/config" "{\"name\":\"Presence\",\"uniq_id\":\"${NODE}_presence\",\"stat_t\":\"$BASE/presence/state\",\"dev_cla\":\"occupancy\",\"icon\":\"mdi:account-eye\",$AV,$DEV}"
+		pub -r "$DP/sensor/$NODE/distance/config" "{\"name\":\"Distance\",\"uniq_id\":\"${NODE}_distance\",\"stat_t\":\"$BASE/presence/distance\",\"val_tpl\":\"{{ none if value == 'none' else value | int }}\",\"dev_cla\":\"distance\",\"unit_of_meas\":\"mm\",\"stat_cla\":\"measurement\",\"icon\":\"mdi:ruler\",$AV,$DEV}"
+	fi
+	if has_lightbar; then
+		pub -r "$DP/light/$NODE/lightbar/config" "{\"name\":\"Light bar\",\"uniq_id\":\"${NODE}_lightbar\",\"cmd_t\":\"$BASE/lightbar/set\",\"stat_t\":\"$BASE/lightbar/state\",\"bri_cmd_t\":\"$BASE/lightbar/brightness/set\",\"bri_stat_t\":\"$BASE/lightbar/brightness\",\"bri_scl\":255,\"rgb_cmd_t\":\"$BASE/lightbar/rgb/set\",\"rgb_stat_t\":\"$BASE/lightbar/rgb\",\"on_cmd_type\":\"last\",\"icon\":\"mdi:led-strip-variant\",$AV,$DEV}"
+	fi
+	if has_usbpower; then
+		pub -r "$DP/switch/$NODE/usb_power/config" "{\"name\":\"USB power\",\"uniq_id\":\"${NODE}_usb_power\",\"cmd_t\":\"$BASE/usb_power/set\",\"stat_t\":\"$BASE/usb_power/state\",\"icon\":\"mdi:usb-port\",$AV,$DEV}"
+	fi
+	if has_poe; then
+		pub -r "$DP/sensor/$NODE/poe_class/config" "{\"name\":\"PoE class\",\"uniq_id\":\"${NODE}_poe_class\",\"stat_t\":\"$BASE/poe/class\",\"ent_cat\":\"diagnostic\",\"icon\":\"mdi:ethernet-cable\",$AV,$DEV}"
+	fi
 	if has_emmc; then
 		for w in a b; do
 			W=$(printf '%s' $w | tr a-z A-Z)
@@ -150,8 +185,9 @@ discovery() {
 		done
 		pub -r "$DP/sensor/$NODE/emmc_eol/config" "{\"name\":\"eMMC end of life\",\"uniq_id\":\"${NODE}_emmc_eol\",\"stat_t\":\"$BASE/emmc/eol\",\"ent_cat\":\"diagnostic\",\"icon\":\"mdi:harddisk-remove\",$AV,$DEV}"
 	fi
-	if has_sound; then
-		pub -r "$DP/number/$NODE/volume/config" "{\"name\":\"Volume\",\"uniq_id\":\"${NODE}_volume\",\"cmd_t\":\"$BASE/volume/set\",\"stat_t\":\"$BASE/volume/state\",\"min\":0,\"max\":100,\"step\":1,\"unit_of_meas\":\"%\",\"mode\":\"slider\",\"icon\":\"mdi:volume-high\",$AV,$DEV}"
+	if has_nfc; then
+		pub -r "$DP/tag/$NODE/nfc/config" "{\"topic\":\"$BASE/nfc/tag_id\",\"value_template\":\"{{ value }}\",$DEV}"
+		pub -r "$DP/event/$NODE/nfc_tag/config" "{\"name\":\"NFC tag\",\"uniq_id\":\"${NODE}_nfc_tag\",\"stat_t\":\"$BASE/nfc/tag\",\"evt_typ\":[\"scanned\"],\"icon\":\"mdi:nfc-variant\",$AV,$DEV}"
 	fi
 	pub -r "$DP/update/$NODE/update/config" "{\"name\":\"Update\",\"uniq_id\":\"${NODE}_update\",\"cmd_t\":\"$BASE/update/set\",\"stat_t\":\"$BASE/update/state\",\"icon\":\"mdi:package-up\",$AV,$DEV}"
 	for k in $(keys); do
@@ -199,8 +235,23 @@ als_state() {  # "LUX ON|OFF" from tsx-als (lux with a reporting deadband)
 	[ -n "$l" ] && echo "$l $( [ "$a" = on ] && echo ON || echo OFF)"
 }
 
-volume_state() {  # "NN" percent of the Master softvol
-	"$PCTL" get volume 2>/dev/null || true
+presence_state() {  # "ON|OFF DISTANCE|none"
+	p=$(field "$R/presence.state" present); d=$(field "$R/presence.state" distance)
+	[ -n "$p" ] && echo "$( [ "$p" = on ] && echo ON || echo OFF) ${d:-none}"
+}
+
+lightbar_state() {  # "ON|OFF BRIGHTNESS R,G,B" from tsx-lightbar's kept state
+	set -- $(cat "$STATE_DIR/lightbar" 2>/dev/null)
+	if [ $# -ge 5 ]; then
+		if [ "$1" = on ] && [ "$5" -gt 0 ] 2>/dev/null; then echo "ON $5 $2,$3,$4"; else echo "OFF $5 $2,$3,$4"; fi
+	else echo "OFF 255 255,255,255"; fi
+}
+
+usb_state() { p=$(field "$R/usb-power.state" power); [ -n "$p" ] && { [ "$p" = on ] && echo ON || echo OFF; }; }
+
+poe_state() {
+	c=$(field "$R/poe.state" class)
+	case $c in plus) echo "PoE+ (802.3at)";; standard) echo "PoE (802.3af)";; *) [ -n "$c" ] && echo unknown;; esac
 }
 
 emmc_life() {  # emmc_life a|b -> percent (upper bound of the JEDEC band), or none
@@ -212,13 +263,18 @@ emmc_state() {  # "LIFE_A LIFE_B EOL"
 	case $e in 0x01) e=normal;; 0x02) e=warning;; 0x03) e=urgent;; *) e=unknown;; esac
 	echo "$(emmc_life a) $(emmc_life b) $e"
 }
+
+volume_state() {  # "NN" percent of the speaker volume
+	"$PCTL" get volume 2>/dev/null || true
+}
+
 update_state() {  # raw HA-ready JSON from tsx-autoupdate (same $R), or a safe default
 	if [ -r "$R/update-ha-state.json" ]; then cat "$R/update-ha-state.json"
 	else echo '{"installed_version":"unknown","latest_version":"unknown","title":"TSX packages","release_summary":"tsx-autoupdate has not run yet","in_progress":false}'
 	fi
 }
 
-P_LED= P_KP= P_SCR= P_BL= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_EMMC=
+P_LED= P_KP= P_SCR= P_BL= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_LB= P_USB= P_POE= P_EMMC=
 publish_states() {  # $1 = force
 	f=${1:-}
 	v=$(ledbar_state); if [ "$v" != "$P_LED" ] || [ -n "${1:-}" ]; then
@@ -237,12 +293,28 @@ publish_states() {  # $1 = force
 		set -- $v; pub -r "$BASE/als/lux" "$1"; pub -r "$BASE/als_auto/state" "$2"; P_ALS=$v; fi
 	v=$(volume_state); if [ -n "$v" ] && { [ "$v" != "$P_VOL" ] || [ -n "${1:-}" ]; }; then
 		pub -r "$BASE/volume/state" "$v"; P_VOL=$v; fi
-	v=$(update_state); if [ "$v" != "$P_UPD" ] || [ -n "${1:-}" ]; then
-		pub -r "$BASE/update/state" "$v"; P_UPD=$v; fi
+	if has_presence; then
+		v=$(presence_state); if [ -n "$v" ] && { [ "$v" != "$P_PRES" ] || [ -n "$f" ]; }; then
+			set -- $v; pub -r "$BASE/presence/state" "$1"; pub -r "$BASE/presence/distance" "$2"; P_PRES=$v; fi
+	fi
+	if has_lightbar; then
+		v=$(lightbar_state); if [ "$v" != "$P_LB" ] || [ -n "$f" ]; then
+			set -- $v; pub -r "$BASE/lightbar/state" "$1"; pub -r "$BASE/lightbar/brightness" "$2"; pub -r "$BASE/lightbar/rgb" "$3"; P_LB=$v; fi
+	fi
+	if has_usbpower; then
+		v=$(usb_state); if [ -n "$v" ] && { [ "$v" != "$P_USB" ] || [ -n "$f" ]; }; then
+			pub -r "$BASE/usb_power/state" "$v"; P_USB=$v; fi
+	fi
+	if has_poe; then
+		v=$(poe_state); if [ -n "$v" ] && { [ "$v" != "$P_POE" ] || [ -n "$f" ]; }; then
+			pub -r "$BASE/poe/class" "$v"; P_POE=$v; fi
+	fi
 	if has_emmc; then
 		v=$(emmc_state); if [ "$v" != "$P_EMMC" ] || [ -n "$f" ]; then
 			set -- $v; pub -r "$BASE/emmc/life_a" "$1"; pub -r "$BASE/emmc/life_b" "$2"; pub -r "$BASE/emmc/eol" "$3"; P_EMMC=$v; fi
 	fi
+	v=$(update_state); if [ "$v" != "$P_UPD" ] || [ -n "${1:-}" ]; then
+		pub -r "$BASE/update/state" "$v"; P_UPD=$v; fi
 }
 
 # ---- commands --------------------------------------------------------------
@@ -276,6 +348,22 @@ handle() {  # topic payload
 		cur=$(ledbar_state); set -- $cur
 		bri=$(led_bri); [ "$1" = ON ] && bri=$2; [ "$bri" -gt 0 ] || bri=255
 		ledbar_set "$r" "$g" "$b" "$bri"; : > "$M/pending";;
+	lightbar/set)
+		case $p in ON) "$PCTL" send lightbar on;; OFF) "$PCTL" send lightbar off;; esac;;
+	lightbar/brightness/set)
+		case $p in *[!0-9]*|'') return;; esac
+		[ "${#p}" -le 3 ] && [ "$p" -le 255 ] || return
+		set -- $(lightbar_state); split_rgb "$3"
+		"$PCTL" send lightbar set "$r" "$g" "$b" "$p";;
+	lightbar/rgb/set)
+		case $p in *,*,*) ;; *) return;; esac
+		split_rgb "$p"
+		case "$r$g$b" in *[!0-9]*|'') return;; esac
+		[ "${#r}" -le 3 ] && [ "${#g}" -le 3 ] && [ "${#b}" -le 3 ] && [ "$r" -le 255 ] && [ "$g" -le 255 ] && [ "$b" -le 255 ] || return
+		set -- $(lightbar_state); bri=$2; [ "$bri" -gt 0 ] || bri=255
+		"$PCTL" send lightbar set "$r" "$g" "$b" "$bri";;
+	usb_power/set)
+		case $p in ON) "$PCTL" send usbpower on;; OFF) "$PCTL" send usbpower off;; esac;;
 	keypad/set)
 		case $p in OFF) "$PCTL" send keypad led off;; ON) "$PCTL" send keypad led auto;; esac;;
 	keypad/brightness/set)
@@ -294,7 +382,7 @@ handle() {  # topic payload
 	backlight/set)
 		p=${p%%.*}; case $p in *[!0-9]*|'') return;; esac
 		[ "${#p}" -le 5 ] || return
-		[ "$p" -ge 1 ] || p=1; [ "$p" -le "$BL_MAX" ] || p=$BL_MAX; [ "$p" -le 31 ] || p=31
+		[ "$p" -ge 1 ] || p=1; [ "$p" -le "$BL_MAX" ] || p=$BL_MAX
 		"$PCTL" send backlight "$p";;      # the base system sets the tsx-idled override and the device
 	blank_timeout/set)
 		p=${p%%.*}; case $p in *[!0-9]*|'') return;; esac
@@ -320,11 +408,29 @@ check_keys() {
 	case $2 in short|long) pub "$BASE/trigger/$1/$2" "$2";; esac
 }
 
+# ---- NFC tags ----------------------------------------------------------------
+# tsx-nfcd keeps "count N" and "last UID" in nfc.state; a new count is one scan.
+# The first read after start is not a scan. Two topics: the tag id for Home
+# Assistant's tag scanner, and an event entity with the same id.
+P_TAGC=
+check_tag() {
+	has_nfc || return 0
+	c=$(field "$R/nfc.state" count)
+	[ -n "$c" ] && [ "$c" != "$P_TAGC" ] || return 0
+	old=$P_TAGC; P_TAGC=$c
+	[ -n "$old" ] || return 0
+	uid=$(field "$R/nfc.state" last)
+	case $uid in ''|-|*[!0-9A-Fa-f:]*) return 0;; esac
+	pub "$BASE/nfc/tag_id" "$uid"
+	pub "$BASE/nfc/tag" "{\"event_type\":\"scanned\",\"tag_id\":\"$uid\"}"
+}
+
 # ---- main ------------------------------------------------------------------
 if [ "$DRY" = 1 ]; then
 	discovery; publish_states force
 	while read -r topic payload; do handle "$topic" "$payload"; done
 	P_KEY=${TSX_MQTT_PREV_KEY:-}; check_keys
+	P_TAGC=${TSX_MQTT_PREV_TAG:-}; check_tag
 	exit 0
 fi
 
@@ -363,11 +469,13 @@ discovery
 pub -r "$BASE/availability" online
 publish_states force
 P_KEY=$(field "$R/buttons.state" last)
+P_TAGC=$(field "$R/nfc.state" count)
 log "connected to $BROKER:$PORT as $BASE ($(keys | wc -l) keys)"
 
 i=0
 while kill -0 $SUB 2>/dev/null; do
 	check_keys
+	check_tag
 	i=$((i + 1))
 	if [ -e "$M/republish" ]; then rm -f "$M/republish"; sleep 1; discovery; pub -r "$BASE/availability" online; publish_states force
 	elif [ -e "$M/poke" ] || [ $i -ge 8 ]; then rm -f "$M/poke"; i=0; publish_states

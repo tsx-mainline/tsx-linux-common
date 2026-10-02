@@ -84,12 +84,21 @@
 # BT_MAC: the Bluetooth address that tsx-bt loads into the chip. Empty = the
 #   eth0 MAC, the same value as the vendor firmware.
 # AUTO_BRIGHTNESS (on|off, default on): the backlight follows the ambient
-#   light sensor (tsx-als). Apply writes it to /run/tsx/als.panel, which
-#   tsx-als reads in place of ALS_AUTO of /etc/tsx/als.conf. `tsx-als auto`
-#   and the Home Assistant "Auto brightness" switch write this key.
-# ALS_SCALE (lux = sensor lux x this; 0.01-1000; empty = 1.0, for example
-#   a factor for the front glass). Apply writes it to /run/tsx/als.panel. The curve and the timing stay in
-#   /etc/tsx/als.conf.
+#   light sensor (tsx-als or tsx-sensord, whichever the board has). Apply
+#   writes it to /run/tsx/als.panel, which tsx-als reads in place of ALS_AUTO of
+#   /etc/tsx/als.conf, and to /run/tsx/sensors.conf for tsx-sensord. `tsx-als
+#   auto` and the Home Assistant "Auto brightness" switch write this key.
+# ALS_SCALE (lux = sensor lux x this; 0.01-1000; empty = 1.0 or the own
+#   calibration of the unit, for example a factor for the front glass). Apply
+#   writes it to /run/tsx/als.panel and to /run/tsx/sensors.conf. The curve
+#   and the timing stay in /etc/tsx/als.conf.
+# PRESENCE_WAKE (on|off): wake the screen when the distance sensor sees
+#   someone near. PRESENCE_DISTANCE_MM (how close counts as near, 100 to
+#   4000, default the threshold of the unit). PRESENCE_MIN_MM (closer than
+#   this is the front window, 0 to 1000). PRESENCE_HOLD_S (seconds without a
+#   target before "away", 1 to 3600). Only a board with a distance sensor
+#   uses these four keys. Apply writes them to /run/tsx/sensors.conf for
+#   tsx-sensord.
 # A panel without a microphone or a Bluetooth module (government=1, the
 # TSW-760-NC: /run/tsx/hw.conf, written by tsx-hw at boot) accepts VOICE=on,
 # BT_PROXY=on and BT_ACTIVE=on, so that a panel.conf from another panel
@@ -119,10 +128,10 @@ BOARD=${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}
 [ -r "$BOARD" ] || BOARD=$(dirname "$0")/../lib/tsx/board.sh
 . "$BOARD"
 
-KNOWN_KEYS="PANEL_NAME KIOSK_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_API_KEY HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR APK_URL BLANK_TIMEOUT BOOT_VERBOSE ORIENTATION BT_PROXY BT_ACTIVE BT_MAC AUTO_BRIGHTNESS ALS_SCALE ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
+KNOWN_KEYS="PANEL_NAME KIOSK_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_API_KEY HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR APK_URL BLANK_TIMEOUT BOOT_VERBOSE ORIENTATION BT_PROXY BT_ACTIVE BT_MAC PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 SECRET_KEYS="HA_TOKEN HA_API_KEY MQTT_PASSWORD ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 
-usage() { sed -n '2,91p' "$0" >&2; exit 2; }
+usage() { sed -n '2,98p' "$0" >&2; exit 2; }
 die() { echo "tsx-config: ERROR: $*" >&2; exit 2; }
 log() { echo "tsx-config: $*" >&2; }
 
@@ -147,17 +156,24 @@ hw_missing() {
 		echo "this panel has no Bluetooth module (government=$(hw_get GOVERNMENT))";;
 	BT_MAC) [ "$TSX_BT_MAC_SETTABLE" = no ] || return 1
 		echo "this board takes the Bluetooth address from the controller";;
-	AUTO_BRIGHTNESS|ALS_SCALE) [ "$(hw_get ALS)" = no ] || return 1
+	# The distance sensor is not on every board. tsx-hw of the board writes
+	# PRESENCE=no for a panel without one.
+	PRESENCE_WAKE|PRESENCE_DISTANCE_MM|PRESENCE_MIN_MM|PRESENCE_HOLD_S)
+		[ "$(hw_get PRESENCE)" = no ] || return 1
+		echo "this panel has no distance sensor";;
+	# ALS=no or LIGHT=no: a board names its light sensor part either way
+	AUTO_BRIGHTNESS|ALS_SCALE) [ "$(hw_get ALS)" = no ] || [ "$(hw_get LIGHT)" = no ] || return 1
 		echo "this panel has no ambient light sensor";;
 	*) return 1;;
 	esac
 }
 
-# hw_warn KEY VALUE [VERB]: the warning for an "on" that the panel cannot use
+# hw_warn KEY VALUE [VERB]: the warning for a value that the panel cannot
+# use. "off" and an empty value need no warning.
 hw_warn() {
-	[ "$2" = on ] || return 0
+	case "$2" in ""|off) return 0;; esac
 	why=$(hw_missing "$1") || return 0
-	log "WARNING: $1=on ${3:-is set}, but $why. apply treats it as off"
+	log "WARNING: $1=$2 ${3:-is set}, but $why. apply leaves it out"
 }
 
 # Escape a value for the OWN panel.conf storage of this script (unquote()
@@ -237,8 +253,13 @@ val_ok() {
 	ORIENTATION) case "$v" in landscape|portrait|landscape-flipped|portrait-flipped) return 0;; esac; return 1;;
 	BT_PROXY) case "$v" in on|off|"") return 0;; esac; return 1;;
 	BT_ACTIVE) case "$v" in on|off) return 0;; esac; return 1;;
-	AUTO_BRIGHTNESS) case "$v" in on|off|"") return 0;; esac; return 1;;
-	# lux = sensor lux x ALS_SCALE; empty = 1.0
+	PRESENCE_WAKE|AUTO_BRIGHTNESS) case "$v" in on|off|"") return 0;; esac; return 1;;
+	# empty = the default. Millimeters and seconds.
+	PRESENCE_DISTANCE_MM) [ -z "$v" ] && return 0; printf '%s' "$v" | grep -Eq '^[0-9]{3,4}$' && [ "$v" -ge 100 ] && [ "$v" -le 4000 ];;
+	PRESENCE_HOLD_S) [ -z "$v" ] && return 0; printf '%s' "$v" | grep -Eq '^[0-9]{1,4}$' && [ "$v" -ge 1 ] && [ "$v" -le 3600 ];;
+	# closer than this is the front window and not a person (mm)
+	PRESENCE_MIN_MM) [ -z "$v" ] && return 0; printf '%s' "$v" | grep -Eq '^[0-9]{1,4}$' && [ "$v" -le 1000 ];;
+	# lux = sensor lux x ALS_SCALE; empty = 1.0 or the own calibration of the unit
 	ALS_SCALE) [ -z "$v" ] && return 0; printf '%s' "$v" | grep -Eq '^[0-9]{1,4}(\.[0-9]{1,3})?$' && awk -v x="$v" 'BEGIN{exit !(x >= 0.01 && x <= 1000)}';;
 	# empty = derived from eth0. A unicast address, not all zeros
 	BT_MAC) [ -z "$v" ] && return 0; printf '%s' "$v" | grep -Eq '^[0-9A-Fa-f][02468ACEace](:[0-9A-Fa-f]{2}){5}$' \
@@ -329,7 +350,7 @@ cfg_show() {
 		is_secret "$k" && v="********"
 		printf '%s=%s\n' "$k" "$v"
 	done
-	for k in VOICE BT_PROXY BT_ACTIVE AUTO_BRIGHTNESS; do
+	for k in VOICE BT_PROXY BT_ACTIVE BT_MAC PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE; do
 		v=$(cfg_get "$k") || continue
 		hw_warn "$k" "$v" 2>&1 | sed 's/^tsx-config: /# /' >&2
 	done
@@ -412,8 +433,9 @@ apk_repos() {
 			echo "$url/$br/$TSX_APK_CATEGORY"
 		fi
 		# Everything else, minus an earlier block and any other copy of the
-		# two repositories of this project (/<branch>/common, /<branch>/$TSX_APK_CATEGORY)
-		grep -vE '^# tsx-aports |^#   APK_URL=off|/(v[0-9][0-9.]*|edge)/(common|'"$TSX_APK_CATEGORY"')/*[[:space:]]*$' "$repos"
+		# repositories of this project (/<branch>/common and the category of
+		# any family, /<branch>/xx<NN>, so a line of another family goes too)
+		grep -vE '^# tsx-aports |^#   APK_URL=off|/(v[0-9][0-9.]*|edge)/(common|xx[0-9]+)/*[[:space:]]*$' "$repos"
 	} > "$tmp"
 	if cmp -s "$tmp" "$repos"; then rm -f "$tmp"; return 0; fi
 	chmod 644 "$tmp" && mv "$tmp" "$repos" && log "apk repositories: tsx-aports at $url ($br). The next apk update / tsx-autoupdate check uses it"
@@ -625,6 +647,29 @@ apply() {
 	fi
 
 	apk_repos
+
+	# PRESENCE_*, AUTO_BRIGHTNESS and ALS_SCALE: /run/tsx/sensors.conf for
+	# tsx-sensord of a board with a distance sensor (shell-style KEY="value"
+	# lines, only the keys that are set). The daemon reloads it on HUP. It does
+	# not get the HUP at the first apply after boot, because it has not started
+	# then and reads the file itself. Without such a daemon, the file is only
+	# a file. A key of a part that the panel does not have stays out.
+	{
+		for k in PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE; do
+			sv=$(cfg_get "$k") || sv=
+			# The als.panel block above warns for the two light sensor keys.
+			if hw_missing "$k" >/dev/null; then case "$k" in PRESENCE_*) hw_warn "$k" "$sv";; esac; continue; fi
+			[ -n "$sv" ] && printf '%s="%s"\n' "$k" "$(shq "$sv")"
+		done
+		true
+	} | write_override "$RUN/sensors.conf" 644
+	ssig=$(cat "$RUN/sensors.conf" 2>/dev/null) || ssig=
+	sfirst=1; oldssig=; [ -e "$RUN/.sensors-sig" ] && { sfirst=0; oldssig=$(cat "$RUN/.sensors-sig"); }
+	printf '%s\n' "$ssig" > "$RUN/.sensors-sig"
+	if [ "$sfirst" = 0 ] && [ "$ssig" != "$oldssig" ] && command -v rc-service >/dev/null 2>&1 \
+		&& rc-service tsx-sensord status >/dev/null 2>&1; then
+		rc-service tsx-sensord reload >/dev/null 2>&1 || true
+	fi
 
 	# BOOT_VERBOSE=1: boot text on the LCD instead of the splash, from the
 	# next boot on (rootfs/initramfs/overlay/init reads the flag file).

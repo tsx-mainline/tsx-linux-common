@@ -12,20 +12,28 @@
 #                                     It fails when no daemon reads the FIFO.
 #   tsx-panelctl get NAME             print one value: volume (percent), lux,
 #                                     als-auto (on or off), screen, ledbar
-#                                     (R G B, 0 to 100), keypad-led, last-key.
+#                                     (R G B, 0 to 100), keypad-led, last-key,
+#                                     presence, distance (mm), lightbar,
+#                                     usb-power, poe-class.
 #                                     It prints nothing and fails when the panel
 #                                     has no value (no sound card, no sensor).
 #   tsx-panelctl has NAME             exit 0 when the panel has that hardware:
-#                                     ledbar, keypad, als or sound
+#                                     ledbar, keypad, als, sound, presence,
+#                                     lightbar, usbpower, poe or nfc
 #   tsx-panelctl events               print a line when a value changes, until it
 #                                     is stopped: "button NAME short|long|hold",
 #                                     "lux N", "als-auto on|off", "screen ...",
-#                                     "ledbar R G B", "keypad-led N". It first
+#                                     "ledbar R G B", "keypad-led N", "presence
+#                                     ...", "distance N", "lightbar ...",
+#                                     "usb-power ...", "poe-class N". It first
 #                                     prints the present values (not a button).
 #
 # The files that hold these values are /run/tsx/*.state and
-# /run/tsx-idled.state (written by tsx-buttons, tsx-als, tsx-ledbard and
-# tsx-idled). A program that only needs to read may read them directly.
+# /run/tsx-idled.state (written by tsx-buttons, tsx-idled and the daemons of
+# the board: the light sensor, the LED bar, the distance sensor). A program
+# that only needs to read may read them directly. Which hardware exists is
+# the business of the board. The commands of a part that the panel lacks fail
+# in the CLI of the board, or the has command says no.
 #
 # The daemon is the ONLY privileged surface of the panel for the
 # unprivileged Home Assistant ESPHome plugin (docs/ha.md "One Home Assistant device"). It runs
@@ -70,7 +78,9 @@
 # Env overrides for tests: TSX_RUN_DIR, TSX_PANELCTL, TSX_LEDBAR, TSX_KEYPAD,
 # TSX_BLANK, TSX_ALS_BIN, TSX_CONFIG_BIN, TSX_REBOOT_BIN, TSX_AMIXER,
 # TSX_SOUND_CARD, TSX_UPDATE_BIN, TSX_IDLED_STATE, TSX_BUTTONS_CONF,
-# TSX_ALS_CONF, TSX_ASOUND_DIR, TSX_BACKLIGHT_DIR, TSX_EVENTS_POLL (seconds
+# TSX_ALS_CONF, TSX_ASOUND_DIR, TSX_BACKLIGHT_DIR, TSX_LIGHTBAR_BIN,
+# TSX_USBPOWER_BIN, TSX_LEDS_DIR, TSX_STATE_DIR, TSX_NFC_SYS_DIR,
+# TSX_VOLUME_CMD, TSX_EVENTS_POLL (seconds
 # between two reads of `events`), TSX_EVENTS_MAX (stop `events` after that many
 # lines), TSX_PANELCTL_ONESHOT=1 (handle exactly one line, then exit. Tests only).
 set -u -f
@@ -83,8 +93,17 @@ ALS=${TSX_ALS_BIN:-tsx-als}
 CONFIG=${TSX_CONFIG_BIN:-tsx-config}
 REBOOT_BIN=${TSX_REBOOT_BIN:-reboot}
 AMIXER=${TSX_AMIXER:-amixer}
+LIGHTBAR_BIN=${TSX_LIGHTBAR_BIN:-tsx-lightbar}
+USBPOWER_BIN=${TSX_USBPOWER_BIN:-tsx-usbpower}
+LEDS=${TSX_LEDS_DIR:-/sys/class/leds}
+STATE_DIR=${TSX_STATE_DIR:-/var/lib/tsx}
+NFCSYS=${TSX_NFC_SYS_DIR:-/sys/class/nfc}
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 CARD=$TSX_SOUND_CARD
+# TSX_VOLUME_CMD of the board file: a command that prints the volume in
+# percent, and sets it with one argument (for example "tsx-audio volume").
+# Without it, the volume is the Master control of the sound card.
+VOLUME_CMD=${TSX_VOLUME_CMD:-}
 UPDATE_BIN=${TSX_UPDATE_BIN:-tsx-autoupdate}
 ONESHOT=${TSX_PANELCTL_ONESHOT:-0}
 IDLED_STATE=${TSX_IDLED_STATE:-/run/tsx-idled.state}
@@ -107,6 +126,23 @@ is_uint() {
 }
 in_range() { is_uint "$1" && [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]; }
 
+# The top level of the backlight. tsx-idled reports it ("max M" in
+# brightness.state: BACKLIGHT_MAX cut to the max_brightness of the device).
+# Before tsx-idled has written it, the max_brightness of the first backlight
+# device. 31 is the last resort.
+bl_max() {
+	m=$(sed -n 's/^max //p' "$R/brightness.state" 2>/dev/null | head -n 1)
+	is_uint "$m" && [ "$m" -gt 0 ] && { echo "$m"; return; }
+	set +f
+	for d in "$BL_DIR"/*; do
+		m=$(cat "$d/max_brightness" 2>/dev/null)
+		break
+	done
+	set -f
+	is_uint "$m" && [ "$m" -gt 0 ] && { echo "$m"; return; }
+	echo 31
+}
+
 reject() { log "rejected: $(safe "$*")"; }
 
 # ---- the client side: send, get, has, events -------------------------------
@@ -119,14 +155,20 @@ get_value() {
 	v=
 	case "$1" in
 	volume)
-		[ -e "$ASOUND/$CARD" ] || return 1
-		v=$("$AMIXER" -c "$CARD" sget Master 2>/dev/null | sed -n 's/.*\[\([0-9]\{1,3\}\)%\].*/\1/p' | head -n 1);;
+		has_hw sound || return 1
+		if [ -n "$VOLUME_CMD" ]; then v=$($VOLUME_CMD 2>/dev/null | head -n 1)
+		else v=$("$AMIXER" -c "$CARD" sget Master 2>/dev/null | sed -n 's/.*\[\([0-9]\{1,3\}\)%\].*/\1/p' | head -n 1); fi;;
 	lux) v=$(field "$R/als.state" report);;
 	als-auto) v=$(field "$R/als.state" auto);;
 	screen) v=$(head -n 1 "$IDLED_STATE" 2>/dev/null);;
 	ledbar) v=$(field "$R/ledbar.state" want);;
 	keypad-led) v=$(field "$R/buttons.state" led);;
 	last-key) v=$(field "$R/buttons.state" last);;
+	presence) v=$(field "$R/presence.state" present);;
+	distance) v=$(field "$R/presence.state" distance);;
+	lightbar) v=$(head -n 1 "$STATE_DIR/lightbar" 2>/dev/null);;
+	usb-power) v=$(field "$R/usb-power.state" power);;
+	poe-class) v=$(field "$R/poe.state" class);;
 	*) echo "tsx-panelctl: unknown value '$1'" >&2; return 2;;
 	esac
 	[ -n "$v" ] || return 1
@@ -138,7 +180,12 @@ has_hw() {
 	ledbar) command -v "$LEDBAR" >/dev/null 2>&1;;
 	keypad) [ -r "$BUTTONS_CONF" ];;
 	als) [ -r "$ALS_CONF" ] || [ -r "$R/als.state" ];;
-	sound) [ -e "$ASOUND/$CARD" ];;
+	sound) [ -n "$CARD" ] && [ -e "$ASOUND/$CARD" ];;
+	presence) [ -r "$R/presence.state" ];;
+	lightbar) ( set +f; for d in "$LEDS"/rgb:lightbar-*; do [ -d "$d" ] && exit 0; done; exit 1 );;
+	usbpower) [ -r "$R/usb-power.state" ];;
+	poe) [ -r "$R/poe.state" ];;
+	nfc) [ -r "$R/nfc.state" ] || [ -d "$NFCSYS/nfc0" ];;
 	*) echo "tsx-panelctl: unknown hardware '$1'" >&2; return 2;;
 	esac
 }
@@ -158,14 +205,16 @@ send_line() {
 
 cmd_events() {
 	poll=${TSX_EVENTS_POLL:-1}; max=${TSX_EVENTS_MAX:-0}; count=0
-	p_lux= p_auto= p_scr= p_led= p_kl= p_key=; first=1
+	p_key=; first=1
+	names="lux als-auto screen presence distance lightbar usb-power poe-class ledbar keypad-led"
+	for n in $names; do eval "p_$(echo "$n" | tr - _)="; done
 	emit() { printf '%s\n' "$*"; count=$((count + 1)); if [ "$max" -gt 0 ] && [ "$count" -ge "$max" ]; then exit 0; fi; }
 	while :; do
-		v=$(get_value lux 2>/dev/null) || v=; [ "$v" = "$p_lux" ] || { p_lux=$v; [ -z "$v" ] || emit "lux $v"; }
-		v=$(get_value als-auto 2>/dev/null) || v=; [ "$v" = "$p_auto" ] || { p_auto=$v; [ -z "$v" ] || emit "als-auto $v"; }
-		v=$(get_value screen 2>/dev/null) || v=; [ "$v" = "$p_scr" ] || { p_scr=$v; [ -z "$v" ] || emit "screen $v"; }
-		v=$(get_value ledbar 2>/dev/null) || v=; [ "$v" = "$p_led" ] || { p_led=$v; [ -z "$v" ] || emit "ledbar $v"; }
-		v=$(get_value keypad-led 2>/dev/null) || v=; [ "$v" = "$p_kl" ] || { p_kl=$v; [ -z "$v" ] || emit "keypad-led $v"; }
+		for n in $names; do
+			v=$(get_value "$n" 2>/dev/null) || v=
+			k="p_$(echo "$n" | tr - _)"; eval "o=\$$k"
+			[ "$v" = "$o" ] || { eval "$k=\$v"; [ -z "$v" ] || emit "$n $v"; }
+		done
 		# a key press is an event only after the first read
 		v=$(get_value last-key 2>/dev/null) || v=
 		if [ "$v" != "$p_key" ]; then
@@ -186,7 +235,7 @@ get) [ $# = 2 ] || { echo "usage: tsx-panelctl get NAME" >&2; exit 2; }; get_val
 has) [ $# = 2 ] || { echo "usage: tsx-panelctl has NAME" >&2; exit 2; }; has_hw "$2"; exit $?;;
 events) cmd_events; exit $?;;
 '') ;;
-*) sed -n '2,28p' "$0" >&2; exit 2;;
+*) sed -n '2,38p' "$0" >&2; exit 2;;
 esac
 
 mkdir -p "$R"
@@ -210,6 +259,20 @@ handle() {
 		elif [ "$a1" = set ] && in_range "$a2" 0 100 && in_range "$a3" 0 100 && in_range "$a4" 0 100 && [ -z "$rest" ]; then
 			log "ledbar set $a2 $a3 $a4"; "$LEDBAR" set "$a2" "$a3" "$a4"
 		else reject "ledbar $a1 $a2 $a3 $a4 $rest"; fi;;
+	lightbar)
+		# A multicolor light bar (tsx-lightbar of the board): color 0 to 255 each, brightness 0 to 255
+		if [ "$a1" = off ] && [ -z "$a2$a3$a4$rest" ]; then
+			log "lightbar off"; "$LIGHTBAR_BIN" off
+		elif [ "$a1" = on ] && [ -z "$a2$a3$a4$rest" ]; then
+			log "lightbar on"; "$LIGHTBAR_BIN" on
+		elif [ "$a1" = set ] && in_range "$a2" 0 255 && in_range "$a3" 0 255 && in_range "$a4" 0 255 \
+			&& [ "${rest%% *}" = "$rest" ] && { [ -z "$rest" ] || in_range "$rest" 0 255; }; then
+			log "lightbar set $a2 $a3 $a4 $rest"; "$LIGHTBAR_BIN" set "$a2" "$a3" "$a4" $rest
+		else reject "lightbar $a1 $a2 $a3 $a4 $rest"; fi;;
+	usbpower)
+		if { [ "$a1" = on ] || [ "$a1" = off ]; } && [ -z "$a2$a3$a4$rest" ]; then
+			log "usbpower $a1"; "$USBPOWER_BIN" "$a1"
+		else reject "usbpower $a1 $a2 $a3 $a4 $rest"; fi;;
 	keypad)
 		if [ "$a1" = led ] && [ "$a2" = off ] && [ -z "$a3$a4$rest" ]; then
 			log "keypad led off"; "$KEYPAD" led off
@@ -227,14 +290,14 @@ handle() {
 			log "als auto $a2"; "$ALS" auto "$a2"
 		else reject "als $a1 $a2 $a3 $a4 $rest"; fi;;
 	brightness)
-		if in_range "$a1" 1 31 && [ -z "$a2$a3$a4$rest" ]; then
+		if in_range "$a1" 1 "$(bl_max)" && [ -z "$a2$a3$a4$rest" ]; then
 			log "brightness $a1"; echo "$a1" > "$R/brightness"
 		else reject "brightness $a1 $a2 $a3 $a4 $rest"; fi;;
 	backlight)
 		# A level for the backlight at once, as the up and down keys give it:
 		# the override file for tsx-idled, and the backlight device itself
 		# while the screen is lit.
-		if in_range "$a1" 1 31 && [ -z "$a2$a3$a4$rest" ]; then
+		if in_range "$a1" 1 "$(bl_max)" && [ -z "$a2$a3$a4$rest" ]; then
 			log "backlight $a1"; echo "$a1" > "$R/brightness"
 			s=; [ -r "$IDLED_STATE" ] && read -r s _ < "$IDLED_STATE"
 			if [ "$s" != blank ]; then
@@ -253,7 +316,7 @@ handle() {
 		# either). The script does not log it, because a slider drag sends
 		# one line per step.
 		n=${a1#-}
-		if [ -z "$a2$a3$a4$rest" ] && in_range "$n" 0 31 && { [ "$n" = "$a1" ] || [ "-$n" = "$a1" ]; }; then
+		if [ -z "$a2$a3$a4$rest" ] && in_range "$n" 0 "$(bl_max)" && { [ "$n" = "$a1" ] || [ "-$n" = "$a1" ]; }; then
 			if [ "$n" = 0 ]; then rm -f "$R/brightness-offset"; else echo "$a1" > "$R/brightness-offset"; fi
 			rm -f "$R/brightness"
 		else reject "brightness-offset $a1 $a2 $a3 $a4 $rest"; fi;;
@@ -279,7 +342,8 @@ handle() {
 		else reject "reload-page $a1 $a2 $a3 $a4 $rest"; fi;;
 	volume)
 		if in_range "$a1" 0 100 && [ -z "$a2$a3$a4$rest" ]; then
-			log "volume $a1"; "$AMIXER" -q -c "$CARD" sset Master "$a1%"
+			log "volume $a1"
+			if [ -n "$VOLUME_CMD" ]; then $VOLUME_CMD "$a1" >/dev/null; else "$AMIXER" -q -c "$CARD" sset Master "$a1%"; fi
 		else reject "volume $a1 $a2 $a3 $a4 $rest"; fi;;
 	config-url)
 		case "$a1" in

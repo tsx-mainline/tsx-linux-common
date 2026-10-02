@@ -46,7 +46,7 @@ start() {
 		return 0
 	fi
 	checkpath -d -m 0755 /run/tsx
-	ebegin "Starting Bluetooth (CSR8811)"
+	ebegin "Starting Bluetooth"
 	if ! /usr/local/sbin/tsx-bt up >>"$LOG" 2>&1; then
 		ewarn "Bluetooth bring-up failed: $(sed -n 's/^reason=//p' /run/tsx/bt.state 2>/dev/null) (see $LOG)"
 		ewarn "The panel runs on without Bluetooth"

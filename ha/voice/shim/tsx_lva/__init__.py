@@ -167,10 +167,16 @@ def _patch_panel():
 
     poll_started = threading.Event()
 
+    def _broadcast_actions(state, msgs):
+        msgs = list(msgs)
+        for conn in list(state.connections):
+            if msgs and getattr(conn, "_tsx_services", False):
+                conn.send_messages(msgs)
+
     def _poll_loop(state, device):
         while True:
             try:
-                panel_device.poll(device, state.broadcast)
+                panel_device.poll(device, state.broadcast, lambda msgs: _broadcast_actions(state, msgs))
             except Exception:  # noqa: BLE001 - one bad read must not kill the loop
                 _LOGGER.warning("tsx_panel: poll failed", exc_info=True)
             time.sleep(panel_device.POLL_INTERVAL)
@@ -221,7 +227,7 @@ def _patch_panel():
     # The Bluetooth proxy (BT_PROXY, BT_ACTIVE, tsx_panel/bluetooth.py): its
     # feature flags go into the own DeviceInfoResponse of the satellite, and
     # its messages (advertisements, links, GATT) never reach satellite.py.
-    from aioesphomeapi.api_pb2 import DeviceInfoResponse  # noqa: WPS433
+    from aioesphomeapi.api_pb2 import DeviceInfoResponse, SubscribeHomeassistantServicesRequest  # noqa: WPS433
     from tsx_panel import bluetooth  # noqa: WPS433
 
     def handle_message(self, msg):
@@ -229,6 +235,11 @@ def _patch_panel():
             for entity in self.state.entities:
                 if getattr(entity, "key", None) == msg.key:
                     yield from entity.handle_message(msg)
+            return
+        if isinstance(msg, SubscribeHomeassistantServicesRequest):
+            # Service calls for Home Assistant (a scanned NFC tag) go only to
+            # the clients that asked for them. No reply.
+            self._tsx_services = True  # pylint: disable=protected-access
             return
         if bluetooth.handle_message(self, msg):
             return
@@ -279,8 +290,18 @@ def _patch_names():
     models.ServerState.__init__ = init
 
 
+def _check_tflite():
+    """The wake word needs libtensorflowlite_c.so (package tensorflow-lite-c).
+    Say so in one clear line and stop, not with a long traceback."""
+    path = os.environ.get("TSX_TFLITE_SO", "/usr/lib/libtensorflowlite_c.so")
+    if not os.path.exists(path):
+        print(f"tsx_lva: {path} is missing. Install the package tensorflow-lite-c (apk add tensorflow-lite-c). "
+              "The voice satellite does not start", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+
 def _patch():
-    # No microphone (MIC=no in /run/tsx/hw.conf, government=1): no voice
+    # No microphone (MIC=no in /run/tsx/hw.conf): no voice
     # satellite. /etc/init.d/tsx-voice already refuses to start. This
     # covers a start by hand, so the device never offers voice features.
     from tsx_panel import hw  # noqa: WPS433
@@ -325,6 +346,8 @@ def _patch():
         await orig_emit(self, event, data)
 
     cls.start, cls.emit_event = start, emit_event
+
+    _check_tflite()
 
     if os.environ.get("TSX_VOICE_WAKE", "local") == "ptt":
         import pymicro_wakeword  # noqa: WPS433

@@ -76,6 +76,7 @@ grep -q 'homeassistant/event/' "$T/outbare" && { echo "FAIL: bare: key events an
 grep -qE 'emmc|illuminance' "$T/outbare" && { echo "FAIL: bare: entities announced for parts this panel does not have"; fail=1; }
 grep '/config {' "$T/outbare" | while read -r _ _ t j; do echo "$j" | jq -e . >/dev/null || { echo "FAIL: bad JSON $t"; exit 1; }; done || fail=1
 grep -qE 'emmc' "$T/out" && { echo "FAIL: eMMC entities announced without emmc.state"; fail=1; }
+grep -qE 'presence|distance|lightbar|usb_power|poe_class|/tag/' "$T/out" && { echo "FAIL: entities announced for parts this panel does not have"; fail=1; }
 
 # eMMC health from /run/tsx/emmc.state (tsx-emmc-state)
 T3=$T/hw; mkdir -p "$T3/run"

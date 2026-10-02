@@ -117,6 +117,21 @@ run set ALS_SCALE "" && ok "ALS_SCALE empty accepted (= 1.0)" || bad "ALS_SCALE 
 run validate ALS_SCALE 2.5 && ok "validate ALS_SCALE 2.5 (the setup page's check)" || bad "validate ALS_SCALE"
 run unset ALS_SCALE; run unset AUTO_BRIGHTNESS
 
+echo "== sensor keys: presence and auto brightness =="
+for kv in "PRESENCE_WAKE on" "PRESENCE_WAKE off" "AUTO_BRIGHTNESS on" "AUTO_BRIGHTNESS off" "PRESENCE_DISTANCE_MM 100" \
+	"PRESENCE_DISTANCE_MM 4000" "PRESENCE_DISTANCE_MM 1000" "PRESENCE_HOLD_S 1" "PRESENCE_HOLD_S 3600"; do
+	set -- $kv
+	run set "$1" "$2" && [ "$(run get "$1")" = "$2" ] && ok "$1 $2 accepted" || bad "$1 $2"
+done
+for kv in "PRESENCE_WAKE yes" "PRESENCE_WAKE 1" "AUTO_BRIGHTNESS auto" "PRESENCE_DISTANCE_MM 99" "PRESENCE_DISTANCE_MM 4001" \
+	"PRESENCE_DISTANCE_MM 1e3" "PRESENCE_DISTANCE_MM -5" "PRESENCE_DISTANCE_MM 10cm" "PRESENCE_HOLD_S 0" "PRESENCE_HOLD_S 3601" "PRESENCE_HOLD_S 5s"; do
+	set -- $kv
+	run set "$1" "$2" >/dev/null 2>&1 && bad "$1 '$2' accepted" || ok "$1 '$2' rejected"
+done
+run validate PRESENCE_HOLD_S 30 && run validate PRESENCE_WAKE "" && run validate PRESENCE_DISTANCE_MM "" \
+	&& ok "validate: a number in range, and empty (= the default)" || bad "validate of the sensor keys"
+for k in PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS; do run unset "$k"; done
+
 echo "== a value containing a literal newline is rejected =="
 V=$(printf 'line1\nline2')
 run set MQTT_USER "$V" >/dev/null 2>&1 && bad "embedded newline accepted" || ok "embedded newline rejected"

@@ -13,19 +13,22 @@ EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
 BTN_TOUCH, ABS_X, ABS_Y = 330, 0, 1
 ABS_MT_SLOT, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TRACKING_ID = 47, 53, 54, 57
 
-def ev(t, c, v):  # armv7: struct input_event = 2 x u32 time, u16 type, u16 code, s32 value
-    return struct.pack('<IIHHi', 0, 0, t, c, v)
+def ev(t, c, v):  # armv7: struct input_event = 2 x u32 time, u16 type, u16 code, s32 value. aarch64: 2 x s64
+    return struct.pack('<qqHHi' if ARCH == 'aarch64' else '<IIHHi', 0, 0, t, c, v)
 
 def sh_bytes(b):
-    return "printf '" + ''.join('\\%03o' % x for x in b) + "' > /dev/input/event1"
+    return "printf '" + ''.join('\\%03o' % x for x in b) + "' > " + DEV
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--ip', default=os.environ.get('PANEL_IP'))
+ap.add_argument('--arch', default=os.environ.get('TAP_ARCH', 'armv7'), choices=['armv7', 'aarch64'])
+ap.add_argument('--dev', default=os.environ.get('TAP_DEV', '/dev/input/event1'))
 ap.add_argument('--hold', type=int, default=60)
 ap.add_argument('--gap', type=int, default=250)
 ap.add_argument('--together', action='store_true')
 ap.add_argument('points', nargs='*')
 a = ap.parse_args()
+ARCH, DEV = a.arch, a.dev
 if not a.ip:
     ap.error("--ip or $PANEL_IP is required")
 tid = int(time.time()) & 0x7fff

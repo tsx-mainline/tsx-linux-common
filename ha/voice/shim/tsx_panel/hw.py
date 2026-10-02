@@ -1,7 +1,6 @@
 """The hardware facts of the panel: /run/tsx/hw.conf, written at boot by
-tsx-hw (rootfs/overlay/usr/local/sbin/tsx-hw, docs/hardware.md "Panel
-variants"). A panel with government=1 (the TSW-760-NC) has MIC=no, BT=no
-and CAMERA=no. A missing file or key means that the part is there.
+tsx-hw (rootfs/overlay/usr/local/sbin/tsx-hw, docs/rootfs.md "Panel
+parts"). A missing file or key means that the part is there.
 
 Test hooks: TSX_HW_CONF, else TSX_RUN_DIR/hw.conf.
 """
@@ -28,9 +27,9 @@ def get(key, path=None):
 
 
 def present(part, path=None):
-    """False only when hw.conf says PART=no (MIC, BT, CAMERA)."""
+    """False only when hw.conf says PART=no (for example MIC or BT)."""
     return get(part, path) != "no"
 
 
 def reason(path=None):
-    return get("REASON", path) or "government=" + (get("GOVERNMENT", path) or "unknown")
+    return get("REASON", path) or "unknown reason"

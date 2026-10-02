@@ -29,6 +29,7 @@ from aioesphomeapi.api_pb2 import (  # pylint: disable=no-name-in-module
     NumberCommandRequest,
     SelectCommandRequest,
     SubscribeHomeAssistantStatesRequest,
+    SubscribeHomeassistantServicesRequest,
     SubscribeStatesRequest,
     SwitchCommandRequest,
     TextCommandRequest,
@@ -41,7 +42,7 @@ from linux_voice_assistant.util import get_default_interface, get_default_ipv4, 
 from linux_voice_assistant.zeroconf import HomeAssistantZeroconf
 
 from . import bluetooth, naming, security
-from .backend import PanelBackend, board_value
+from .backend import PanelBackend, board_call, board_value
 from .device import build_entities, poll
 
 _LOGGER = logging.getLogger("tsx_esphome")
@@ -69,12 +70,12 @@ class PanelAPIServer(APIServer):
     name = "tsx-panel"
     friendly_name = "tsx-panel"
     mac_address = ""
+    model = "panel"  # replaced by the board value in main()
     version = get_version()
     esphome_version = get_esphome_version()
-    model = "panel"  # replaced by the board value in main()
 
     def __init__(self) -> None:
-        # asyncio.create_server's protocol_factory takes no arguments. The
+        # asyncio.create_server's protocol_factory takes no arguments; the
         # device name is fixed (class attribute, set once in main() before
         # the TCP server starts) for every connection.
         super().__init__(PanelAPIServer.name)
@@ -96,6 +97,17 @@ class PanelAPIServer(APIServer):
             PanelAPIServer.connections.remove(self)
             _LOGGER.info("connection closed: %s (%s)", getattr(self, "_tsx_peer", "?"),
                          "encrypted" if security.encryption_enabled() else "plaintext")
+
+    @classmethod
+    def broadcast_actions(cls, msgs: Iterable[message.Message]) -> None:
+        """Service calls and events for Home Assistant (a scanned NFC tag),
+        only to the clients that subscribed to them."""
+        msgs = list(msgs)
+        if not msgs:
+            return
+        for conn in list(cls.connections):
+            if getattr(conn, "_tsx_services", False):
+                conn.send_messages(msgs)
 
     @classmethod
     def broadcast(cls, msgs: Iterable[message.Message]) -> None:
@@ -122,6 +134,9 @@ class PanelAPIServer(APIServer):
             return
         if bluetooth.handle_message(self, msg):
             return
+        if isinstance(msg, SubscribeHomeassistantServicesRequest):
+            self._tsx_services = True    # no reply: service calls come later, when there is one
+            return
         if isinstance(msg, SubscribeStatesRequest):
             for entity in self.device.entities:
                 yield from entity.handle_message(SubscribeHomeAssistantStatesRequest())
@@ -138,7 +153,7 @@ class PanelAPIServer(APIServer):
 def _poll_loop(device, interval: float) -> None:
     while True:
         try:
-            poll(device, PanelAPIServer.broadcast)
+            poll(device, PanelAPIServer.broadcast, PanelAPIServer.broadcast_actions)
         except Exception:  # noqa: BLE001 - one bad read must not kill the loop
             _LOGGER.warning("poll failed", exc_info=True)
         time.sleep(interval)
@@ -167,9 +182,11 @@ async def async_main() -> None:
     PanelAPIServer.name = device_name
     PanelAPIServer.friendly_name = friendly_name
     PanelAPIServer.mac_address = mac
-    ha_model = board_value("TSX_HA_MODEL")
+    # tsx_board_ha_model of the board file gives the model name, if the board
+    # has that function. Else TSX_HA_MODEL ("xx60 panel" on the xx60).
+    ha_model = board_call("tsx_board_ha_model") or board_value("TSX_HA_MODEL")
     if ha_model:
-        PanelAPIServer.model = f"{ha_model} panel"   # "xx60 panel" on the xx60
+        PanelAPIServer.model = f"{ha_model} panel"
 
     backend = PanelBackend()
     device = build_entities(None, backend, key_base=0)
@@ -204,8 +221,9 @@ async def async_main() -> None:
 
     _LOGGER.info("Bluetooth proxy: %s", "off" if not bluetooth.PROXY.enabled() else
                  "on, active connections (BT_ACTIVE)" if bluetooth.PROXY.active() else "on (BT_PROXY)")
-    _LOGGER.info("tsx-esphome: %s (%s) listening on %s:%s (%d entities, %s)", device_name, friendly_name, host_ip, args.port,
-                 len(device.entities), "encrypted" if security.encryption_enabled() else "plaintext")
+    _LOGGER.info("tsx-esphome: %s (%s) listening on %s:%s (%d entities, %s)", device_name,
+                 friendly_name, host_ip, args.port, len(device.entities),
+                 "encrypted" if security.encryption_enabled() else "plaintext")
     await asyncio.Future()  # run forever
 
 

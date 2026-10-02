@@ -41,6 +41,10 @@ Env overrides (all also read by tsx-mqtt; new ones only for this module):
   TSX_ORIENTATION_FILE (/etc/tsx/orientation: the screen orientation as
   `tsx-config apply` leaves it for the initramfs and the kiosk; absent =
   landscape).
+  Parts that only some boards have (an entity exists only when its state file
+  or device does): the distance sensor, the light bar, USB power, the PoE
+  class and NFC tags. Their daemons are board glue and write the state files
+  in TSX_RUN_DIR. TSX_STATE_DIR (/var/lib/tsx) holds the kept light bar state.
 """
 
 import json
@@ -86,9 +90,19 @@ def board_value(name) -> str:
     val = os.environ.get(name, "")
     if val:
         return val
+    return _board_run("get", name)
+
+
+def board_call(name) -> str:
+    """The output of a function of the board file (`tsx-board call NAME`).
+    Empty if the board does not define it."""
+    return _board_run("call", name)
+
+
+def _board_run(how, name) -> str:
     try:
         return subprocess.run(
-            [os.environ.get("TSX_BOARD_BIN", "tsx-board"), "get", name],
+            [os.environ.get("TSX_BOARD_BIN", "tsx-board"), how, name],
             check=False, capture_output=True, text=True, timeout=5,
         ).stdout.strip()
     except Exception:  # noqa: BLE001
@@ -108,7 +122,10 @@ class PanelBackend:
         self.devtools = _env("TSX_DEVTOOLS", "127.0.0.1:9222")
         self.panelctl = Path(_env("TSX_PANELCTL", str(self.run_dir / "panelctl")))
         self.boot_verbose_flag = Path(_env("TSX_BOOT_VERBOSE_FLAG", "/etc/tsx/boot-verbose"))
+        self.state_dir = Path(_env("TSX_STATE_DIR", "/var/lib/tsx"))
         self.panelctl_bin = _env("TSX_PANELCTL_BIN", "tsx-panelctl")
+        self._usb_pending: Optional[Tuple[bool, float]] = None
+        self._last_tag: Optional[Tuple[str, str]] = None
         self._orientation_pending: Optional[Tuple[str, float]] = None
         self._last_key: Optional[Tuple[str, str]] = None
         self._blank_timeout_pending: Optional[Tuple[int, float]] = None
@@ -195,18 +212,29 @@ class PanelBackend:
 
     # ---- screen / backlight ------------------------------------------------
     def get_backlight_max(self) -> int:
-        val = None
+        """The top level of the backlight. tsx-idled reports it ("max M" in
+        brightness.state). Before that, BACKLIGHT_MAX of kiosk.conf, then the
+        max_brightness of the first backlight device. 31 is the last resort."""
+        val = _field(self.run_dir / "brightness.state", "max")
+        if not val:
+            try:
+                for line in self.kiosk_conf.read_text(encoding="utf-8", errors="replace").splitlines():
+                    line = line.strip()
+                    if line.startswith("BACKLIGHT_MAX="):
+                        val = line.split("=", 1)[1].split("#", 1)[0].strip()
+            except OSError:
+                pass
+        if not val:
+            try:
+                for dev in sorted(self.backlight_dir.iterdir()):
+                    val = (dev / "max_brightness").read_text(encoding="utf-8").strip()
+                    break
+            except OSError:
+                pass
         try:
-            for line in self.kiosk_conf.read_text(encoding="utf-8", errors="replace").splitlines():
-                line = line.strip()
-                if line.startswith("BACKLIGHT_MAX="):
-                    val = line.split("=", 1)[1].split("#", 1)[0].strip()
-        except OSError:
-            pass
-        try:
-            return int(val) if val else 23
-        except ValueError:
-            return 23
+            return int(val.split()[0]) if val else 31
+        except (ValueError, IndexError):
+            return 31
 
     def get_screen(self):
         """(on, level|None)."""
@@ -251,6 +279,113 @@ class PanelBackend:
     def set_als_auto(self, on: bool) -> None:
         self._ctl("als", "auto", "on" if on else "off")
 
+    # ---- presence (the distance sensor) ---------------------------
+    def presence_present(self) -> bool:
+        return (self.run_dir / "presence.state").is_file()
+
+    def get_presence(self) -> bool:
+        return (_field(self.run_dir / "presence.state", "present") or "off").split()[0] == "on"
+
+    def get_distance(self) -> Optional[float]:
+        """mm, or None while there is no target."""
+        raw = _field(self.run_dir / "presence.state", "distance")
+        try:
+            return float(raw.split()[0]) if raw else None
+        except (ValueError, IndexError):
+            return None
+
+    # ---- light bar (tsx-lightbar; /sys/class/leds/rgb:lightbar-N) ---------------
+    def lightbar_present(self) -> bool:
+        """A multicolor light bar (tsx-lightbar of the board; not the USB LED bar)."""
+        return self._panelctl("has", "lightbar")[0]
+
+    def get_lightbar(self):
+        """(on, brightness 0..255, r, g, b 0..255) from the kept state "on|off R G B BRI"."""
+        raw = _read_first_line(self.state_dir / "lightbar") or ""
+        parts = raw.split()
+        try:
+            r, g, b, bri = (int(x) for x in parts[1:5])
+            if not all(0 <= v <= 255 for v in (r, g, b, bri)):
+                raise ValueError
+            return parts[0] == "on" and bri > 0, bri, r, g, b
+        except (ValueError, IndexError):
+            return False, 255, 255, 255, 255
+
+    def set_lightbar(self, on: bool, bri: int, r: int, g: int, b: int) -> None:
+        bri = max(0, min(255, bri))
+        if not on or bri <= 0:
+            self._ctl("lightbar", "off")
+            return
+        r, g, b = (max(0, min(255, v)) for v in (r, g, b))
+        self._ctl("lightbar", "set", str(r), str(g), str(b), str(bri))
+
+    # ---- rear USB power (tsx-usbpower, read back by tsx-sensord) ----------------
+    def usb_power_present(self) -> bool:
+        return (self.run_dir / "usb-power.state").is_file()
+
+    def get_usb_power(self) -> bool:
+        value = (_field(self.run_dir / "usb-power.state", "power") or "on").split()[0] == "on"
+        pending = self._usb_pending
+        if pending and pending[0] != value and time.monotonic() - pending[1] < 5:
+            return pending[0]       # the command is on its way to the GPIO line
+        self._usb_pending = None
+        return value
+
+    def set_usb_power(self, on: bool) -> None:
+        self._usb_pending = (on, time.monotonic())
+        self._ctl("usbpower", "on" if on else "off")
+
+    # ---- PoE class (tsx-sensord: the GPIO line poe-plus) ------------------------
+    def poe_present(self) -> bool:
+        return (self.run_dir / "poe.state").is_file()
+
+    def get_poe_class(self) -> str:
+        cls = (_field(self.run_dir / "poe.state", "class") or "").split()
+        if cls and cls[0] == "plus":
+            return "PoE+ (802.3at)"
+        if cls and cls[0] == "standard":
+            return "PoE (802.3af)"
+        return "unknown"
+
+    # ---- eMMC health (tsx-sensord, every hour) ----------------------------------
+    def emmc_present(self) -> bool:
+        return (self.run_dir / "emmc.state").is_file()
+
+    def _emmc_code(self, key: str) -> Optional[int]:
+        raw = _field(self.run_dir / "emmc.state", key)
+        try:
+            return int(raw.split()[0], 16) if raw else None
+        except (ValueError, IndexError):
+            return None
+
+    def get_emmc_life(self, which: str) -> Optional[float]:
+        """Percent of the life used, as the upper bound of the JEDEC band:
+        0x01 = up to 10 %, ... 0x0a = up to 100 %, 0x0b = exceeded (110).
+        None when the eMMC does not report it (0x00)."""
+        code = self._emmc_code("life_" + which)
+        return None if not code or code > 0x0B else float(code * 10)
+
+    def get_emmc_eol(self) -> str:
+        return {1: "normal", 2: "warning", 3: "urgent"}.get(self._emmc_code("eol") or 0, "unknown")
+
+    # ---- NFC tags (tsx-nfcd) ------------------------------------------------------
+    def nfc_present(self) -> bool:
+        return self._panelctl("has", "nfc")[0]
+
+    def poll_nfc_tag(self) -> Optional[str]:
+        """The UID of a tag scanned since the last call, once; else None.
+        The first read after start is not an event (as poll_key_event)."""
+        count = _field(self.run_dir / "nfc.state", "count")
+        uid = _field(self.run_dir / "nfc.state", "last") or "-"
+        if count is None:
+            return None
+        cur = (count.strip(), uid.strip())
+        first = self._last_tag is None
+        if cur == self._last_tag:
+            return None
+        self._last_tag = cur
+        return None if first else cur[1]
+
     # ---- verbose boot (BOOT_VERBOSE, panel.conf) ------------------------------
     def get_verbose_boot(self) -> bool:
         """Read back from the flag file `tsx-config apply` leaves for
@@ -274,33 +409,12 @@ class PanelBackend:
         self._verbose_boot_pending = (on, time.monotonic())
         self._ctl("verbose-boot", "on" if on else "off")
 
-    # ---- eMMC health (tsx-emmc-state, every hour) ----------------------------------
-    def emmc_present(self) -> bool:
-        return (self.run_dir / "emmc.state").is_file()
-
-    def _emmc_code(self, key: str) -> Optional[int]:
-        raw = _field(self.run_dir / "emmc.state", key)
-        try:
-            return int(raw.split()[0], 16) if raw else None
-        except (ValueError, IndexError):
-            return None
-
-    def get_emmc_life(self, which: str) -> Optional[float]:
-        """Percent of the life used, as the upper bound of the JEDEC band:
-        0x01 = up to 10 %, ... 0x0a = up to 100 %, 0x0b = exceeded (110).
-        None when the eMMC does not report it (0x00)."""
-        code = self._emmc_code("life_" + which)
-        return None if not code or code > 0x0B else float(code * 10)
-
-    def get_emmc_eol(self) -> str:
-        return {1: "normal", 2: "warning", 3: "urgent"}.get(self._emmc_code("eol") or 0, "unknown")
-
     # ---- volume ------------------------------------------------------------
     def sound_card_present(self) -> bool:
         return self._panelctl("has", "sound")[0]
 
     def get_volume(self) -> float:
-        """The Master volume in percent, from `tsx-panelctl get volume`."""
+        """The speaker level in percent, from `tsx-panelctl get volume`."""
         ok, out = self._panelctl("get", "volume")
         if not ok:
             return 0.0
