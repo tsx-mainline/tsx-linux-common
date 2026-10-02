@@ -254,9 +254,10 @@ HELPER_PID=$!
 for _ in $(seq 1 50); do grep -q "listening on" "$T/helper.log" 2>/dev/null && break; sleep 0.1; done
 grep -q "listening on" "$T/helper.log" 2>/dev/null || { echo "FAIL: tsx-setup-helper did not start"; cat "$T/helper.log"; exit 1; }
 
+: > "$T/voice-service"   # a panel with a voice service
 TSX_CONFIG_BIN="$T/bin/tsx-config" TSX_RUN_DIR="$RUNDIR" TSX_ZONEINFO_DIR="$T/zoneinfo" \
 TSX_SETUP_CONF="$T/setup.conf" TSX_SETUP_NO_ZEROCONF=1 TSX_KIOSK_CONF="$T/kiosk.conf" \
-TSX_SETUP_PLUGIN_DIR="$(dirname "$(P usr/local/share/tsx/setup.d/ha.py)")" \
+TSX_VOICE_SERVICE="$T/voice-service" TSX_SETUP_PLUGIN_DIR="$(dirname "$(P usr/local/share/tsx/setup.d/ha.py)")" \
 	python3 "$SETUPD" > "$T/setupd.log" 2>&1 &
 SETUPD_PID=$!
 for _ in $(seq 1 50); do grep -q "listening on" "$T/setupd.log" 2>/dev/null && break; sleep 0.1; done
@@ -384,7 +385,7 @@ print(json.dumps({
 	'ORIENTATION': 'portrait', 'AUTO_BRIGHTNESS': 'off', 'ALS_SCALE': '2.5',
 	'ROOT_PASSWORD': '$ROOTPW', 'SSH_AUTHORIZED_KEY': '$SSHKEY',
 	# the rest exactly as the page sends an untouched field: empty strings
-	'MQTT_HOST': '', 'MQTT_PORT': '', 'MQTT_USER': '', 'MQTT_PASSWORD': '',
+	'MQTT_HOST': '', 'MQTT_PORT': '', 'MQTT_USER': '', 'MQTT_PASSWORD': '', 'BT_PROXY': 'off',
 	'KERNEL_FLAVOR': '', 'BLANK_TIMEOUT': ''
 }))
 ")
@@ -396,6 +397,7 @@ grep -q '^ORIENTATION="portrait"$' "$CONF" && ok "ORIENTATION landed in panel.co
 grep -q '^AUTO_BRIGHTNESS="off"$' "$CONF" && grep -q '^ALS_SCALE="2.5"$' "$CONF" && ok "AUTO_BRIGHTNESS and ALS_SCALE landed in panel.conf" || bad "AUTO_BRIGHTNESS or ALS_SCALE missing"
 grep -q '^ALS_AUTO="0"$' "$T/prefix/run/tsx/als.panel" "$RUNDIR/als.panel" 2>/dev/null && ok "apply wrote ALS_AUTO to als.panel" || echo "  (als.panel not checked: apply run dir differs)"
 [ "$(cat "$T/prefix/etc/tsx/orientation" 2>/dev/null)" = portrait ] && ok "apply left /etc/tsx/orientation (portrait) in the prefix" || bad "no orientation file after apply"
+grep -q '^BT_PROXY="off"$' "$CONF" && ok "BT_PROXY landed in panel.conf" || bad "BT_PROXY missing from panel.conf"
 grep -q '^HA_TOKEN=' "$CONF" && ok "HA_TOKEN was written" || bad "HA_TOKEN missing"
 grep -Eq '^MQTT_(HOST|PORT|USER)=' "$CONF" && bad "cleared MQTT fields were written as KEY=\"\" instead of removed" || ok "cleared MQTT host/port/user are removed from panel.conf"
 [ "$(TSX_CONF="$CONF" busybox sh "$TSXCONFIG" get MQTT_PASSWORD)" = "$PAYLOAD" ] && ok "an empty MQTT password field keeps the stored one (leave blank to keep)" || bad "an empty MQTT password field changed the stored password"
@@ -491,11 +493,28 @@ out=$(call GET /setup/api/state); body=$(body_of "$out")
 	&& ok "state: VOICE and BT_PROXY not available, with the reason" || bad "state unavailable: $(jget unavailable <<<"$body")"
 out=$(call GET /setup); page=$(body_of "$out")
 case "$page" in *'id="hw-hint"'*"function applyUnavailable"*) ok "the page has the not-available hint and disables the voice switch";; *) bad "the page has no not-available hint";; esac
-GSUBMIT='{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","VOICE":"off","WAKE_WORD":"hey_jarvis"}'
+GSUBMIT='{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","VOICE":"off","WAKE_WORD":"hey_jarvis","BT_PROXY":"on"}'
 out=$(call POST /setup/api/submit --data "$GSUBMIT")
 [ "$(status_of "$out")" = 200 ] && grep -q '^VOICE="on"$' "$CONF" && grep -q '^WAKE_WORD="okay_nabu"$' "$CONF" \
-	&& ok "a submit leaves VOICE and WAKE_WORD as they are (a panel.conf from another panel keeps them)" \
-	|| bad "government=1 submit: $(status_of "$out"), $(grep -E '^(VOICE|WAKE_WORD)=' "$CONF" | tr '\n' ' ')"
+	&& grep -q '^BT_PROXY="off"$' "$CONF" \
+	&& ok "a submit leaves VOICE, WAKE_WORD and BT_PROXY as they are (a panel.conf from another panel keeps them)" \
+	|| bad "government=1 submit: $(status_of "$out"), $(grep -E '^(VOICE|WAKE_WORD|BT_PROXY)=' "$CONF" | tr '\n' ' ')"
+case "$page" in *'name="BT_PROXY"'*'id="bt-wrap"'*|*'id="bt-wrap"'*'name="BT_PROXY"'*) ok "the page has the Bluetooth proxy field and hides it when unavailable";; *) bad "the page has no Bluetooth proxy field";; esac
+case "$page" in *'(default: off)'*) ok "the Bluetooth proxy field names the default of the board (off)";; *) bad "the Bluetooth proxy field does not name the board default";; esac
+rm -f "$RUNDIR/hw.conf"
+
+echo "== a panel with no GOVERNMENT in hw.conf, and a missing voice service =="
+printf 'MIC=no\nBT=no\nPRESENCE=yes\nLIGHT=yes\n' > "$RUNDIR/hw.conf"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget unavailable.VOICE <<<"$body")" = "no microphone on this panel" ] \
+	&& [ "$(jget unavailable.BT_PROXY <<<"$body")" = "no Bluetooth module on this panel" ] \
+	&& ok "no government value: the reasons do not name it" || bad "no government value: $(jget unavailable <<<"$body")"
+printf 'MIC=yes\nBT=yes\n' > "$RUNDIR/hw.conf"
+rm -f "$T/voice-service"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget unavailable.VOICE <<<"$body")" = "the voice service is not installed" ] && [ "$(jget unavailable.BT_PROXY <<<"$body")" = "" ] \
+	&& ok "no voice service: only the voice fields are not available" || bad "no voice service: $(jget unavailable <<<"$body")"
+: > "$T/voice-service"
 rm -f "$RUNDIR/hw.conf"
 
 echo "== settings that the page sends for the light sensor =="
@@ -595,7 +614,7 @@ kill "$SETUPD2_PID" 2>/dev/null; wait "$SETUPD2_PID" 2>/dev/null
 PORT=$PORT_HA
 TSX_CONFIG_BIN="$T/bin/tsx-config" TSX_RUN_DIR="$RUNDIR" TSX_ZONEINFO_DIR="$T/zoneinfo" \
 TSX_SETUP_CONF="$T/setup.conf" TSX_SETUP_NO_ZEROCONF=1 TSX_KIOSK_CONF="$T/kiosk.conf" \
-TSX_SETUP_PLUGIN_DIR="$(dirname "$(P usr/local/share/tsx/setup.d/ha.py)")" \
+TSX_VOICE_SERVICE="$T/voice-service" TSX_SETUP_PLUGIN_DIR="$(dirname "$(P usr/local/share/tsx/setup.d/ha.py)")" \
 	python3 "$SETUPD" > "$T/setupd3.log" 2>&1 &
 SETUPD_PID=$!
 for _ in $(seq 1 50); do grep -q "listening on" "$T/setupd3.log" 2>/dev/null && break; sleep 0.1; done

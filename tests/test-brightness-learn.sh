@@ -1,5 +1,5 @@
 #!/bin/bash
-# Host test for the learning brightness curve (kiosk/usr/local/lib/tsx/
+# Host test for the learning brightness curve (base/usr/local/lib/tsx/
 # tsx_brightness.py, docs/adaptive-brightness.md). No compiler, no hardware.
 #   1. the curve, the user points, the monotone correction, the file, the
 #      reset and the Learner (tests/brightness-learn-check.py)
@@ -8,7 +8,7 @@
 #      the reset flag
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-MOD=$HERE/kiosk/usr/local/lib/tsx/tsx_brightness.py
+MOD=$HERE/base/usr/local/lib/tsx/tsx_brightness.py
 T=$(mktemp -d); trap 'rm -rf $T' EXIT
 N=0 F=0
 ok() { echo "  ok: $*"; N=$((N+1)); }

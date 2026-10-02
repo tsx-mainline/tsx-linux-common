@@ -13,7 +13,7 @@ shim, t = sys.argv[1:3]
 sys.path.insert(0, shim)
 os.environ.update(TSX_RUN_DIR=t + "/run", TSX_STATE_DIR=t + "/state", TSX_BACKLIGHT_DIR=t + "/bl",
                   TSX_KIOSK_CONF=t + "/none", TSX_PANELCTL_BIN="/nonexistent")
-from tsx_panel.backend import PanelBackend
+from tsx_panel.backend import PanelBackend, esphome_model
 def w(name, text):
     open(f"{t}/run/{name}", "w").write(text)
 b = PanelBackend()
@@ -38,5 +38,12 @@ assert b.poll_nfc_tag() is None          # the first read is no scan
 assert b.poll_nfc_tag() is None
 w("nfc.state", "count 2\nlast 04:B2\n")
 assert b.poll_nfc_tag() == "04:B2" and b.poll_nfc_tag() is None
+# the model of the ESPHome device (the xx60 reports "xx60 panel", a board that gives the model of the unit "Crestron <model>")
+assert esphome_model("xx60", "xx60") == "xx60 panel"
+assert esphome_model("", "xx60") == "xx60 panel"
+assert esphome_model("FAKE-100", "fake") == "Crestron FAKE-100"
+assert esphome_model("Crestron FAKE-100", "fake") == "Crestron FAKE-100"
+assert esphome_model("", "fake") == "fake panel"
+assert esphome_model("", "") == ""
 print("PASS test-shim-sensors")
 PY

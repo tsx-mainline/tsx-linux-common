@@ -9,10 +9,11 @@ adds these fields:
   * the Home Assistant URL, with "Find it automatically" and "Check"
   * how the panel logs in (login form, long-lived token, trusted network)
   * the voice assistant and its wake word
+  * the Bluetooth proxy (on, off or the default of the board)
   * MQTT (broker, port, user, password)
 
 and these checks: the settings that this panel cannot use (no microphone, no
-Bluetooth module), and the Home Assistant URL check. The page code of
+voice service, no Bluetooth module), and the Home Assistant URL check. The page code of
 tsx-setupd never names Home Assistant, MQTT or voice.
 
 What a plugin gives to tsx-setupd (all names are optional except NAME):
@@ -37,11 +38,16 @@ What a plugin gives to tsx-setupd (all names are optional except NAME):
   JS                 {slot: js} for the slots apply, unavailable, payload and
                      init (the script of the page)
   GET_ROUTES, POST_ROUTES  {path: function(handler[, data])} for more API paths
+
+Env override for host tests: TSX_VOICE_SERVICE (the init script of the voice
+service, default /etc/init.d/tsx-voice), TSX_BOARD_BIN (tsx-board, default
+tsx-board).
 """
-import json
+import os
 import re
 import socket
 import ssl
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -57,12 +63,13 @@ def init(ctx):
     _ctx = ctx
 
 
-SIMPLE_KEYS = ["VOICE", "WAKE_WORD", "MQTT_HOST", "MQTT_PORT", "MQTT_USER", "MQTT_PASSWORD"]
+SIMPLE_KEYS = ["VOICE", "WAKE_WORD", "MQTT_HOST", "MQTT_PORT", "MQTT_USER", "MQTT_PASSWORD", "BT_PROXY"]
 # Empty = cleared. The page pre-fills these keys, so an empty one was cleared
 # on purpose. MQTT_PASSWORD is not one of them: the page never pre-fills it.
-CLEARABLE_BLANK = {"MQTT_HOST", "MQTT_PORT", "MQTT_USER"}
+# An empty BT_PROXY is the default of the board.
+CLEARABLE_BLANK = {"MQTT_HOST", "MQTT_PORT", "MQTT_USER", "BT_PROXY"}
 STATE_KEYS = SIMPLE_KEYS + ["HA_LOGIN_METHOD", "HA_TOKEN"]
-UNAVAILABLE_DROPS = {"VOICE": ("VOICE", "WAKE_WORD")}
+UNAVAILABLE_DROPS = {"VOICE": ("VOICE", "WAKE_WORD"), "BT_PROXY": ("BT_PROXY",)}
 
 TEXT = {
     "url_label": "Home Assistant URL",
@@ -76,13 +83,28 @@ TEXT = {
 def unavailable(hw):
     """The settings that this panel cannot use, with the reason (hw is the
     content of hw.conf from tsx-hw)."""
-    gov = hw.get("GOVERNMENT", "unknown")
+    # Only a board with a government value (the xx60 family) names it.
+    gov = hw.get("GOVERNMENT")
+    tail = " (government=%s)" % gov if gov else ""
     out = {}
-    if hw.get("MIC") == "no":
-        out["VOICE"] = "no microphone on this panel (government=%s)" % gov
+    if not os.path.exists(os.environ.get("TSX_VOICE_SERVICE", "/etc/init.d/tsx-voice")):
+        out["VOICE"] = "the voice service is not installed"
+    elif hw.get("MIC") == "no":
+        out["VOICE"] = "no microphone on this panel" + tail
     if hw.get("BT") == "no":
-        out["BT_PROXY"] = "no Bluetooth module on this panel (government=%s)" % gov
+        out["BT_PROXY"] = "no Bluetooth module on this panel" + tail
     return out
+
+
+def _bt_default():
+    """The BT_PROXY default of the board (on or off), or "" if unknown."""
+    try:
+        r = subprocess.run([os.environ.get("TSX_BOARD_BIN", "tsx-board"), "get", "TSX_BT_PROXY_DEFAULT"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    v = r.stdout.strip()
+    return v if r.returncode == 0 and v in ("on", "off") else ""
 
 
 def submit(fields):
@@ -157,13 +179,27 @@ HTML = {
         <input id="f-mqtt-pass" name="MQTT_PASSWORD" type="password" autocomplete="off">
       </div>
     </details>
+    <details id="bt-wrap"><summary>Bluetooth</summary>
+      <div class="card">
+        <label for="f-btproxy">Bluetooth proxy for Home Assistant</label>
+        <select id="f-btproxy" name="BT_PROXY">
+          <option value="">@BT_DEFAULT@</option>
+          <option value="on">On</option>
+          <option value="off">Off</option>
+        </select>
+        <div class="hint">Home Assistant uses the Bluetooth controller of the panel to scan for devices and to connect to them.</div>
+      </div>
+    </details>
 """,
 }
+_d = _bt_default()
+HTML["details"] = HTML["details"].replace("@BT_DEFAULT@", "(default: %s)" % _d if _d else "(default of the board)")
 
 JS = {
     "apply": """
     if (fields.VOICE === "on") { $("f-voice").checked = true; $("wake-wrap").style.display = "block"; }
     if (fields.WAKE_WORD) $("f-wake").value = fields.WAKE_WORD;
+    if (fields.BT_PROXY) $("f-btproxy").value = fields.BT_PROXY;
     if (fields.MQTT_HOST) $("f-mqtt-host").value = fields.MQTT_HOST;
     if (fields.MQTT_PORT) $("f-mqtt-port").value = fields.MQTT_PORT;
     if (fields.MQTT_USER) $("f-mqtt-user").value = fields.MQTT_USER;
@@ -183,7 +219,10 @@ JS = {
       $("wake-wrap").style.display = "none";
       notes.push("Voice assistant: not available, " + u.VOICE + ".");
     }
-    if (u.BT_PROXY) notes.push("Bluetooth proxy: not available, " + u.BT_PROXY + ".");
+    if (u.BT_PROXY) {
+      $("f-btproxy").disabled = true; $("bt-wrap").style.display = "none";
+      notes.push("Bluetooth proxy: not available, " + u.BT_PROXY + ".");
+    }
     if (notes.length) { $("hw-hint").textContent = notes.join(" "); $("hw-hint").style.display = "block"; }
 """,
     "payload": """
@@ -191,6 +230,7 @@ JS = {
     payload.HA_TOKEN = $("f-token").value;
     payload.VOICE = $("f-voice").disabled ? undefined : ($("f-voice").checked ? "on" : "off");
     payload.WAKE_WORD = $("f-voice").disabled ? undefined : $("f-wake").value.trim();
+    payload.BT_PROXY = $("f-btproxy").disabled ? undefined : $("f-btproxy").value;
     payload.MQTT_HOST = $("f-mqtt-host").value.trim();
     payload.MQTT_PORT = $("f-mqtt-port").value.trim();
     payload.MQTT_USER = $("f-mqtt-user").value.trim();

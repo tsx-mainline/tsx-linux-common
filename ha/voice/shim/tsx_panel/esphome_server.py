@@ -42,7 +42,7 @@ from linux_voice_assistant.util import get_default_interface, get_default_ipv4, 
 from linux_voice_assistant.zeroconf import HomeAssistantZeroconf
 
 from . import bluetooth, naming, security
-from .backend import PanelBackend, board_call, board_value
+from .backend import PanelBackend, board_call, board_value, esphome_model
 from .device import build_entities, poll
 
 _LOGGER = logging.getLogger("tsx_esphome")
@@ -182,11 +182,11 @@ async def async_main() -> None:
     PanelAPIServer.name = device_name
     PanelAPIServer.friendly_name = friendly_name
     PanelAPIServer.mac_address = mac
-    # tsx_board_ha_model of the board file gives the model name, if the board
-    # has that function. Else TSX_HA_MODEL ("xx60 panel" on the xx60).
-    ha_model = board_call("tsx_board_ha_model") or board_value("TSX_HA_MODEL")
+    # The model of the device: see esphome_model() ("xx60 panel" on the xx60,
+    # "Crestron <model>" on a board that gives the model of the unit).
+    ha_model = esphome_model(board_call("tsx_board_ha_model"), board_value("TSX_HA_MODEL"))
     if ha_model:
-        PanelAPIServer.model = f"{ha_model} panel"
+        PanelAPIServer.model = ha_model
 
     backend = PanelBackend()
     device = build_entities(None, backend, key_base=0)

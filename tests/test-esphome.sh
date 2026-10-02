@@ -31,6 +31,7 @@ export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-bo
 HERE=$(cd "$(dirname "$0")" && pwd)
 SHIM=$HERE/../ha/voice/shim
 T=$(mktemp -d)
+: > "$T/libtflite.so"   # tsx_lva only checks that the wake word library exists
 PIDS=
 trap 'for p in $PIDS; do kill "$p" 2>/dev/null || true; done; [ -n "${KEEP:-}" ] && echo "kept $T" || rm -rf "$T"' EXIT
 
@@ -140,7 +141,7 @@ start_server() {
 	TSX_ALS_CONF="$F/etc/tsx/als.conf.missing" TSX_ASOUND_DIR="$F/proc/asound" \
 	TSX_THERMAL_ZONE="$F/sys/thermal/temp" TSX_DEVTOOLS="127.0.0.1:$DT_HTTP" \
 	TSX_BOOT_VERBOSE_FLAG="$F/etc/tsx/boot-verbose" \
-	TSX_HA_TRANSPORT=esphome \
+	TSX_HA_TRANSPORT=esphome TSX_TFLITE_SO="$T/libtflite.so" \
 	TSX_ESPHOME_RUN_CONF="$F/run/tsx/esphome.conf.missing" TSX_ESPHOME_KEY_FILE="$F/run/tsx/esphome.key.missing" \
 	TSX_PANEL_NAME="$pname" \
 	TSX_ORIENTATION_FILE="$F/etc/tsx/orientation.missing" \

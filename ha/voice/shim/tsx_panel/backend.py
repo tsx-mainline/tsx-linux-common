@@ -99,6 +99,22 @@ def board_call(name) -> str:
     return _board_run("call", name)
 
 
+def esphome_model(ha_model, family_model) -> str:
+    """The model that the ESPHome device reports to Home Assistant.
+
+    ha_model is tsx_board_ha_model of the board file. family_model is
+    TSX_HA_MODEL, the name that a board gives when it has no better one.
+    - The two are equal (the xx60 gives its family name "xx60"): "xx60 panel".
+    - A board gives the model of the unit: the vendor and the model
+      ("Crestron " and the model, unless the model starts with "Crestron").
+    - The board gives only TSX_HA_MODEL: the same as the first case.
+    """
+    if ha_model and ha_model != family_model:
+        return ha_model if ha_model.startswith("Crestron") else "Crestron " + ha_model
+    name = ha_model or family_model
+    return f"{name} panel" if name else ""
+
+
 def _board_run(how, name) -> str:
     try:
         return subprocess.run(
