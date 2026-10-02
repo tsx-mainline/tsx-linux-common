@@ -88,4 +88,26 @@ PID=$!
 sleep 0.6; [ "$(b)" = 7 ] || fail "the board file did not win: $(b), want 7"
 kill $PID; wait $PID || true; PID=
 grep -q 'no .*none.conf' $T/log2 && fail "a missing board file was reported"
+# no value in any config: the levels are shares of max_brightness (day 55 %, night 26 %, cap 74 %)
+run_defaults() { # MAX CONF-OR-none; prints the level and the max of brightness.state
+	rm -rf $T/bl2 $T/run2; mkdir -p $T/bl2/pwm $T/run2
+	echo "$1" > $T/bl2/pwm/max_brightness; echo "$1" > $T/bl2/pwm/brightness
+	TSX_INPUT_DIR=$T/input TSX_BACKLIGHT_DIR=$T/bl2 TSX_STATE_FILE=$T/state3 TSX_RUN_DIR=$T/run2 $BIN -c "$2" -v 2>$T/log3 &
+	PID=$!; sleep 0.6; kill $PID; wait $PID || true; PID=
+	echo "$(cat $T/bl2/pwm/brightness) $(sed -n 's/^max //p' $T/run2/brightness.state)"
+}
+printf 'NIGHT_START=0\nNIGHT_END=0\n' > $T/day.conf
+[ "$(run_defaults 4095 $T/day.conf)" = "2252 3030" ] || fail "defaults on 0..4095: $(run_defaults 4095 $T/day.conf), want 2252 3030"
+[ "$(run_defaults 31 $T/day.conf)" = "17 23" ] || fail "defaults on 0..31: $(run_defaults 31 $T/day.conf), want 17 23"
+printf 'NIGHT_START=0\nNIGHT_END=0\nBRIGHTNESS_DAY=2400\n' > $T/day2.conf
+[ "$(run_defaults 4095 $T/day2.conf)" = "2400 3030" ] || fail "BRIGHTNESS_DAY only: $(run_defaults 4095 $T/day2.conf), want 2400 3030"
+set -- $(run_defaults 4095 $T/none.conf)
+[ "$1" -le 3030 ] && [ "$1" -ge 1065 ] || fail "no config file on 0..4095: level $1 is outside 1065..3030"
+# a manual offset has the range of the backlight: -1000 on a 0..4095 base of 2400 gives 1400
+rm -rf $T/bl2 $T/run2; mkdir -p $T/bl2/pwm $T/run2
+echo 4095 > $T/bl2/pwm/max_brightness; echo 4095 > $T/bl2/pwm/brightness; echo -1000 > $T/run2/brightness-offset
+printf 'NIGHT_START=0\nNIGHT_END=0\nBRIGHTNESS_DAY=2400\nBRIGHTNESS_NIGHT=2400\nBACKLIGHT_MAX=4095\n' > $T/off.conf
+TSX_INPUT_DIR=$T/input TSX_BACKLIGHT_DIR=$T/bl2 TSX_STATE_FILE=$T/state3 TSX_RUN_DIR=$T/run2 $BIN -c $T/off.conf -v 2>$T/log3 &
+PID=$!; sleep 0.6; kill $PID; wait $PID || true; PID=
+[ "$(cat $T/bl2/pwm/brightness)" = 1400 ] || fail "offset -1000 on 2400 of 0..4095: $(cat $T/bl2/pwm/brightness), want 1400"
 echo "PASS tsx-idled"; sed 's/^/  log: /' $T/log

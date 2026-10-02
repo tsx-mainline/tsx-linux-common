@@ -222,6 +222,7 @@ for h in ledbar keypad als sound presence lightbar usbpower poe nfc; do $PCTL ha
 rm -f "$T/als.conf" "$T/buttons.conf" "$T/run/als.state" "$T/run/presence.state" "$T/run/usb-power.state" "$T/run/poe.state" "$T/run/nfc.state" "$T/bin/tsx-ledbar-none"
 rm -rf "$T/asound/TSW1060" "$T/leds/rgb:lightbar-0" "$T/nfc/nfc0"
 for h in ledbar keypad als sound presence lightbar usbpower poe nfc; do $PCTL has $h && bad "has $h: yes without the hardware" || ok "has $h: no without the hardware"; done
+for h in ledbar keypad als sound presence lightbar usbpower poe nfc; do $PCTL has $h >/dev/null 2>&1; [ $? = 1 ] && ok "has $h: exit 1 without the hardware" || bad "has $h: exit is not 1"; done
 $PCTL has toaster >/dev/null 2>&1; [ $? = 2 ] && ok "has of an unknown name: exit 2" || bad "has of an unknown name"
 # events: the present values first, then a line for each change
 printf 'want 10 20 30\n' > "$T/run/ledbar.state"; printf 'led 128 day\nlast home short 12:00:01\n' > "$T/run/buttons.state"

@@ -21,6 +21,8 @@
  *  - Brightness follows a day/night schedule (BRIGHTNESS_DAY/NIGHT in
  *    backlight steps, NIGHT_START/NIGHT_END hours, local time). BACKLIGHT_MAX
  *    limits it (the TSX panels: MP3309C 0..31, vendor cap 23, U-Boot 17).
+ *    A value that no config file sets is a share of max_brightness (see
+ *    resolve_levels), so the defaults fit any backlight range.
  *  - KEY_POWER (the TSX power key, gpio-keys-polled) toggles blank and wake
  *    when POWER_KEY=blank.
  *  - On-screen keyboard toggle (OSK_GESTURE=threefinger|twofinger|off): a
@@ -149,7 +151,7 @@ static long long now_ms(void)
 
 static void cfg_defaults(struct cfg *c)
 {
-	c->blank_timeout = 300; c->day = 17; c->night = 8; c->bl_max = 23; c->power_key = 1;
+	c->blank_timeout = 300; c->day = -1; c->night = -1; c->bl_max = -1; c->power_key = 1;
 	c->night_start = 22; c->night_end = 7; c->swallow = 1; c->swallow_ms = 700;
 	strcpy(c->backlight, "auto");
 	c->osk_gesture = 3; c->osk_tap_ms = 500;
@@ -251,6 +253,19 @@ static void find_backlight(void)
 	if (best[0]) snprintf(bldir, sizeof bldir, "%s/%s", base, best);
 }
 
+/* A level that no config file sets is a share of the max_brightness of the
+ * backlight: day 55 %, night 26 %, cap 74 %. A 0..31 backlight gets 17, 8 and
+ * 23, a 0..4095 backlight gets 2252, 1065 and 3030. Fixed numbers would be
+ * wrong on a backlight with a different range. */
+static void resolve_levels(void)
+{
+	int max = bldir[0] ? read_int(bldir, "max_brightness") : -1;
+	if (max <= 0) return;
+	if (C.day < 0) C.day = (int)((max * 55LL + 50) / 100);
+	if (C.night < 0) C.night = (int)((max * 26LL + 50) / 100);
+	if (C.bl_max < 0) C.bl_max = (int)((max * 74LL + 50) / 100);
+}
+
 /* The level without any manual setting. It is the tsx-als level while its
  * file is fresh. Otherwise it is the day/night schedule. */
 static int base_level(void)
@@ -280,7 +295,9 @@ static int target_level(void)
 	if (st_override < 0) st_override = 0;
 	st_base = base_level();
 	/* The local manual setting: an offset on top of ALS or the schedule. */
-	if (read_sint(ovrdir, "brightness-offset", &off) || off < -64 || off > 64) off = 0;
+	/* The offset has the range of the backlight (xx60: 0..23, a wide range: 0..4095). */
+	int lim = C.bl_max > 64 ? C.bl_max : 64;
+	if (read_sint(ovrdir, "brightness-offset", &off) || off < -lim || off > lim) off = 0;
 	st_offset = off;
 	return st_override > 0 ? st_override : st_base + off;
 }
@@ -604,7 +621,7 @@ int main(int argc, char **argv)
 	 * did not end in time). */
 	signal(SIGCHLD, SIG_DFL);
 
-	cfg_load(&C); find_backlight();
+	cfg_load(&C); find_backlight(); resolve_levels();
 	{
 		/* boot hold (see the header) */
 		double up = 1e9; FILE *f = fopen("/proc/uptime", "r");
@@ -634,7 +651,7 @@ int main(int argc, char **argv)
 		while (waitpid(-1, NULL, WNOHANG) > 0) ;   /* OSK_TOGGLE_CMD children */
 		if (t - last_scan >= 5000) { scan_devices(blanked && C.swallow); last_scan = t; }
 		if (sig_hup) {
-			sig_hup = 0; cfg_load(&C); load_timeout(0); bldir[0] = 0; find_backlight(); cur_level = -1;
+			sig_hup = 0; cfg_load(&C); load_timeout(0); bldir[0] = 0; find_backlight(); resolve_levels(); cur_level = -1;
 			if (!blanked) backlight_on();
 			logm("config reloaded");
 		}
