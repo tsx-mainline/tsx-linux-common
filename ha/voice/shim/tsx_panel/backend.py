@@ -296,7 +296,7 @@ class PanelBackend:
 
     # ---- light bar (tsx-lightbar; /sys/class/leds/rgb:lightbar-N) ---------------
     def lightbar_present(self) -> bool:
-        """A multicolor light bar (tsx-lightbar of the board; not the USB LED bar)."""
+        """A multicolor light bar of the board (not the USB LED bar)."""
         return self._panelctl("has", "lightbar")[0]
 
     def get_lightbar(self):

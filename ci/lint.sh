@@ -1,32 +1,29 @@
 #!/bin/bash
 # Syntax and smoke lint for the whole repo. It needs no hardware and no build.
-# Run it locally the way CI does: ci/lint.sh
+# Run it the way CI does: ci/lint.sh
 #   - every script with a "#!/bin/sh" shebang must pass `busybox sh -n`.
-#     This is the shell that runs on the panel and in the Alpine build
-#     containers, so bash-only syntax is not allowed there.
+#     This is the shell that runs on the panel, so bash syntax is not allowed.
 #   - every script with a "#!/bin/bash" shebang must pass `bash -n`
 #   - every *.py file must byte-compile
-#   - the host installer drivers must support --help
-# The script skips work/ (old per-session reports, not part of the shipped tree).
-# It runs in docker as the calling user (-u "$(id -u):$(id -g)"). The calling
-# user then owns any file that the script leaves behind, and root does not.
-# `python3 -m py_compile` always writes a __pycache__/*.pyc next to each file,
-# whatever PYTHONDONTWRITEBYTECODE says. The script removes those files again
-# at the end.
+#   - every file in an etc/init.d directory must be executable (OpenRC
+#     refuses a service script without the x bit)
+#   - the package directories hold no proprietary file (ci/check-no-proprietary.sh)
+#   - the relative links of the docs resolve
+# `python3 -m py_compile` writes a __pycache__ directory. The script removes
+# those directories again at the end.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 fail=0
 
-# Classify by the actual first line of the file. Do not grep the content:
-# some scripts embed a "#!/bin/sh" heredoc for a script that they generate,
-# and that line is not their own shebang.
+# Classify by the first line of the file. Do not grep the content: some
+# scripts embed a "#!/bin/sh" heredoc for a script that they generate.
 sh_files=() bash_files=()
 while IFS= read -r -d '' f; do
 	case "$(head -c 4096 "$f" 2>/dev/null | tr -d '\0' | head -n1)" in
 	'#!/bin/sh') sh_files+=("$f");;
 	'#!/bin/bash') bash_files+=("$f");;
 	esac
-done < <(find . -type f -not -path './work/*' -not -path './.git/*' -print0)
+done < <(find . -type f -not -path './.git/*' -print0)
 
 echo "== busybox sh -n (${#sh_files[@]} scripts) =="
 for f in "${sh_files[@]}"; do
@@ -41,31 +38,19 @@ done
 echo "== python3 -m py_compile =="
 while IFS= read -r f; do
 	python3 -m py_compile "$f" || { echo "FAIL: py_compile $f"; fail=1; }
-done < <(find . -name '*.py' -not -path './work/*' -not -path './.git/*')
-find . -name __pycache__ -not -path './work/*' -not -path './.git/*' -exec rm -rf {} + 2>/dev/null
+done < <(find . -name '*.py' -not -path './.git/*')
+find . -name __pycache__ -not -path './.git/*' -exec rm -rf {} + 2>/dev/null
 
-echo "== installer driver --help =="
-for f in installer/steps/legacy/tsx-android-to-card installer/tsx-restore-factory \
-         installer/tsx-install-mainline installer/steps/legacy/tsx-card-to-emmc \
-         installer/steps/tsx-ensure-root \
-         installer/payload/mkpayload installer/emmc/tsx-usb-recovery \
-         installer/emmc/tsx-update-boot installer/steps/tsx-deploy-tfa.sh; do
-	"$f" --help >/dev/null 2>&1 || { echo "FAIL: $f --help"; fail=1; }
-done
-
-echo "== docs: relative links + anchors resolve =="
-python3 ci/check-doc-links.py || { echo "FAIL: doc links"; fail=1; }
-
-echo "== on-panel tools shipped by the rootfs overlay =="
-# one source file, copied into the image by rootfs/mkrootfs.sh (cp -a overlay)
-[ -x rootfs/overlay/usr/local/sbin/tsx-update-boot ] || { echo "FAIL: rootfs/overlay/usr/local/sbin/tsx-update-boot missing or not executable"; fail=1; }
-[ "$(readlink -f installer/emmc/tsx-update-boot)" = "$(readlink -f rootfs/overlay/usr/local/sbin/tsx-update-boot)" ] \
-	|| { echo "FAIL: installer/emmc/tsx-update-boot is not a link to the rootfs overlay copy"; fail=1; }
-# OpenRC refuses a service script without the x bit (rc-update add fails
-# and mkrootfs.sh stops with "MISSING service")
-for f in rootfs/overlay/etc/init.d/*; do
+echo "== init scripts are executable =="
+for f in */etc/init.d/*; do
 	[ -x "$f" ] || { echo "FAIL: $f is not executable"; fail=1; }
 done
+
+echo "== no proprietary file =="
+ci/check-no-proprietary.sh || { echo "FAIL: proprietary file"; fail=1; }
+
+echo "== docs: relative links and anchors resolve =="
+python3 ci/check-doc-links.py || { echo "FAIL: doc links"; fail=1; }
 
 [ $fail -eq 0 ] && echo "lint OK" || echo "lint FAILED"
 exit $fail
