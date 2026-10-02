@@ -189,6 +189,27 @@ want '^WARNING: install is running (writing eMMC root (p8)). DO NOT power off th
 : > "$T/keys"; : > "$T/frame.raw"; rm -f "$T/shell.calls"
 sh "$T/rs.sh" loop && ok "loop exits with its round limit" || bad "loop"
 
+echo "== no tsx-lib.sh (a board file that needs none) =="
+# busybox ash stops a script when "." cannot read its file. A board file can
+# need no tsx-lib.sh, so the screen must work without it.
+NOLIB_BOARD=$T/board-nolib.sh
+cat > "$NOLIB_BOARD" <<'EOB'
+tsx_board_probe() { return 0; }
+tsx_board_model() { echo FAKE-100; }
+tsx_board_stock_fw() { :; }
+tsx_board_unit_id() { :; }
+tsx_board_mac() { :; }
+tsx_board_mac_source() { :; }
+tsx_board_rescue_extra() { :; }
+EOB
+SH=sh; command -v busybox >/dev/null 2>&1 && SH="busybox sh"
+: > "$T/frame.raw"
+rc=0; TSX_LIB=$T/no-such-lib.sh TSX_BOARD_CONF=$NOLIB_BOARD $SH "$T/rs.sh" once || rc=$?
+sed 's/\x1b\[[0-9?;]*[A-Za-z]//g' "$T/frame.raw" > "$T/frame"
+[ "$rc" -eq 0 ] && ok "no tsx-lib.sh: exit 0 ($SH)" || bad "no tsx-lib.sh: exit $rc ($SH)"
+want '^Press Enter for a rescue shell$' "no tsx-lib.sh: the frame is drawn"
+want '^model        : ' "no tsx-lib.sh: the model line"
+
 echo "== wiring =="
 [ -x "$RS" ] && ok "screen script executable" || bad "not executable"
 # The inittab, the initramfs build and the rescue image build are board glue.

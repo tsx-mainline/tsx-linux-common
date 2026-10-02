@@ -47,7 +47,11 @@ SHELLCMD=${TSX_STATUS_SHELL:-/bin/sh -l}
 COLS=${TSX_STATUS_COLS:-80}
 WAIT=${TSX_STATUS_WAIT:-2}
 VERFILE=${TSX_VERFILE:-/etc/tsx/rescue-version}
-. ${TSX_LIB:-/usr/share/tsx/tsx-lib.sh} 2>/dev/null || true
+# The xx60 board file needs tsx-lib.sh. A rescue image can come without it.
+# Test the file first: busybox ash stops the whole script when "." cannot
+# read its file, also with "|| true".
+LIB=${TSX_LIB:-/usr/share/tsx/tsx-lib.sh}
+if [ -r "$LIB" ]; then . "$LIB"; fi
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 
 # ---- banner: small enough for an 80x25 console (63 columns). On the LCD the
