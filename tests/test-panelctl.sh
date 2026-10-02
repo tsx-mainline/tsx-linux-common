@@ -46,7 +46,7 @@ chmod +x "$T/bin/reboot"
 # PATH is ever searched, so a $T/bin/reboot fixture on PATH would silently
 # never run (harmless on the panel, where busybox's own reboot IS what we
 # want -- but it defeats overriding it for this test).
-PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_REBOOT_BIN="$T/bin/reboot" \
+PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_REBOOT_BIN="$T/bin/reboot" TSX_LEARN_FILE="$T/learn.json" \
 	busybox sh "$SCRIPT" > "$T/panelctl.log" 2>&1 &
 PID=$!
 for _ in $(seq 1 20); do grep -q "listening on" "$T/panelctl.log" 2>/dev/null && break; sleep 0.1; done
@@ -164,7 +164,7 @@ echo "== the seam: commands for the Home Assistant layer (ledbar on, keypad led 
 mkdir -p "$T/bl/dev0"; echo 0 > "$T/bl/dev0/brightness"; echo "on 17" > "$T/idled.state"
 restart_with_hw() {
 	kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null
-	PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_REBOOT_BIN="$T/bin/reboot" TSX_IDLED_STATE="$T/idled.state" \
+	PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_REBOOT_BIN="$T/bin/reboot" TSX_IDLED_STATE="$T/idled.state" TSX_LEARN_FILE="$T/learn.json" \
 		TSX_BACKLIGHT_DIR="$T/bl" TSX_BUTTONS_CONF="$T/buttons.conf" TSX_ALS_CONF="$T/als.conf" TSX_ASOUND_DIR="$T/asound" \
 		TSX_LEDS_DIR="$T/leds" TSX_STATE_DIR="$T/state" TSX_NFC_SYS_DIR="$T/nfc" \
 		busybox sh "$SCRIPT" > "$T/panelctl.log" 2>&1 &
@@ -244,6 +244,34 @@ for f in "$HERE/../ha/usr/local/sbin/tsx-mqtt" "$HERE/../ha/voice/shim/tsx_panel
 		bad "$(basename "$f") calls a hardware tool: $(grep -nE "^[[:space:]]*($hw)[[:space:]]|[;&|(][[:space:]]*($hw)[[:space:]]|\"($hw)\"" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | head -n 3 | tr '\n' '|')"
 	else ok "$(basename "$f") calls no hardware tool, only tsx-panelctl"; fi
 done
+
+echo "== the floor (BACKLIGHT_MIN) and the reset of the learned brightness =="
+printf 'level 2400\nbase 2400\noffset 0\noverride 0\nmax 4095\nmin 123\n' > "$T/run/brightness.state"
+rm -f "$T/run/brightness" "$T/run/brightness-offset"
+send "brightness 50"
+[ ! -e "$T/run/brightness" ] && ok "brightness 50 is below the floor: refused" || bad "brightness below the floor was written"
+send "brightness 122"
+[ ! -e "$T/run/brightness" ] && ok "brightness 122 is refused (the floor is 123)" || bad "brightness 122 was written"
+send "brightness 123"
+[ "$(cat "$T/run/brightness" 2>/dev/null)" = 123 ] && ok "brightness 123 (the floor) is accepted" || bad "brightness 123 refused"
+rm -f "$T/run/brightness"
+send "backlight 100"
+[ ! -e "$T/run/brightness" ] && ok "backlight 100 is below the floor: refused" || bad "backlight below the floor was written"
+send "brightness-offset -3000"
+[ "$(cat "$T/run/brightness-offset" 2>/dev/null)" = -2277 ] && ok "offset -3000 on a base of 2400 is cut to -2277 (the floor)" || bad "offset not cut: '$(cat "$T/run/brightness-offset" 2>/dev/null)'"
+send "brightness-offset -100"
+[ "$(cat "$T/run/brightness-offset" 2>/dev/null)" = -100 ] && ok "an offset above the floor stays as it is" || bad "offset changed: '$(cat "$T/run/brightness-offset" 2>/dev/null)'"
+printf '{"version": 1, "points": []}\n' > "$T/learn.json"
+send "brightness-learn-reset"
+[ ! -e "$T/learn.json" ] && [ -e "$T/run/brightness-learn.reset" ] && ok "brightness-learn-reset removes the file and sets the flag" || bad "learn reset did not act"
+rm -f "$T/run/brightness-learn.reset"
+send "brightness-learn-reset now"
+[ ! -e "$T/run/brightness-learn.reset" ] && ok "brightness-learn-reset with an argument is refused" || bad "learn reset with an argument ran"
+rm -f "$T/run/brightness" "$T/run/brightness-offset"
+printf 'level 17\nmax 31\n' > "$T/run/brightness.state"
+send "brightness 1"
+[ "$(cat "$T/run/brightness" 2>/dev/null)" = 1 ] && ok "without a min line the floor is 1 (xx60)" || bad "floor without a min line"
+rm -f "$T/run/brightness"
 
 echo "== volume without TSX_VOLUME_CMD: the Master control of the sound card =="
 mkdir -p "$T/asound/TSW1060" "$T/bin3"
