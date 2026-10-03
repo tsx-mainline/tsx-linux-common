@@ -232,7 +232,7 @@ def _patch_panel():
         ExecuteServiceRequest,
         SubscribeHomeassistantServicesRequest,
     )
-    from tsx_panel import bluetooth  # noqa: WPS433
+    from tsx_panel import bluetooth, camera  # noqa: WPS433
 
     def handle_message(self, msg):
         if isinstance(msg, keyed_commands):
@@ -255,6 +255,8 @@ def _patch_panel():
             return
         if bluetooth.handle_message(self, msg):
             return
+        if camera.handle_message(self, msg):
+            return
         for out in orig_handle(self, msg):
             if isinstance(out, DeviceInfoResponse):
                 bluetooth.PROXY.apply_device_info(out)
@@ -266,6 +268,7 @@ def _patch_panel():
 
     def connection_lost(self, exc):
         bluetooth.PROXY.connection_lost(self)
+        camera.connection_lost(self)
         orig_lost(self, exc)
 
     VoiceSatelliteProtocol.connection_lost = connection_lost

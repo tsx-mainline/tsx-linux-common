@@ -305,29 +305,35 @@ class SensorEntity(ESPHomeEntity):
 
 
 class TextSensorEntity(ESPHomeEntity):
-    """A generic read-only text sensor (IP address)."""
+    """A generic read-only text sensor (IP address). A get_state that
+    returns None means "no value": Home Assistant shows it as unknown.
+    device_class "timestamp": the state is an ISO 8601 time with a time
+    zone, and Home Assistant shows it as a time (the last snapshot)."""
 
-    def __init__(self, server, key, name, object_id, get_state, icon="", entity_category=0):
+    def __init__(self, server, key, name, object_id, get_state, icon="", entity_category=0, device_class=""):
         ESPHomeEntity.__init__(self, server)
         self.key, self.name, self.object_id = key, name, object_id
         self._get_state, self.icon = get_state, icon
-        self.entity_category = entity_category
+        self.entity_category, self.device_class = entity_category, device_class
         self._state = ""
 
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         if isinstance(msg, ListEntitiesRequest):
             yield ListEntitiesTextSensorResponse(
                 object_id=self.object_id, key=self.key, name=self.name, icon=self.icon,
-                entity_category=self.entity_category,
+                entity_category=self.entity_category, device_class=self.device_class,
             )
         elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
             yield self._state_msg()
 
     def _state_msg(self):
         try:
-            self._state = str(self._get_state())
+            value = self._get_state()
+            self._state = None if value is None else str(value)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("%s: read failed", self.name, exc_info=True)
+        if self._state is None:
+            return TextSensorStateResponse(key=self.key, missing_state=True)
         return TextSensorStateResponse(key=self.key, state=self._state)
 
     def poll(self):

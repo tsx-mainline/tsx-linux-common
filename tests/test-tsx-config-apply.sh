@@ -247,6 +247,30 @@ grep -qx 'PROXY="on"' "$FX/run/tsx/bt.conf" && [ "$(btl restart)" = $((s1 + 1)) 
 	|| bad "empty BT_PROXY, board default on: $(cat "$FX/run/tsx/bt.conf"), $(btl restart) restarts (was $s1)"
 set_ BT_PROXY off >/dev/null; TSX_BT_PROXY_DEFAULT=on applyp
 grep -qx 'PROXY="off"' "$FX/run/tsx/bt.conf" && ok "BT_PROXY=off wins over a board default of on" || bad "BT_PROXY=off, board default on: $(cat "$FX/run/tsx/bt.conf")"
+echo "== CAMERA: /run/tsx/camera.conf, the ESPHome front ends follow the key =="
+applyp
+grep -qx 'CAMERA="off"' "$FX/run/tsx/camera.conf" 2>/dev/null && ok "camera.conf: CAMERA off by default" || bad "camera.conf default: $(cat "$FX/run/tsx/camera.conf" 2>/dev/null)"
+[ "$(stat -c '%a' "$FX/run/tsx/camera.conf" 2>/dev/null)" = 644 ] && ok "camera.conf is world-readable (the voice satellite reads it)" || bad "camera.conf mode $(stat -c '%a' "$FX/run/tsx/camera.conf" 2>/dev/null)"
+r0=$(restarts); v0=$(vrestarts)
+set_ CAMERA on >/dev/null; applyp
+grep -qx 'CAMERA="live"' "$FX/run/tsx/camera.conf" && ok "CAMERA=on (the old name of live) reaches camera.conf as live" || bad "camera.conf after CAMERA=on: $(cat "$FX/run/tsx/camera.conf")"
+[ "$(restarts)/$(vrestarts)" = "$((r0 + 1))/$((v0 + 1))" ] && ok "CAMERA=on restarts tsx-esphome and tsx-voice (new entity list)" || bad "CAMERA=on: $(restarts)/$(vrestarts) restarts (was $r0/$v0)"
+applyp; [ "$(restarts)/$(vrestarts)" = "$((r0 + 1))/$((v0 + 1))" ] && ok "an unchanged CAMERA restarts nothing" || bad "unchanged CAMERA: $(restarts)/$(vrestarts) restarts"
+set_ CAMERA off >/dev/null; applyp
+grep -qx 'CAMERA="off"' "$FX/run/tsx/camera.conf" && [ "$(restarts)/$(vrestarts)" = "$((r0 + 2))/$((v0 + 2))" ] \
+	&& ok "CAMERA=off: camera.conf off, both front ends restart" || bad "CAMERA=off: $(cat "$FX/run/tsx/camera.conf"), $(restarts)/$(vrestarts) restarts"
+set_ CAMERA snapshot >/dev/null; applyp
+grep -qx 'CAMERA="snapshot"' "$FX/run/tsx/camera.conf" && [ "$(restarts)/$(vrestarts)" = "$((r0 + 3))/$((v0 + 3))" ] \
+	&& ok "CAMERA=snapshot reaches camera.conf, both front ends restart" || bad "CAMERA=snapshot: $(cat "$FX/run/tsx/camera.conf"), $(restarts)/$(vrestarts) restarts"
+set_ CAMERA live >/dev/null; applyp
+grep -qx 'CAMERA="live"' "$FX/run/tsx/camera.conf" && [ "$(restarts)/$(vrestarts)" = "$((r0 + 4))/$((v0 + 4))" ] \
+	&& ok "CAMERA=live reaches camera.conf, both front ends restart" || bad "CAMERA=live: $(cat "$FX/run/tsx/camera.conf"), $(restarts)/$(vrestarts) restarts"
+set_ CAMERA on >/dev/null; applyp
+grep -qx 'CAMERA="live"' "$FX/run/tsx/camera.conf" && [ "$(restarts)/$(vrestarts)" = "$((r0 + 4))/$((v0 + 4))" ] \
+	&& ok "CAMERA=on is the old name of live: camera.conf live, no restart" || bad "CAMERA=on after live: $(cat "$FX/run/tsx/camera.conf"), $(restarts)/$(vrestarts) restarts"
+printf 'CAMERA="bogus"\n' >> "$CFG"; applyp
+grep -qx 'CAMERA="off"' "$FX/run/tsx/camera.conf" && ok "an unknown CAMERA value in panel.conf is off" || bad "CAMERA=bogus: $(cat "$FX/run/tsx/camera.conf")"
+set_ CAMERA off >/dev/null; applyp
 echo "== AUTO_BRIGHTNESS and ALS_SCALE: /run/tsx/als.panel for tsx-als =="
 rm -f "$FX/run/tsx/als.panel"; applyp
 [ ! -e "$FX/run/tsx/als.panel" ] && ok "als.panel: not written while neither key is set" || bad "als.panel written by default: $(cat "$FX/run/tsx/als.panel")"
@@ -269,11 +293,15 @@ gov_conf() {  # gov_conf 0|1: the hw.conf that tsx-hw writes for that flag
 }
 cfg3() { env PATH="$W/bin:$PATH" TSX_CONF="$CFG3" TSX_RUN="$FX3/run" TSX_STATE_DIR="$FX3/var/lib/tsx" TSX_APPLY_PREFIX="$FX3" TSX_APPLY_ALLOW_NONROOT=1 busybox sh "$SCRIPT" "$@"; }
 gov_conf 1
-for k in VOICE BT_PROXY BT_ACTIVE; do
+for k in VOICE BT_PROXY BT_ACTIVE CAMERA; do
 	out=$(cfg3 set "$k" on 2>&1); rc=$?
 	[ $rc = 0 ] && [ "$(cfg3 get "$k")" = on ] && case "$out" in *"WARNING: $k=on is saved, but this panel has no "*"(government=1). apply leaves it out"*) true;; *) false;; esac \
 		&& ok "set $k on: saved (a panel.conf from another panel loads), with a warning" || bad "set $k on: exit $rc, '$out'"
 done
+out=$(cfg3 set CAMERA snapshot 2>&1)
+case "$out" in *"WARNING: CAMERA=snapshot is saved, but this panel has no camera (government=1)"*) ok "set CAMERA snapshot: saved, with a warning";; *) bad "set CAMERA snapshot (government=1): '$out'";; esac
+out=$(cfg3 set CAMERA off 2>&1); [ -z "$out" ] && ok "set CAMERA off: no warning" || bad "set CAMERA off warns: $out"
+cfg3 set CAMERA on >/dev/null 2>&1
 out=$(cfg3 set VOICE off 2>&1); [ -z "$out" ] && ok "set VOICE off: no warning" || bad "set VOICE off warns: $out"
 cfg3 set VOICE on >/dev/null 2>&1
 out=$(cfg3 show 2>&1 >/dev/null)
@@ -286,6 +314,8 @@ grep -qx 'tsx-audio disable voice' "$W/audio.log" 2>/dev/null && ! grep -q 'enab
 	&& ok "apply: VOICE=on is treated as off (tsx-audio disable voice)" || bad "apply voice: $(cat "$W/audio.log" 2>/dev/null)"
 case "$out" in *"WARNING: VOICE=on is set, but this panel has no microphone"*"WARNING: BT_PROXY=on is set"*) ok "apply: the log says why";; *) bad "apply log: $out";; esac
 grep -q '|off|' "$FX3/run/tsx/.esphome-sig" && ok "apply: tsx-esphome sees VOICE off (it serves the entities)" || bad ".esphome-sig: $(cat "$FX3/run/tsx/.esphome-sig")"
+grep -qx 'CAMERA="off"' "$FX3/run/tsx/camera.conf" && case "$out" in *"WARNING: CAMERA=on is set, but this panel has no camera"*) true;; *) false;; esac \
+	&& ok "apply: CAMERA=on is treated as off, with a warning" || bad "apply camera: $(cat "$FX3/run/tsx/camera.conf" 2>/dev/null)"
 # a panel with ALS=no in hw.conf: AUTO_BRIGHTNESS=on is saved with a warning, apply leaves it out
 printf 'ALS=no\n' >> "$FX3/run/tsx/hw.conf"
 out=$(cfg3 set AUTO_BRIGHTNESS on 2>&1); rc=$?

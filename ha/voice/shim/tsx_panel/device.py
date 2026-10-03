@@ -24,6 +24,7 @@ from aioesphomeapi.api_pb2 import (  # pylint: disable=no-name-in-module
 )
 from linux_voice_assistant.entity import LEDLightEntity
 
+from . import camera
 from .backend import LEDBAR_FX, LEDBAR_LEDS_FX, PanelBackend
 from .entities import (
     ARG_INT,
@@ -114,6 +115,9 @@ class PanelDevice:
     ledbar_fx: bool = False
     ledbar_leds: bool = False
     ledbar_actions: Optional[ActionsEntity] = None
+    camera_entity: Optional[camera.CameraEntity] = None
+    camera_button: Optional[ButtonEntity] = None
+    camera_time: Optional[TextSensorEntity] = None
     _last_lightbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar_fx: Optional[str] = field(default=None, repr=False)
@@ -369,6 +373,19 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
         ledbar_actions = ActionsEntity(server, ledbar_action_list(backend, next_key))
         entities.append(ledbar_actions)
 
+    # ---- the camera (CAMERA in panel.conf, off by default, camera.py) ----------
+    # Last, so the keys of the other entities stay. The snapshot mode adds the
+    # button and the time sensor after the camera, so the camera key is the
+    # same in both modes.
+    camera_entity = camera_button = camera_time = None
+    cam = camera.service()
+    if cam.enabled():
+        camera_entity, camera_button, camera_time = camera.make_entities(server, next_key)
+        entities += [e for e in (camera_entity, camera_button, camera_time) if e is not None]
+        _LOGGER.info("camera: mode %s", cam.mode)
+    else:
+        _LOGGER.info("no camera entity: %s", cam.why_off())
+
     return PanelDevice(
         backend=backend, entities=entities, ledbar=ledbar, keypad=keypad, screen=screen,
         backlight=backlight, blank_timeout=blank_timeout, als_auto=als_auto, illuminance=illuminance, volume=volume,
@@ -377,7 +394,8 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
         update=update, keys=keys, orientation=orientation, _pulse_since=time.time(),
         lightbar=lightbar, usb_power=usb_power, presence=presence, distance=distance, poe_class=poe_class,
         emmc_life_a=emmc_life_a, emmc_life_b=emmc_life_b, emmc_eol=emmc_eol, nfc=backend.nfc_present(),
-        ledbar_fx=ledbar_fx, ledbar_leds=ledbar_leds, ledbar_actions=ledbar_actions,
+        ledbar_fx=ledbar_fx, ledbar_leds=ledbar_leds, ledbar_actions=ledbar_actions, camera_entity=camera_entity,
+        camera_button=camera_button, camera_time=camera_time,
     )
 
 
@@ -469,7 +487,7 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
     for entity in (device.screen, device.backlight, device.blank_timeout, device.als_auto, device.illuminance,
                    device.volume, device.verbose_boot, device.cpu_temp, device.uptime, device.ip_address,
                    device.touched_recently, device.update, device.presence, device.distance, device.usb_power,
-                   device.poe_class, device.emmc_life_a, device.emmc_life_b, device.emmc_eol):
+                   device.poe_class, device.emmc_life_a, device.emmc_life_b, device.emmc_eol, device.camera_time):
         if entity is None:
             continue
         before = getattr(entity, "_state", None)

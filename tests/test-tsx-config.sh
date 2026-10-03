@@ -37,6 +37,10 @@ printf '\n# a comment\nPANEL_NAME="Comment-Test"\n' >> "$CFG"
 [ "$(run get PANEL_NAME)" = "Comment-Test" ] && ok "get reads a key after blank lines/comments" || bad "comment tolerance"
 run show >/dev/null 2>&1 && ok "show does not choke on comments" || bad "show choked on comments"
 
+echo "== CAMERA =="
+for v in off snapshot live on; do run validate CAMERA "$v" && ok "CAMERA=$v valid" || bad "CAMERA=$v rejected"; done
+for v in yes "" 1 Snapshot stream; do run validate CAMERA "$v" && bad "CAMERA='$v' accepted" || ok "CAMERA='$v' rejected"; done
+
 echo "== BT_PROXY, BT_ACTIVE and BT_MAC =="
 for k in BT_PROXY BT_ACTIVE; do
 	for v in on off; do run validate $k "$v" && ok "$k=$v valid" || bad "$k=$v rejected"; done

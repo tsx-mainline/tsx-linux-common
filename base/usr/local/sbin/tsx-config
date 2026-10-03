@@ -83,6 +83,15 @@
 #   Home Assistant reads the new feature flags.
 # BT_MAC: the Bluetooth address that tsx-bt loads into the chip. Empty = the
 #   eth0 MAC, the same value as the vendor firmware.
+# CAMERA (off|snapshot|live, default off): the camera in Home Assistant, on
+#   the ESPHome device. off: no camera entities, and nothing opens the
+#   camera, so the sensor stays in power-down. snapshot: a camera entity, a
+#   "Take snapshot" button and a "Last snapshot" time. The camera opens only
+#   for one image at each press. live: a camera entity with a live image
+#   while Home Assistant asks for one. "on" is the old name of live. Home
+#   Assistant cannot change this key. Apply writes /run/tsx/camera.conf
+#   (world-readable, no secret) and restarts the ESPHome front end when the
+#   value changes, so that Home Assistant reads the new entity list.
 # AUTO_BRIGHTNESS (on|off, default on): the backlight follows the ambient
 #   light sensor (tsx-als or tsx-sensord, whichever the board has). Apply
 #   writes it to /run/tsx/als.panel, which tsx-als reads in place of ALS_AUTO of
@@ -99,10 +108,11 @@
 #   target before "away", 1 to 3600). Only a board with a distance sensor
 #   uses these four keys. Apply writes them to /run/tsx/sensors.conf for
 #   tsx-sensord.
-# A panel without a microphone or a Bluetooth module (government=1, the
-# TSW-760-NC: /run/tsx/hw.conf, written by tsx-hw at boot) accepts VOICE=on,
-# BT_PROXY=on and BT_ACTIVE=on, so that a panel.conf from another panel
-# still loads. set and show print a warning, and apply treats them as off.
+# A panel without a microphone, a Bluetooth module or a camera (government=1,
+# the TSW-760-NC: /run/tsx/hw.conf, written by tsx-hw at boot) accepts
+# VOICE=on, BT_PROXY=on, BT_ACTIVE=on and a CAMERA mode other than off, so
+# that a panel.conf from another panel still loads. set and show print a
+# warning, and apply treats them as off.
 # ROOT_PASSWORD_HASH, SSH_AUTHORIZED_KEY.
 # See installer/panel.conf.example and docs/rootfs.md "Panel configuration"
 # for what each key does.
@@ -128,10 +138,10 @@ BOARD=${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}
 [ -r "$BOARD" ] || BOARD=$(dirname "$0")/../lib/tsx/board.sh
 . "$BOARD"
 
-KNOWN_KEYS="PANEL_NAME KIOSK_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_API_KEY HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR APK_URL BLANK_TIMEOUT BOOT_VERBOSE ORIENTATION BT_PROXY BT_ACTIVE BT_MAC PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
+KNOWN_KEYS="PANEL_NAME KIOSK_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_API_KEY HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR APK_URL BLANK_TIMEOUT BOOT_VERBOSE ORIENTATION BT_PROXY BT_ACTIVE BT_MAC CAMERA PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 SECRET_KEYS="HA_TOKEN HA_API_KEY MQTT_PASSWORD ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 
-usage() { sed -n '2,98p' "$0" >&2; exit 2; }
+usage() { sed -n '2,108p' "$0" >&2; exit 2; }
 die() { echo "tsx-config: ERROR: $*" >&2; exit 2; }
 log() { echo "tsx-config: $*" >&2; }
 
@@ -156,6 +166,8 @@ hw_missing() {
 		echo "this panel has no Bluetooth module (government=$(hw_get GOVERNMENT))";;
 	BT_MAC) [ "$TSX_BT_MAC_SETTABLE" = no ] || return 1
 		echo "this board takes the Bluetooth address from the controller";;
+	CAMERA) [ "$(hw_get CAMERA)" = no ] || return 1
+		echo "this panel has no camera (government=$(hw_get GOVERNMENT))";;
 	# The distance sensor is not on every board. tsx-hw of the board writes
 	# PRESENCE=no for a panel without one.
 	PRESENCE_WAKE|PRESENCE_DISTANCE_MM|PRESENCE_MIN_MM|PRESENCE_HOLD_S)
@@ -253,6 +265,7 @@ val_ok() {
 	ORIENTATION) case "$v" in landscape|portrait|landscape-flipped|portrait-flipped) return 0;; esac; return 1;;
 	BT_PROXY) case "$v" in on|off|"") return 0;; esac; return 1;;
 	BT_ACTIVE) case "$v" in on|off) return 0;; esac; return 1;;
+	CAMERA) case "$v" in off|snapshot|live|on) return 0;; esac; return 1;;
 	PRESENCE_WAKE|AUTO_BRIGHTNESS) case "$v" in on|off|"") return 0;; esac; return 1;;
 	# empty = the default. Millimeters and seconds.
 	PRESENCE_DISTANCE_MM) [ -z "$v" ] && return 0; printf '%s' "$v" | grep -Eq '^[0-9]{3,4}$' && [ "$v" -ge 100 ] && [ "$v" -le 4000 ];;
@@ -350,7 +363,7 @@ cfg_show() {
 		is_secret "$k" && v="********"
 		printf '%s=%s\n' "$k" "$v"
 	done
-	for k in VOICE BT_PROXY BT_ACTIVE BT_MAC PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE; do
+	for k in VOICE BT_PROXY BT_ACTIVE BT_MAC CAMERA PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE; do
 		v=$(cfg_get "$k") || continue
 		hw_warn "$k" "$v" 2>&1 | sed 's/^tsx-config: /# /' >&2
 	done
@@ -599,6 +612,14 @@ apply() {
 		log "BT_PROXY=$btp: tsx-bt $([ "$btp" = on ] && echo restarted || echo stopped)"
 	fi
 
+	# CAMERA: /run/tsx/camera.conf, world-readable (no secret), for the camera
+	# of both ESPHome front ends (tsx_panel/camera.py): off, snapshot or live.
+	# Off by default. "on" is the old name of live. No camera on the panel: off.
+	camv=$(cfg_get CAMERA) || camv=
+	case "$camv" in snapshot|live) cam=$camv;; on) cam=live;; *) cam=off;; esac
+	if hw_missing CAMERA >/dev/null; then hw_warn CAMERA "$camv"; cam=off; fi
+	printf 'CAMERA="%s"\n' "$cam" | write_override "$RUN/camera.conf" 644
+
 	# The same warning as `show` (docs/ha.md "Security"). Not with HA_TRANSPORT=mqtt.
 	[ "$transport" = mqtt ] || warn_open_api
 
@@ -609,24 +630,26 @@ apply() {
 	# apply() runs before the runlevel entry of tsx-esphome starts it. Then
 	# there is nothing to restart yet, and the restart does nothing.
 	# Restart it only when something that it reads changed (esphome.conf, the
-	# panel name, VOICE, the API key, BT_PROXY, BT_ACTIVE: Home Assistant reads
-	# the Bluetooth feature flags only when it connects). tsx-esphome itself runs `tsx-config
+	# panel name, VOICE, the API key, BT_PROXY, BT_ACTIVE, CAMERA: Home
+	# Assistant reads the Bluetooth feature flags and the entity list only when
+	# it connects). tsx-esphome itself runs `tsx-config
 	# apply` for its Kiosk URL entity. An unconditional restart killed it in
 	# the middle of that command (and dropped the connection of Home Assistant
 	# each time).
-	sig="$(cat "$RUN/esphome.conf" 2>/dev/null)|$name|$voice|$keysum|$btp|$bta"
+	sig="$(cat "$RUN/esphome.conf" 2>/dev/null)|$name|$voice|$keysum|$btp|$bta|$cam"
 	oldsig=; [ -r "$RUN/.esphome-sig" ] && oldsig=$(cat "$RUN/.esphome-sig")
 	printf '%s\n' "$sig" > "$RUN/.esphome-sig"
 	if [ "$sig" != "$oldsig" ] && command -v rc-service >/dev/null 2>&1 && rc-service tsx-esphome status >/dev/null 2>&1; then
 		rc-service tsx-esphome restart >/dev/null 2>&1 || true
 	fi
 	# The voice satellite also reads the panel name (device name) and the API
-	# key at start, and it announces the Bluetooth feature flags. Restart it
+	# key at start, and it announces the Bluetooth feature flags and the
+	# camera entity. Restart it
 	# when one of them changed and it is running. Do not
 	# restart it on the first apply after boot (no signature yet), because that
 	# apply runs before tsx-voice starts. Its kiosk URL entity runs `apply`
 	# through tsx-panelctl, which changes neither, so that never restarts it.
-	vsig="$name|$keysum|$btp|$bta"
+	vsig="$name|$keysum|$btp|$bta|$cam"
 	oldvsig=; [ -r "$RUN/.voice-sig" ] && oldvsig=$(cat "$RUN/.voice-sig")
 	printf '%s\n' "$vsig" > "$RUN/.voice-sig"
 	if [ -n "$oldvsig" ] && [ "$vsig" != "$oldvsig" ] && command -v rc-service >/dev/null 2>&1 \

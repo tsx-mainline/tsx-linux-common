@@ -10,10 +10,12 @@ adds these fields:
   * how the panel logs in (login form, long-lived token, trusted network)
   * the voice assistant and its wake word
   * the Bluetooth proxy (on, off or the default of the board)
+  * the camera (off, snapshot or live)
   * MQTT (broker, port, user, password)
 
 and these checks: the settings that this panel cannot use (no microphone, no
-voice service, no Bluetooth module), and the Home Assistant URL check. The page code of
+voice service, no Bluetooth module, no camera), and the Home Assistant URL
+check. The page code of
 tsx-setupd never names Home Assistant, MQTT or voice.
 
 What a plugin gives to tsx-setupd (all names are optional except NAME):
@@ -63,13 +65,13 @@ def init(ctx):
     _ctx = ctx
 
 
-SIMPLE_KEYS = ["VOICE", "WAKE_WORD", "MQTT_HOST", "MQTT_PORT", "MQTT_USER", "MQTT_PASSWORD", "BT_PROXY"]
+SIMPLE_KEYS = ["VOICE", "WAKE_WORD", "MQTT_HOST", "MQTT_PORT", "MQTT_USER", "MQTT_PASSWORD", "BT_PROXY", "CAMERA"]
 # Empty = cleared. The page pre-fills these keys, so an empty one was cleared
 # on purpose. MQTT_PASSWORD is not one of them: the page never pre-fills it.
 # An empty BT_PROXY is the default of the board.
 CLEARABLE_BLANK = {"MQTT_HOST", "MQTT_PORT", "MQTT_USER", "BT_PROXY"}
 STATE_KEYS = SIMPLE_KEYS + ["HA_LOGIN_METHOD", "HA_TOKEN"]
-UNAVAILABLE_DROPS = {"VOICE": ("VOICE", "WAKE_WORD"), "BT_PROXY": ("BT_PROXY",)}
+UNAVAILABLE_DROPS = {"VOICE": ("VOICE", "WAKE_WORD"), "BT_PROXY": ("BT_PROXY",), "CAMERA": ("CAMERA",)}
 
 TEXT = {
     "url_label": "Home Assistant URL",
@@ -93,6 +95,8 @@ def unavailable(hw):
         out["VOICE"] = "no microphone on this panel" + tail
     if hw.get("BT") == "no":
         out["BT_PROXY"] = "no Bluetooth module on this panel" + tail
+    if hw.get("CAMERA") == "no":
+        out["CAMERA"] = "no camera on this panel" + tail
     return out
 
 
@@ -190,6 +194,17 @@ HTML = {
         <div class="hint">Home Assistant uses the Bluetooth controller of the panel to scan for devices and to connect to them.</div>
       </div>
     </details>
+    <details id="camera-wrap"><summary>Camera</summary>
+      <div class="card">
+        <label for="f-camera">Camera for Home Assistant</label>
+        <select id="f-camera" name="CAMERA">
+          <option value="off">Off (default)</option>
+          <option value="snapshot">Snapshot: one image for each press of a button in Home Assistant</option>
+          <option value="live">Live: a live image while Home Assistant shows it</option>
+        </select>
+        <div class="hint">Off: the camera stays closed and Home Assistant has no camera. Only this panel can change this setting.</div>
+      </div>
+    </details>
 """,
 }
 _d = _bt_default()
@@ -200,6 +215,7 @@ JS = {
     if (fields.VOICE === "on") { $("f-voice").checked = true; $("wake-wrap").style.display = "block"; }
     if (fields.WAKE_WORD) $("f-wake").value = fields.WAKE_WORD;
     if (fields.BT_PROXY) $("f-btproxy").value = fields.BT_PROXY;
+    if (fields.CAMERA) $("f-camera").value = fields.CAMERA === "on" ? "live" : fields.CAMERA;
     if (fields.MQTT_HOST) $("f-mqtt-host").value = fields.MQTT_HOST;
     if (fields.MQTT_PORT) $("f-mqtt-port").value = fields.MQTT_PORT;
     if (fields.MQTT_USER) $("f-mqtt-user").value = fields.MQTT_USER;
@@ -223,6 +239,10 @@ JS = {
       $("f-btproxy").disabled = true; $("bt-wrap").style.display = "none";
       notes.push("Bluetooth proxy: not available, " + u.BT_PROXY + ".");
     }
+    if (u.CAMERA) {
+      $("f-camera").disabled = true; $("camera-wrap").style.display = "none";
+      notes.push("Camera: not available, " + u.CAMERA + ".");
+    }
     if (notes.length) { $("hw-hint").textContent = notes.join(" "); $("hw-hint").style.display = "block"; }
 """,
     "payload": """
@@ -231,6 +251,7 @@ JS = {
     payload.VOICE = $("f-voice").disabled ? undefined : ($("f-voice").checked ? "on" : "off");
     payload.WAKE_WORD = $("f-voice").disabled ? undefined : $("f-wake").value.trim();
     payload.BT_PROXY = $("f-btproxy").disabled ? undefined : $("f-btproxy").value;
+    payload.CAMERA = $("f-camera").disabled ? undefined : $("f-camera").value;
     payload.MQTT_HOST = $("f-mqtt-host").value.trim();
     payload.MQTT_PORT = $("f-mqtt-port").value.trim();
     payload.MQTT_USER = $("f-mqtt-user").value.trim();

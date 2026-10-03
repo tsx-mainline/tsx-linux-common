@@ -27,4 +27,7 @@ Modules:
   bluetooth.py the Bluetooth proxy (BT_PROXY and BT_ACTIVE in panel.conf):
                the feature flags in the device info, the advertisements
                from tsx-btscan and the BLE links (GATT) through it.
+  camera.py    the camera (CAMERA in panel.conf: off, snapshot or live,
+               off by default): V4L2 capture, JPEG with libturbojpeg, the
+               image requests, the snapshot button.
 """

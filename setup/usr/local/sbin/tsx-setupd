@@ -46,8 +46,8 @@ body.
 On a panel with no light sensor (ALS=no in /run/tsx/hw.conf from tsx-hw), the
 page shows the light sensor settings (AUTO_BRIGHTNESS and ALS_SCALE) as not
 available. A submit then leaves them as they are. A plugin can report more
-settings in the same way (tsx-ha: no microphone, no Bluetooth module on the
-TSW-760-NC).
+settings in the same way (tsx-ha: no microphone, no Bluetooth module and no
+camera on the TSW-760-NC).
 
 Env overrides for host tests (rootfs/tests/test-setup.sh): TSX_SETUP_PORT,
 TSX_SETUP_CONF, TSX_HW_CONF, TSX_RUN_DIR, TSX_CONFIG_BIN, TSX_SETUP_HELPER_REQ,

@@ -385,7 +385,7 @@ print(json.dumps({
 	'ORIENTATION': 'portrait', 'AUTO_BRIGHTNESS': 'off', 'ALS_SCALE': '2.5',
 	'ROOT_PASSWORD': '$ROOTPW', 'SSH_AUTHORIZED_KEY': '$SSHKEY',
 	# the rest exactly as the page sends an untouched field: empty strings
-	'MQTT_HOST': '', 'MQTT_PORT': '', 'MQTT_USER': '', 'MQTT_PASSWORD': '', 'BT_PROXY': 'off',
+	'MQTT_HOST': '', 'MQTT_PORT': '', 'MQTT_USER': '', 'MQTT_PASSWORD': '', 'BT_PROXY': 'off', 'CAMERA': 'snapshot',
 	'KERNEL_FLAVOR': '', 'BLANK_TIMEOUT': ''
 }))
 ")
@@ -398,6 +398,7 @@ grep -q '^AUTO_BRIGHTNESS="off"$' "$CONF" && grep -q '^ALS_SCALE="2.5"$' "$CONF"
 grep -q '^ALS_AUTO="0"$' "$T/prefix/run/tsx/als.panel" "$RUNDIR/als.panel" 2>/dev/null && ok "apply wrote ALS_AUTO to als.panel" || echo "  (als.panel not checked: apply run dir differs)"
 [ "$(cat "$T/prefix/etc/tsx/orientation" 2>/dev/null)" = portrait ] && ok "apply left /etc/tsx/orientation (portrait) in the prefix" || bad "no orientation file after apply"
 grep -q '^BT_PROXY="off"$' "$CONF" && ok "BT_PROXY landed in panel.conf" || bad "BT_PROXY missing from panel.conf"
+grep -q '^CAMERA="snapshot"$' "$CONF" && ok "CAMERA landed in panel.conf" || bad "CAMERA missing from panel.conf"
 grep -q '^HA_TOKEN=' "$CONF" && ok "HA_TOKEN was written" || bad "HA_TOKEN missing"
 grep -Eq '^MQTT_(HOST|PORT|USER)=' "$CONF" && bad "cleared MQTT fields were written as KEY=\"\" instead of removed" || ok "cleared MQTT host/port/user are removed from panel.conf"
 [ "$(TSX_CONF="$CONF" busybox sh "$TSXCONFIG" get MQTT_PASSWORD)" = "$PAYLOAD" ] && ok "an empty MQTT password field keeps the stored one (leave blank to keep)" || bad "an empty MQTT password field changed the stored password"
@@ -490,17 +491,20 @@ printf 'GOVERNMENT=1\nMIC=no\nBT=no\nCAMERA=no\nREASON=government=1 (TSW-760-NC)
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.VOICE <<<"$body")" = "no microphone on this panel (government=1)" ] \
 	&& [ "$(jget unavailable.BT_PROXY <<<"$body")" = "no Bluetooth module on this panel (government=1)" ] \
-	&& ok "state: VOICE and BT_PROXY not available, with the reason" || bad "state unavailable: $(jget unavailable <<<"$body")"
+	&& [ "$(jget unavailable.CAMERA <<<"$body")" = "no camera on this panel (government=1)" ] \
+	&& ok "state: VOICE, BT_PROXY and CAMERA not available, with the reason" || bad "state unavailable: $(jget unavailable <<<"$body")"
 out=$(call GET /setup); page=$(body_of "$out")
 case "$page" in *'id="hw-hint"'*"function applyUnavailable"*) ok "the page has the not-available hint and disables the voice switch";; *) bad "the page has no not-available hint";; esac
-GSUBMIT='{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","VOICE":"off","WAKE_WORD":"hey_jarvis","BT_PROXY":"on"}'
+GSUBMIT='{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","VOICE":"off","WAKE_WORD":"hey_jarvis","BT_PROXY":"on","CAMERA":"live"}'
 out=$(call POST /setup/api/submit --data "$GSUBMIT")
 [ "$(status_of "$out")" = 200 ] && grep -q '^VOICE="on"$' "$CONF" && grep -q '^WAKE_WORD="okay_nabu"$' "$CONF" \
-	&& grep -q '^BT_PROXY="off"$' "$CONF" \
-	&& ok "a submit leaves VOICE, WAKE_WORD and BT_PROXY as they are (a panel.conf from another panel keeps them)" \
-	|| bad "government=1 submit: $(status_of "$out"), $(grep -E '^(VOICE|WAKE_WORD|BT_PROXY)=' "$CONF" | tr '\n' ' ')"
+	&& grep -q '^BT_PROXY="off"$' "$CONF" && grep -q '^CAMERA="snapshot"$' "$CONF" \
+	&& ok "a submit leaves VOICE, WAKE_WORD, BT_PROXY and CAMERA as they are (a panel.conf from another panel keeps them)" \
+	|| bad "government=1 submit: $(status_of "$out"), $(grep -E '^(VOICE|WAKE_WORD|BT_PROXY|CAMERA)=' "$CONF" | tr '\n' ' ')"
 case "$page" in *'name="BT_PROXY"'*'id="bt-wrap"'*|*'id="bt-wrap"'*'name="BT_PROXY"'*) ok "the page has the Bluetooth proxy field and hides it when unavailable";; *) bad "the page has no Bluetooth proxy field";; esac
 case "$page" in *'(default: off)'*) ok "the Bluetooth proxy field names the default of the board (off)";; *) bad "the Bluetooth proxy field does not name the board default";; esac
+case "$page" in *'id="camera-wrap"'*'name="CAMERA"'*'value="off"'*'value="snapshot"'*'value="live"'*) ok "the page has the camera field with the three modes, and hides it when unavailable";; *) bad "the page has no camera field with off, snapshot and live";; esac
+case "$page" in *'u.CAMERA'*'payload.CAMERA = $("f-camera").disabled ? undefined'*) ok "the page sends no CAMERA when the panel has no camera";; *) bad "the page sends CAMERA on a panel without a camera";; esac
 rm -f "$RUNDIR/hw.conf"
 
 echo "== a panel with no GOVERNMENT in hw.conf, and a missing voice service =="
@@ -590,7 +594,7 @@ out=$(call GET /setup); page=$(body_of "$out")
 for want in 'name="KIOSK_URL"' 'name="PANEL_NAME"' 'name="TZ_NAME"' 'name="ORIENTATION"' 'name="BLANK_TIMEOUT"' 'name="AUTO_BRIGHTNESS"' 'name="ALS_SCALE"' 'name="ROOT_PASSWORD"' 'name="SSH_AUTHORIZED_KEY"' 'name="KERNEL_FLAVOR"' '<h2>Network</h2>' '<h2>Display</h2>' '<summary>Updates</summary>'; do
 	case "$page" in *"$want"*) ok "base page has $want";; *) bad "base page lacks $want";; esac
 done
-for nope in HA_LOGIN_METHOD HA_TOKEN '"VOICE"' WAKE_WORD MQTT_ 'Home Assistant' homeassistant 'Voice assistant' 'discover' 'check-url' '@@' 'SLOT'; do
+for nope in HA_LOGIN_METHOD HA_TOKEN '"VOICE"' '"CAMERA"' WAKE_WORD MQTT_ 'Home Assistant' homeassistant 'Voice assistant' 'discover' 'check-url' '@@' 'SLOT'; do
 	case "$page" in *"$nope"*) bad "base page has $nope";; *) ok "base page has no $nope";; esac
 done
 case "$page" in *'id="submit-btn" type="submit">Save</button>'*) ok "base page: the button says Save";; *) bad "base page: button text";; esac
