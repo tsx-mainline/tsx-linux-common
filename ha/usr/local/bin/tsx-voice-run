@@ -7,7 +7,7 @@ LVA=${TSX_LVA:-/usr/local/bin/linux-voice-assistant}
 NAME= PORT=6053 WAKE=ptt WAKE_WORD=okay_nabu AWAKE_WAV= MIC_PCM=mic
 SPEAKER_DEVICE=alsa/speaker MUSIC_DEVICE=alsa/media KEEP_OUTPUT_OPEN=no
 IFACE= HOST= PERIPHERAL_HOST=127.0.0.1 PERIPHERAL_PORT=6055
-STATE_DIR=/var/lib/tsx-voice ARGS=
+STATE_DIR=/var/lib/tsx-voice ARGS= CUSTOM_WAKE_WORDS=/data/wakewords
 PRINT=${TSX_VOICE_PRINT:-0}; [ "${1-}" = --print ] && PRINT=1
 [ -r "$CONF" ] && . "$CONF"
 # The NAME and WAKE_WORD override of panel.conf (`tsx-config apply`). The
@@ -23,20 +23,28 @@ esac
 case $WAKE_WORD in ok_nabu) WAKE_WORD=okay_nabu;; esac   # audio default name
 export TSX_VOICE_PTT=${TSX_VOICE_PTT:-$RUN/ptt}
 export TSX_VOICE_HOOK=${TSX_VOICE_HOOK:-/usr/local/bin/tsx-voice-hook}
-export TSX_VOICE_WAKE=$WAKE TSX_LVA_MIC=$MIC_PCM
+export TSX_VOICE_WAKE=$WAKE TSX_LVA_MIC=$MIC_PCM TSX_VOICE_RUN_DIR=$RUN
 [ "$KEEP_OUTPUT_OPEN" = yes ] && export TSX_VOICE_KEEP_OUTPUT_OPEN=1
 set -- --name "${NAME:-$(hostname)}" --port "$PORT" \
 	--audio-input-device "$MIC_PCM" --audio-output-device "$SPEAKER_DEVICE" \
 	--music-output-device "$MUSIC_DEVICE" --wake-model "$WAKE_WORD" \
 	--preferences-file "$STATE_DIR/preferences.json" --download-dir "$STATE_DIR/local" \
 	--peripheral-host "$PERIPHERAL_HOST" --peripheral-port "$PERIPHERAL_PORT" --peripheral-startup-wait 0
+# Custom wake word models: one more wake word folder for LVA. The shim
+# watches it (TSX_VOICE_WAKEWORDS, tsx_lva/wakewords.py).
+if [ -n "$CUSTOM_WAKE_WORDS" ]; then
+	export TSX_VOICE_WAKEWORDS=$CUSTOM_WAKE_WORDS
+	set -- "$@" --wake-word-dir "$CUSTOM_WAKE_WORDS"
+else
+	unset TSX_VOICE_WAKEWORDS
+fi
 [ -n "$IFACE" ] && set -- "$@" --network-interface "$IFACE"
 [ -n "$HOST" ] && set -- "$@" --host "$HOST"
 if [ -n "$AWAKE_WAV" ] && [ -r "$AWAKE_WAV" ]; then
 	set -- "$@" --wakeup-sound "$AWAKE_WAV" --start-listening-sound "$AWAKE_WAV"
 fi
 if [ "$PRINT" = 1 ]; then
-	echo "TSX_VOICE_WAKE=$TSX_VOICE_WAKE TSX_VOICE_PTT=$TSX_VOICE_PTT TSX_LVA_MIC=$TSX_LVA_MIC $LVA $* $ARGS"
+	echo "TSX_VOICE_WAKE=$TSX_VOICE_WAKE TSX_VOICE_PTT=$TSX_VOICE_PTT TSX_LVA_MIC=$TSX_LVA_MIC TSX_VOICE_WAKEWORDS=${TSX_VOICE_WAKEWORDS-} $LVA $* $ARGS"
 	exit 0
 fi
 # shellcheck disable=SC2086

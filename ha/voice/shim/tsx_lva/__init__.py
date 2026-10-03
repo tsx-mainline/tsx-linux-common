@@ -17,6 +17,13 @@ all driven by environment variables that /etc/init.d/tsx-voice sets from
   TSX_VOICE_KEEP_OUTPUT_OPEN=0|1
         1 = upstream behavior (mpv plays silence between sounds, the output
         stream stays open, SPK_EN and dmix stay active all the time)
+  TSX_VOICE_WAKEWORDS=/data/wakewords
+        the folder for custom wake word models (CUSTOM_WAKE_WORDS of
+        voice.conf). tsx-voice-run also gives it to LVA as --wake-word-dir.
+        The satellite watches it and updates the list at run time
+        (tsx_lva/wakewords.py, docs/wake-words.md)
+  TSX_VOICE_RUN_DIR=/run/tsx/voice
+        holds wakeword-bad.json: the custom models that did not load
 
 When HA_TRANSPORT is esphome or both (panel.conf, tsx-config; default
 esphome), this also appends the panel's own Home Assistant entities (LED
@@ -336,6 +343,76 @@ def _patch_names():
     models.ServerState.__init__ = init
 
 
+CUSTOM = None  # the wakewords.Custom of this process (for the tests)
+
+
+def _patch_wakewords():
+    """Checked wake word list, custom models, and updates at run time
+    (tsx_lva/wakewords.py). LVA 1.1.15 imports find_available_wake_words and
+    load_wake_models from wake_word.py into __main__.py. So this patch must
+    run before __main__.py is imported (main() below).
+    """
+    global CUSTOM  # noqa: PLW0603
+    from aioesphomeapi.api_pb2 import VoiceAssistantConfigurationRequest  # noqa: WPS433
+    from linux_voice_assistant import models, satellite, wake_word  # noqa: WPS433
+    from tsx_lva import wakewords  # noqa: WPS433
+
+    micro = models.WakeWordType.MICRO_WAKE_WORD
+
+    def make(info):
+        mtype = models.WakeWordType(info["type"])
+        return models.AvailableWakeWord(
+            id=info["id"],
+            type=mtype,
+            wake_word=info["wake_word"],
+            trained_languages=info["trained_languages"],
+            # what LVA find_available_wake_words gives each type
+            wake_word_path=info["json_path"] if mtype == micro else info["model_path"],
+            probability_cutoff=info["probability_cutoff"],
+        )
+
+    orig_load_models = wake_word.load_wake_models
+    custom = wakewords.Custom(folder=os.environ.get("TSX_VOICE_WAKEWORDS") or None,
+                              run_dir=os.environ.get("TSX_VOICE_RUN_DIR", "/run/tsx/voice"),
+                              make=make, load_models=orig_load_models)
+    CUSTOM = custom
+
+    def find_available_wake_words(wake_word_dirs, stop_model_id):
+        return custom.startup_scan(wake_word_dirs, stop_model_id)
+
+    def load_wake_models(available, active_ids, default_id, preferred_type=None):
+        result = orig_load_models(available, active_ids, default_id, preferred_type=preferred_type)
+        custom.startup_models(available, active_ids, default_id, preferred_type, result)
+        return result
+
+    wake_word.find_available_wake_words = find_available_wake_words
+    wake_word.load_wake_models = load_wake_models
+
+    orig_load = models.AvailableWakeWord.load
+    models.AvailableWakeWord.load = lambda self: custom.guarded_load(orig_load, self)
+
+    orig_state_init = models.ServerState.__init__
+
+    def state_init(self, *args, **kwargs):
+        orig_state_init(self, *args, **kwargs)
+        custom.attach(self)
+
+    models.ServerState.__init__ = state_init
+
+    proto = satellite.VoiceSatelliteProtocol
+    orig_handle = proto.handle_message
+
+    def handle_message(self, msg):
+        yield from orig_handle(self, msg)
+        if isinstance(msg, VoiceAssistantConfigurationRequest):
+            custom.config_sent()
+
+    proto.handle_message = handle_message
+    # logging is not configured yet when this runs from _patch()
+    print("tsx_lva: custom wake words " + (f"in {custom.folder}" if custom.folder else "off"),
+          file=sys.stderr, flush=True)
+
+
 def _check_tflite():
     """The wake word needs libtensorflowlite_c.so (package tensorflow-lite-c).
     Say so in one clear line and stop, not with a long traceback."""
@@ -416,6 +493,11 @@ def _patch():
             self._mpv["audio-buffer"] = float(os.environ.get("TSX_VOICE_AUDIO_BUFFER", "0.2"))  # pylint: disable=protected-access
 
         libmpv.LibMpvPlayer.__init__ = init
+
+    try:
+        _patch_wakewords()
+    except Exception as err:  # noqa: BLE001 - without it, LVA reads its wake words itself
+        print(f"tsx_lva: custom wake words not available: {err!r}", file=sys.stderr, flush=True)
 
     # _patch_keys() before _patch_panel(): the satellite entities get their
     # fixed keys before the panel entities are added.

@@ -35,13 +35,18 @@ start_pre() {
 	# supervise-daemon opens the log after it switches to command_user. The log
 	# must exist, and kiosk must be able to write it.
 	checkpath -f -m 0644 -o kiosk:audio /var/log/tsx-voice.log
-	STATE_DIR=/var/lib/tsx-voice
+	STATE_DIR=/var/lib/tsx-voice CUSTOM_WAKE_WORDS=/data/wakewords
 	[ -r /etc/tsx/voice.conf ] && . /etc/tsx/voice.conf
 	[ -r /run/tsx/voice.conf ] && . /run/tsx/voice.conf   # panel.conf NAME/WAKE_WORD (tsx-config apply)
 	[ -x /usr/local/bin/linux-voice-assistant ] || { eerror "linux-voice-assistant not installed"; return 1; }
 	. "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 	[ -e "/proc/asound/$TSX_SOUND_CARD" ] || ewarn "no $TSX_SOUND_CARD sound card"
 	checkpath -d -m 0755 -o kiosk:audio "$STATE_DIR"
+	# Custom wake word models: root writes them, the satellite (kiosk) reads
+	# them. The folder is on /data, so it stays over upgrades and reinstalls.
+	if [ -n "$CUSTOM_WAKE_WORDS" ]; then
+		checkpath -d -m 0755 -o root:root "$CUSTOM_WAKE_WORDS" || ewarn "tsx-voice: cannot make $CUSTOM_WAKE_WORDS"
+	fi
 	# State, ducking and the push-to-talk FIFO (the satellite runs as kiosk)
 	checkpath -d -m 0755 /run/tsx
 	checkpath -d -m 0755 -o kiosk:audio /run/tsx/voice
