@@ -23,6 +23,7 @@ from aioesphomeapi.api_pb2 import (  # pylint: disable=no-name-in-module
     ButtonCommandRequest,
     DeviceInfoRequest,
     DeviceInfoResponse,
+    ExecuteServiceRequest,
     LightCommandRequest,
     ListEntitiesDoneResponse,
     ListEntitiesRequest,
@@ -136,6 +137,12 @@ class PanelAPIServer(APIServer):
             return
         if isinstance(msg, SubscribeHomeassistantServicesRequest):
             self._tsx_services = True    # no reply: service calls come later, when there is one
+            return
+        if isinstance(msg, ExecuteServiceRequest):
+            # a user-defined action (entities.ActionsEntity): only the owner of the key
+            for entity in self.device.entities:
+                if msg.key in getattr(entity, "service_keys", ()):
+                    yield from entity.handle_message(msg)
             return
         if isinstance(msg, SubscribeStatesRequest):
             for entity in self.device.entities:

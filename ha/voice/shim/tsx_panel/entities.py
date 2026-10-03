@@ -5,7 +5,8 @@ entities), Number/Select (as one fixed entity), Event and MediaPlayer classes
 tied to voice-satellite specifics. These are the same shapes but generic and
 reusable, plus the three read-only "diagnostic" types (sensor, binary_sensor,
 text_sensor) and the two LVA does not need at all (button, text), and a
-generic select (screen orientation).
+generic select (screen orientation). ActionsEntity is no entity in Home
+Assistant: it lists user-defined actions (services) of the device.
 
 Each entity is deliberately dumb: it stores get()/set() callables and only
 knows how to answer ListEntitiesRequest / SubscribeHomeAssistantStatesRequest
@@ -34,6 +35,8 @@ from aioesphomeapi.api_pb2 import (
     BinarySensorStateResponse,
     ButtonCommandRequest,
     EventResponse,
+    ExecuteServiceRequest,
+    ExecuteServiceResponse,
     ListEntitiesBinarySensorResponse,
     ListEntitiesButtonResponse,
     ListEntitiesEventResponse,
@@ -41,6 +44,8 @@ from aioesphomeapi.api_pb2 import (
     ListEntitiesRequest,
     ListEntitiesSelectResponse,
     ListEntitiesSensorResponse,
+    ListEntitiesServicesArgument,
+    ListEntitiesServicesResponse,
     ListEntitiesSwitchResponse,
     ListEntitiesTextResponse,
     ListEntitiesTextSensorResponse,
@@ -447,3 +452,87 @@ class KeyEventEntity(ESPHomeEntity):
         elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
             if self._current:
                 yield EventResponse(key=self.key, event_type=self._current)
+
+
+# ServiceArgType of api.proto: the argument types of a user-defined action
+ARG_BOOL, ARG_INT, ARG_FLOAT, ARG_STRING = 0, 1, 2, 3
+# SupportsResponseType STATUS of api.proto: Home Assistant waits for the
+# ExecuteServiceResponse and shows its error message. It gets no data.
+SUPPORTS_RESPONSE_STATUS = 100
+
+
+def _has_field(cls, name) -> bool:
+    """The protobuf class has the field (older aioesphomeapi versions lack
+    supports_response and call_id). A stand-in class without DESCRIPTOR has it."""
+    desc = getattr(cls, "DESCRIPTOR", None)
+    return desc is None or name in desc.fields_by_name
+
+
+class Action:
+    """One user-defined action: its key, name, arguments ((name, ARG_*)...)
+    and the function that runs it with the arguments as keywords."""
+
+    def __init__(self, key, name, args, run):
+        self.key, self.name, self.args, self.run = key, name, list(args), run
+
+
+def decode_args(action: Action, msg) -> dict:
+    """The arguments of an ExecuteServiceRequest as keywords, by the types
+    that the action lists. Raises ValueError when the count is wrong."""
+    if len(msg.args) != len(action.args):
+        raise ValueError(f"{action.name} takes {len(action.args)} arguments, not {len(msg.args)}")
+    values = {}
+    for (name, arg_type), arg in zip(action.args, msg.args):
+        if arg_type == ARG_INT:
+            # API 1.3 and later send int_ (sint32), older clients legacy_int
+            values[name] = int(arg.int_ or arg.legacy_int)
+        elif arg_type == ARG_FLOAT:
+            values[name] = float(arg.float_)
+        elif arg_type == ARG_STRING:
+            values[name] = str(arg.string_)
+        else:
+            values[name] = bool(arg.bool_)
+    return values
+
+
+class ActionsEntity(ESPHomeEntity):
+    """The user-defined actions of the device (the "actions" of an ESPHome
+    api component). Home Assistant registers each action as the service
+    esphome.<device name>_<action name> (the dashes of the device name
+    become underscores) when it connects. It is no entity in Home Assistant.
+    It answers ListEntitiesRequest with one ListEntitiesServicesResponse per
+    action and runs ExecuteServiceRequest for its keys (service_keys). The
+    router must hand it ExecuteServiceRequest (esphome_server.py, tsx_lva).
+    """
+
+    def __init__(self, server, actions):
+        ESPHomeEntity.__init__(self, server)
+        self.actions = {a.key: a for a in actions}
+        self.service_keys = frozenset(self.actions)
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, ListEntitiesRequest):
+            status = _has_field(ListEntitiesServicesResponse, "supports_response")
+            for action in self.actions.values():
+                extra = {"supports_response": SUPPORTS_RESPONSE_STATUS} if status else {}
+                yield ListEntitiesServicesResponse(
+                    name=action.name, key=action.key,
+                    args=[ListEntitiesServicesArgument(name=n, type=t) for n, t in action.args],
+                    **extra,
+                )
+        elif isinstance(msg, ExecuteServiceRequest) and msg.key in self.service_keys:
+            action = self.actions[msg.key]
+            error = ""
+            try:
+                action.run(**decode_args(action, msg))
+            except (ValueError, RuntimeError) as err:
+                error = str(err)
+            except Exception as err:  # noqa: BLE001 - one bad call must not end the connection
+                _LOGGER.warning("action %s failed", action.name, exc_info=True)
+                error = f"{action.name} failed: {err}"
+            if error:
+                _LOGGER.warning("action %s: %s", action.name, error)
+            else:
+                _LOGGER.info("action %s", action.name)
+            if getattr(msg, "call_id", 0):
+                yield ExecuteServiceResponse(call_id=msg.call_id, success=not error, error_message=error)

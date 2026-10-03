@@ -50,6 +50,7 @@ Env overrides (all also read by tsx-mqtt; new ones only for this module):
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 import time
@@ -58,6 +59,29 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 _LOGGER = logging.getLogger("tsx_panel.backend")
+
+# Effects that run on the LED bar itself (bar firmware TSX-LEDBAR, `tsx-ledbar
+# fx`): the Home Assistant effect name and the fx name. The stock firmware
+# has none of them.
+LEDBAR_FX = {"Breathe": "breathe", "Blink": "blink", "Rainbow": "rainbow"}
+LEDBAR_FX_BREATHE_MS = 4000      # one breath
+LEDBAR_FX_BLINK_MS = (500, 500)  # on, off
+LEDBAR_FX_RAINBOW_MS = 10000     # one hue cycle
+# The zone effects of the bar firmware TSX-LEDBAR 0.1.3 and later (16 LEDs,
+# `tsx-panelctl has ledbar-leds`). Chase runs a dot of the light color down
+# both sides. Fill is a level bar of the light color at full level, and the
+# brightness of the light sets its height (0 to 100 %). Spectrum spreads the
+# hue circle along the rows at the brightness of the light. The bar firmware
+# also has a split effect (one color on each side). It is only an action
+# (ledbar_split), because a light has one color.
+LEDBAR_LEDS_FX = {"Chase": "chase", "Fill": "fill", "Spectrum": "spectrum"}
+LEDBAR_FX_CHASE_MS = 1500        # one run from top to bottom
+LEDBAR_FX_SPECTRUM_MS = 10000    # one hue cycle
+
+# A LED selection of the bar firmware: R1 to R8 (right side), L1 to L8 (left
+# side), top to bottom, the index 0 to 15, a range of two of them, R, L or ALL.
+_LED_ONE = r"(?:[RL][1-8]|1[0-5]|[0-9])"
+_LEDS_RE = re.compile(rf"^(?:ALL|R|L|{_LED_ONE}|{_LED_ONE}-{_LED_ONE})$")
 
 
 def _env(name, default):
@@ -127,6 +151,7 @@ def _board_run(how, name) -> str:
 
 class PanelBackend:
     def __init__(self):
+        self._fx_sent = None  # R G B (0..100) of the last effect that Home Assistant started
         self.run_dir = Path(_env("TSX_RUN_DIR", "/run/tsx"))
         self.idled_state = Path(_env("TSX_IDLED_STATE", "/run/tsx-idled.state"))
         self.buttons_conf = Path(_env("TSX_BUTTONS_CONF", "/etc/tsx/buttons.conf"))
@@ -160,7 +185,7 @@ class PanelBackend:
             return False, ""
         return res.returncode == 0, res.stdout.strip()
 
-    def _ctl(self, *words) -> None:
+    def _ctl(self, *words) -> bool:
         """Hand one command to the tsx-panelctl FIFO (one whitespace-separated
         line; see that script for the whitelist). Never blocks: a missing
         reader makes the non-blocking open fail immediately (ENXIO), logged
@@ -172,24 +197,56 @@ class PanelBackend:
             fd = os.open(str(self.panelctl), os.O_WRONLY | os.O_NONBLOCK)
         except OSError:
             _LOGGER.warning("tsx-panelctl not listening (%s): %s", self.panelctl, words)
-            return
+            return False
         try:
             os.write(fd, line.encode("utf-8"))
         finally:
             os.close(fd)
+        return True
 
     # ---- LED bar -------------------------------------------------------------
     def ledbar_present(self) -> bool:
         """The panel has a USB LED bar (tsx-panelctl has ledbar)."""
         return self._panelctl("has", "ledbar")[0]
 
-    def get_ledbar(self):
-        """(on, brightness 0..255, r,g,b 0..255), from ledbar.state "want R G B" 0..100."""
+    def _ledbar_fx_record(self):
+        """The running effect of ledbar.state ("fx NAME N... [WORD]"): (name, [numbers]), else None."""
+        raw = (_field(self.run_dir / "ledbar.state", "fx") or "").split()
+        if not raw or raw[0] == "none":
+            return None
+        # the numbers only: spectrum may end with the word ring or rows
+        return raw[0], [int(x) for x in raw[1:] if x.isdigit()]
+
+    def _ledbar_effect_rgb(self):
+        """The color of the running effect on the bar, R G B 0..100, else None.
+        The record of fade, blink, breathe and chase has it. Fill has it at the
+        level of its height. Rainbow and spectrum are white at their level."""
+        rec = self._ledbar_fx_record()
+        if rec is None:
+            return None
+        name, nums = rec
+        if name in ("fade", "blink", "breathe", "chase") and len(nums) >= 3:
+            return tuple(nums[:3])
+        if name == "fill" and len(nums) >= 4:   # the height shows as the brightness
+            return tuple((x * nums[3] + 50) // 100 for x in nums[:3])
+        if name in ("rainbow", "spectrum"):
+            level = nums[1] if len(nums) > 1 else 100
+            return (level, level, level)
+        return None
+
+    def get_ledbar(self, fx: bool = False):
+        """(on, brightness 0..255, r,g,b 0..255) of what the bar shows. This is the
+        wanted color from ledbar.state "want R G B" (0..100). With fx (the bar
+        firmware has effects) a running effect shows its own color instead, because
+        an effect does not change the wanted color."""
         raw = _field(self.run_dir / "ledbar.state", "want") or "0 0 0"
         try:
             r, g, b = (int(x) for x in raw.split()[:3])
         except ValueError:
             r = g = b = 0
+        shown = self._ledbar_effect_rgb() if fx else None
+        if shown is not None:
+            r, g, b = shown
         mx = max(r, g, b)
         if mx <= 0:
             return False, 0, 0, 0, 0
@@ -199,15 +256,114 @@ class PanelBackend:
         bb = (b * 255 + mx // 2) // mx
         return True, bri, rr, gg, bb
 
-    def set_ledbar(self, on: bool, bri: int, r: int, g: int, b: int) -> None:
+    def ledbar_fx_present(self) -> bool:
+        """The LED bar runs the firmware TSX-LEDBAR, which has effects
+        (tsx-panelctl has ledbar-fx)."""
+        return self._panelctl("has", "ledbar-fx")[0]
+
+    def ledbar_leds_present(self) -> bool:
+        """The LED bar firmware has the 16 LEDs and the zone effects
+        (TSX-LEDBAR 0.1.3 and later, tsx-panelctl has ledbar-leds)."""
+        return self._panelctl("has", "ledbar-leds")[0]
+
+    def get_ledbar_effect(self) -> str:
+        """The Home Assistant name of the effect that runs on the LED bar
+        (ledbar.state "fx NAME ..."), else "None"."""
+        raw = (_field(self.run_dir / "ledbar.state", "fx") or "").split()
+        for effect, name in {**LEDBAR_FX, **LEDBAR_LEDS_FX}.items():
+            if raw and raw[0] == name:
+                return effect
+        return "None"
+
+    def _ledbar_fx_end(self, rgb) -> bool:
+        """True when Home Assistant chose effect None with the color of the running
+        effect. Then the bar goes back to the wanted color from before the effect."""
+        if self._ledbar_fx_record() is None or not self.ledbar_fx_present():
+            return False
+        for ref in (self._ledbar_effect_rgb(), self._fx_sent):
+            if ref is not None and all(abs(x - y) <= 1 for x, y in zip(rgb, ref)):
+                return True
+        return False
+
+    def set_ledbar(self, on: bool, bri: int, r: int, g: int, b: int, effect: str = "None") -> None:
+        """A color, or with an effect of LEDBAR_FX that effect in the color.
+        A color ends an effect on the bar. Effect None with the color of the
+        running effect ends the effect with "fx off": the bar shows the color from
+        before the effect. The poll of the device then reports that color to Home Assistant."""
         if not on or bri <= 0:
+            self._fx_sent = None
             self._ctl("ledbar", "off")
             return
         # HA 0..255 rgb + 0..255 brightness -> bar 0..100 per channel
         rr = (r * bri * 100 + 32512) // 65025
         gg = (g * bri * 100 + 32512) // 65025
         bb = (b * bri * 100 + 32512) // 65025
-        self._ctl("ledbar", "set", str(rr), str(gg), str(bb))
+        fx = LEDBAR_FX.get(effect) or LEDBAR_LEDS_FX.get(effect)
+        if fx is None and effect == "None" and self._ledbar_fx_end((rr, gg, bb)):
+            self._fx_sent = None
+            self._ctl("ledbar", "fx", "off")
+            return
+        self._fx_sent = (rr, gg, bb) if fx else None
+        if fx == "breathe":
+            self._ctl("ledbar", "fx", fx, str(rr), str(gg), str(bb), str(LEDBAR_FX_BREATHE_MS))
+        elif fx == "blink":
+            self._ctl("ledbar", "fx", fx, str(rr), str(gg), str(bb), *(str(ms) for ms in LEDBAR_FX_BLINK_MS))
+        elif fx == "rainbow":
+            self._ctl("ledbar", "fx", fx, str(LEDBAR_FX_RAINBOW_MS), str((bri * 100 + 127) // 255))
+        elif fx == "chase":
+            self._ctl("ledbar", "fx", fx, str(rr), str(gg), str(bb), str(LEDBAR_FX_CHASE_MS))
+        elif fx == "fill":
+            # the color at full level, the brightness is the height
+            self._ctl("ledbar", "fx", fx, *(str((x * 100 + 127) // 255) for x in (r, g, b)),
+                      str((bri * 100 + 127) // 255))
+        elif fx == "spectrum":
+            self._ctl("ledbar", "fx", fx, str(LEDBAR_FX_SPECTRUM_MS), str((bri * 100 + 127) // 255))
+        else:
+            self._ctl("ledbar", "set", str(rr), str(gg), str(bb))
+
+    # ---- the actions of the 16 LEDs (bar firmware 0.1.3) ---------------------
+    # Home Assistant calls them as the services esphome.<device>_ledbar_*
+    # (device.py). Each one checks its arguments and raises ValueError with a
+    # message for Home Assistant. Colors are levels 0 to 100, as on the bar.
+    @staticmethod
+    def _levels(*values):
+        for v in values:
+            if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 100:
+                raise ValueError(f"{v!r} is not a level from 0 to 100")
+        return [str(v) for v in values]
+
+    def _send(self, *words) -> None:
+        if not self._ctl(*words):
+            raise RuntimeError("tsx-panelctl does not listen")
+
+    def ledbar_set_led(self, led: str, red: int, green: int, blue: int) -> None:
+        """Set LEDs of the pattern: one LED, a range, a side or ALL."""
+        sel = str(led).strip().upper()
+        if not _LEDS_RE.match(sel):
+            raise ValueError(f"{led!r} is not a LED (R1 to R8, L1 to L8, 0 to 15), a range (R1-R4), R, L or ALL")
+        self._send("ledbar", "led", sel, *self._levels(red, green, blue))
+
+    def ledbar_set_side(self, side: str, red: int, green: int, blue: int) -> None:
+        """Set one side of the pattern: R (right) or L (left)."""
+        sel = {"R": "R", "RIGHT": "R", "L": "L", "LEFT": "L"}.get(str(side).strip().upper())
+        if sel is None:
+            raise ValueError(f"{side!r} is not a side (R or L)")
+        self._send("ledbar", "side", sel, *self._levels(red, green, blue))
+
+    def ledbar_fill(self, percent: int, red: int, green: int, blue: int) -> None:
+        """The fill effect: a level bar of the color, PERCENT of the height."""
+        levels = self._levels(red, green, blue, percent)
+        self._send("ledbar", "fx", "fill", *levels)
+
+    def ledbar_split(self, right_red: int, right_green: int, right_blue: int,
+                     left_red: int, left_green: int, left_blue: int) -> None:
+        """The split effect: one color on the right side, one on the left side."""
+        self._send("ledbar", "fx", "split", *self._levels(right_red, right_green, right_blue,
+                                                           left_red, left_green, left_blue))
+
+    def ledbar_clear(self) -> None:
+        """Drop the pattern: the bar shows the light color again."""
+        self._send("ledbar", "clear")
 
     # ---- key LEDs --------------------------------------------------------------
     def keypad_present(self) -> bool:

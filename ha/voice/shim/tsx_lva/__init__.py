@@ -227,13 +227,25 @@ def _patch_panel():
     # The Bluetooth proxy (BT_PROXY, BT_ACTIVE, tsx_panel/bluetooth.py): its
     # feature flags go into the own DeviceInfoResponse of the satellite, and
     # its messages (advertisements, links, GATT) never reach satellite.py.
-    from aioesphomeapi.api_pb2 import DeviceInfoResponse, SubscribeHomeassistantServicesRequest  # noqa: WPS433
+    from aioesphomeapi.api_pb2 import (  # noqa: WPS433
+        DeviceInfoResponse,
+        ExecuteServiceRequest,
+        SubscribeHomeassistantServicesRequest,
+    )
     from tsx_panel import bluetooth  # noqa: WPS433
 
     def handle_message(self, msg):
         if isinstance(msg, keyed_commands):
             for entity in self.state.entities:
                 if getattr(entity, "key", None) == msg.key:
+                    yield from entity.handle_message(msg)
+            return
+        if isinstance(msg, ExecuteServiceRequest):
+            # A user-defined action of the panel (tsx_panel.entities.ActionsEntity).
+            # satellite.py does not route it. The ListEntitiesRequest that
+            # satellite.py hands to every entity lists the actions.
+            for entity in self.state.entities:
+                if msg.key in getattr(entity, "service_keys", ()):
                     yield from entity.handle_message(msg)
             return
         if isinstance(msg, SubscribeHomeassistantServicesRequest):

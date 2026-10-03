@@ -186,6 +186,40 @@ r0=$(grep -c 'rejected:' "$T/panelctl.log"); : > "$T/cmds.log"
 send "backlight 0"; send "backlight 4096"; send "backlight 5 extra"; send "backlight *"; send "ledbar on now"; send "keypad led auto 5"
 [ ! -s "$T/cmds.log" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 6)) ] && ok "6 bad lines for the new commands rejected" || bad "bad lines for the new commands: $(cat "$T/cmds.log")"
 
+echo "== ledbar fx: the effects of the LED bar firmware TSX-LEDBAR =="
+: > "$T/cmds.log"; r0=$(grep -c 'rejected:' "$T/panelctl.log")
+for l in "fx fade 100 0 0 1000" "fx blink 1 2 3 300 700" "fx breathe 0 0 80 4000" "fx rainbow 10000" \
+	"fx rainbow 10000 40" "fx smooth 500" "fx cap 120" "fx off"; do
+	send "ledbar $l"
+	grep -qxF "tsx-ledbar $l" "$T/cmds.log" && ok "ledbar $l -> tsx-ledbar $l" || bad "ledbar $l: $(cat "$T/cmds.log")"
+done
+: > "$T/cmds.log"
+for l in "fx breathe 0 0 80 *" "fx breathe 0 0 80" "fx breathe 0 0 80 4000 1" "fx sparkle 100" "fx off now" "fx" \
+	"fx blink 1 2 3 300 -7" "fx rainbow 1000 50 1" "fx cap 9999999" "fx fade 1 2 3 600001" "fx smooth -o" "fx ../x 1"; do
+	send "ledbar $l"
+done
+[ ! -s "$T/cmds.log" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 12)) ] && ok "12 bad fx lines rejected" || bad "bad fx lines: $(cat "$T/cmds.log")"
+kill -0 "$PID" 2>/dev/null && ok "daemon is still alive after the bad fx lines" || bad "daemon died"
+
+echo "== ledbar led, side, clear and the zone effects: the 16 LEDs of TSX-LEDBAR 0.1.3 =="
+: > "$T/cmds.log"
+for l in "fx chase 100 0 0 2000" "fx fill 0 80 0 50" "fx spectrum 8000" "fx spectrum 8000 40" "fx spectrum 8000 40 rows" "fx spectrum 8000 ring" "fx split 100 0 0 0 0 100" \
+	"led R3 100 0 0" "led L8 0 0 0" "led 0 1 2 3" "led 15 1 2 3" "led R1-R4 1 2 3" "led 8-11 1 2 3" "led R7-L2 1 2 3" \
+	"led ALL 1 2 3" "led R 1 2 3" "led L 1 2 3" "side R 0 50 0" "side L 0 0 50" "clear"; do
+	send "ledbar $l"
+	grep -qxF "tsx-ledbar $l" "$T/cmds.log" && ok "ledbar $l -> tsx-ledbar $l" || bad "ledbar $l: $(cat "$T/cmds.log")"
+done
+: > "$T/cmds.log"; r0=$(grep -c 'rejected:' "$T/panelctl.log")
+for l in "led R9 1 2 3" "led 16 1 2 3" "led 01 1 2 3" "led r3 1 2 3" "led all 1 2 3" "led R1- 1 2 3" "led -R1 1 2 3" \
+	"led R1-R2-R3 1 2 3" "led * 1 2 3" "led R3 101 0 0" "led R3 1 2" "led R3 1 2 3 4" "led R3 1 2 -3" "led ../x 1 2 3" \
+	"led R1;reboot 1 2 3" "led" "side X 1 2 3" "side ALL 1 2 3" "side r 1 2 3" "side R 1 2" "side R 1 2 3 4" "clear now" \
+	"fx chase 1 2 3" "fx split 1 2 3 4 5" "fx split 1 2 3 4 5 6 7" "fx fill 1 2 3 4 5" "fx spectrum" "fx spectrum 1 2 3" \
+	"fx spectrum 8000 40 diagonal" "fx spectrum ring" "fx spectrum 8000 rows rows" "fx spectrum 8000 40 RING" "fx rainbow 8000 rows"; do
+	send "ledbar $l"
+done
+[ ! -s "$T/cmds.log" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 33)) ] && ok "33 bad LED lines rejected" || bad "bad LED lines: $(cat "$T/cmds.log")"
+kill -0 "$PID" 2>/dev/null && ok "daemon is still alive after the bad LED lines" || bad "daemon died"
+
 echo "== the seam: tsx-panelctl send, get, has, events =="
 PCTL="env PATH=$T/bin:$PATH TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled.state TSX_BUTTONS_CONF=$T/buttons.conf TSX_ALS_CONF=$T/als.conf TSX_ASOUND_DIR=$T/asound TSX_LEDS_DIR=$T/leds TSX_STATE_DIR=$T/state TSX_NFC_SYS_DIR=$T/nfc TSX_LEDBAR=$T/bin/tsx-ledbar-none busybox sh $SCRIPT"
 : > "$T/cmds.log"
@@ -224,6 +258,28 @@ rm -rf "$T/asound/TSW1060" "$T/leds/rgb:lightbar-0" "$T/nfc/nfc0"
 for h in ledbar keypad als sound presence lightbar usbpower poe nfc; do $PCTL has $h && bad "has $h: yes without the hardware" || ok "has $h: no without the hardware"; done
 for h in ledbar keypad als sound presence lightbar usbpower poe nfc; do $PCTL has $h >/dev/null 2>&1; [ $? = 1 ] && ok "has $h: exit 1 without the hardware" || bad "has $h: exit is not 1"; done
 $PCTL has toaster >/dev/null 2>&1; [ $? = 2 ] && ok "has of an unknown name: exit 2" || bad "has of an unknown name"
+# has ledbar-fx: the answer of "tsx-ledbar fw". get ledbar-fx: the record in ledbar.state
+printf '#!/bin/sh\n[ "$1" = fw ] && cat "%s/fw"\n' "$T" > "$T/bin/tsx-ledbar-fw"; chmod +x "$T/bin/tsx-ledbar-fw"
+PFX="env PATH=$T/bin:$PATH TSX_RUN_DIR=$T/run TSX_LEDBAR=$T/bin/tsx-ledbar-fw busybox sh $SCRIPT"
+printf 'firmware TSX-LEDBAR [v0.1.1]\neffects yes\n' > "$T/fw"
+$PFX has ledbar-fx && ok "has ledbar-fx: yes with TSX-LEDBAR" || bad "has ledbar-fx: no with TSX-LEDBAR"
+printf 'firmware TSW-XX60-LB [v1.3443.00018]\neffects no\n' > "$T/fw"
+$PFX has ledbar-fx >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-fx: exit 1 with the stock firmware" || bad "has ledbar-fx: yes with the stock firmware"
+rm -f "$T/fw"; $PFX has ledbar-fx >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-fx: exit 1 without a bar" || bad "has ledbar-fx: yes without a bar"
+# has ledbar-leds: the line "leds yes" of "tsx-ledbar fw" (0.1.3 and later)
+printf 'firmware TSX-LEDBAR [v0.1.3]\neffects yes\nleds yes\n' > "$T/fw"
+$PFX has ledbar-leds && ok "has ledbar-leds: yes with 0.1.3" || bad "has ledbar-leds: no with 0.1.3"
+printf 'firmware TSX-LEDBAR [v0.1.2]\neffects yes\nleds no\n' > "$T/fw"
+$PFX has ledbar-leds >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-leds: exit 1 with 0.1.2" || bad "has ledbar-leds: yes with 0.1.2"
+$PFX has ledbar-fx && ok "has ledbar-fx: yes with 0.1.2" || bad "has ledbar-fx: no with 0.1.2"
+printf 'firmware TSW-XX60-LB [v1.3443.00018]\neffects no\nleds no\n' > "$T/fw"
+$PFX has ledbar-leds >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-leds: exit 1 with the stock firmware" || bad "has ledbar-leds: yes with the stock firmware"
+rm -f "$T/fw"; $PFX has ledbar-leds >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-leds: exit 1 without a bar" || bad "has ledbar-leds: yes without a bar"
+$PCTL has ledbar-fx >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-fx: exit 1 without tsx-ledbar" || bad "has ledbar-fx: yes without tsx-ledbar"
+printf 'want 0 0 80\nfx breathe 0 0 80 4000\n' > "$T/run/ledbar.state"
+[ "$($PCTL get ledbar-fx)" = "breathe 0 0 80 4000" ] && ok "get ledbar-fx: the effect" || bad "get ledbar-fx: $($PCTL get ledbar-fx)"
+printf 'want 0 0 80\n' > "$T/run/ledbar.state"
+$PCTL get ledbar-fx >/dev/null 2>&1 && bad "get ledbar-fx without a record succeeded" || ok "get ledbar-fx without a record: nothing, exit 1"
 # events: the present values first, then a line for each change
 printf 'want 10 20 30\n' > "$T/run/ledbar.state"; printf 'led 128 day\nlast home short 12:00:01\n' > "$T/run/buttons.state"
 echo "on 17" > "$T/idled.state"; printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T/run/als.state"; printf 'present on\ndistance 640\n' > "$T/run/presence.state"

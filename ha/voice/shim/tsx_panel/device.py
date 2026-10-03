@@ -24,9 +24,13 @@ from aioesphomeapi.api_pb2 import (  # pylint: disable=no-name-in-module
 )
 from linux_voice_assistant.entity import LEDLightEntity
 
-from .backend import PanelBackend
+from .backend import LEDBAR_FX, LEDBAR_LEDS_FX, PanelBackend
 from .entities import (
+    ARG_INT,
+    ARG_STRING,
     ENTITY_CATEGORY_DIAGNOSTIC,
+    Action,
+    ActionsEntity,
     BinarySensorEntity,
     ButtonEntity,
     KeyEventEntity,
@@ -41,7 +45,9 @@ from .entities import (
 
 _LOGGER = logging.getLogger("tsx_panel.device")
 
-LEDBAR_EFFECTS = ["None", "Pulse"]
+LEDBAR_EFFECTS = ["None", "Pulse"]  # with the bar firmware TSX-LEDBAR also the names of LEDBAR_FX
+# Effects of Home Assistant that keep the color of Home Assistant: the bar records white at their level.
+LEDBAR_HUE_EFFECTS = ("Rainbow", "Spectrum")
 POLL_INTERVAL = 1.0
 PULSE_PERIOD = 2.0  # seconds per breath, 20%..100% of the set brightness
 
@@ -88,8 +94,12 @@ class PanelDevice:
     emmc_life_b: Optional[SensorEntity] = None
     emmc_eol: Optional[TextSensorEntity] = None
     nfc: bool = False
+    ledbar_fx: bool = False
+    ledbar_leds: bool = False
+    ledbar_actions: Optional[ActionsEntity] = None
     _last_lightbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar: Optional[tuple] = field(default=None, repr=False)
+    _last_ledbar_fx: Optional[str] = field(default=None, repr=False)
     _last_keypad: Optional[tuple] = field(default=None, repr=False)
     _pulse_since: float = field(default=0.0, repr=False)
 
@@ -105,23 +115,34 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     entities: List = []
 
     # ---- LED bar (RGB light, + a cheap software "Pulse" effect) ------------
-    # only where the panel has one (backend.ledbar_present)
+    # only where the panel has one (backend.ledbar_present). The bar firmware
+    # TSX-LEDBAR adds the effects of LEDBAR_FX, which run on the bar itself.
+    # TSX-LEDBAR 0.1.3 and later (the 16 LEDs) adds the zone effects of
+    # LEDBAR_LEDS_FX and the actions of ledbar_action_list().
     ledbar = None
+    ledbar_fx = ledbar_leds = False
+    ledbar_actions = None
     if backend.ledbar_present():
-        on, bri, r, g, b = backend.get_ledbar()
+        ledbar_fx = backend.ledbar_fx_present()
+        ledbar_leds = ledbar_fx and backend.ledbar_leds_present()
+        on, bri, r, g, b = backend.get_ledbar(ledbar_fx)
         ledbar = LEDLightEntity(
             server, next_key(), "LED bar", "ledbar",
-            effects=LEDBAR_EFFECTS, supports_rgb=True, supports_brightness=True,
-            icon="mdi:led-strip-variant",
+            effects=LEDBAR_EFFECTS + (list(LEDBAR_FX) if ledbar_fx else [])
+            + (list(LEDBAR_LEDS_FX) if ledbar_leds else []),
+            supports_rgb=True, supports_brightness=True, icon="mdi:led-strip-variant",
         )
         ledbar.is_on, ledbar.brightness = on, bri / 255.0
         if r or g or b:
             ledbar.red, ledbar.green, ledbar.blue = r / 255.0, g / 255.0, b / 255.0
+        if ledbar_fx:
+            ledbar.effect = backend.get_ledbar_effect()
 
         def ledbar_changed(_ledbar=ledbar):
             backend.set_ledbar(
                 _ledbar.is_on, round(_ledbar.brightness * 255),
                 round(_ledbar.red * 255), round(_ledbar.green * 255), round(_ledbar.blue * 255),
+                _ledbar.effect,
             )
 
         ledbar.update_on_changed(ledbar_changed)
@@ -326,6 +347,11 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
         entities.append(key_entity)
         keys.append(key_entity)
 
+    # ---- the actions of the 16 LEDs (last, so the keys of the entities stay) --
+    if ledbar_leds:
+        ledbar_actions = ActionsEntity(server, ledbar_action_list(backend, next_key))
+        entities.append(ledbar_actions)
+
     return PanelDevice(
         backend=backend, entities=entities, ledbar=ledbar, keypad=keypad, screen=screen,
         backlight=backlight, blank_timeout=blank_timeout, als_auto=als_auto, illuminance=illuminance, volume=volume,
@@ -334,7 +360,26 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
         update=update, keys=keys, orientation=orientation, _pulse_since=time.time(),
         lightbar=lightbar, usb_power=usb_power, presence=presence, distance=distance, poe_class=poe_class,
         emmc_life_a=emmc_life_a, emmc_life_b=emmc_life_b, emmc_eol=emmc_eol, nfc=backend.nfc_present(),
+        ledbar_fx=ledbar_fx, ledbar_leds=ledbar_leds, ledbar_actions=ledbar_actions,
     )
+
+
+def ledbar_action_list(backend: PanelBackend, next_key) -> List[Action]:
+    """The actions of the 16 LEDs (bar firmware TSX-LEDBAR 0.1.3 and later).
+    Home Assistant names them esphome.<device>_<name>. Colors are levels
+    0 to 100 (red, green, blue), as on the bar. A LED is R1 to R8 (right
+    side) or L1 to L8 (left side), top to bottom, the index 0 to 15, a range
+    (R1-R4), R, L or ALL."""
+    rgb = [("red", ARG_INT), ("green", ARG_INT), ("blue", ARG_INT)]
+    return [
+        Action(next_key(), "ledbar_set_led", [("led", ARG_STRING)] + rgb, backend.ledbar_set_led),
+        Action(next_key(), "ledbar_set_side", [("side", ARG_STRING)] + rgb, backend.ledbar_set_side),
+        Action(next_key(), "ledbar_fill", [("percent", ARG_INT)] + rgb, backend.ledbar_fill),
+        Action(next_key(), "ledbar_split",
+               [(f"{side}_{c}", ARG_INT) for side in ("right", "left") for c in ("red", "green", "blue")],
+               backend.ledbar_split),
+        Action(next_key(), "ledbar_clear", [], backend.ledbar_clear),
+    ]
 
 
 def _light_tuple(light: LEDLightEntity) -> tuple:
@@ -372,13 +417,18 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
         backend.set_ledbar(True, round(peak_bri * 255 * level),
                             round(device.ledbar.red * 255), round(device.ledbar.green * 255), round(device.ledbar.blue * 255))
     elif device.ledbar is not None:
-        on, bri, r, g, b = backend.get_ledbar()
+        on, bri, r, g, b = backend.get_ledbar(device.ledbar_fx)
         cur = (on, round(bri / 255.0, 3), round(r / 255.0, 3), round(g / 255.0, 3), round(b / 255.0, 3))
-        if cur != device._last_ledbar:
-            device._last_ledbar = cur
+        # the effect on the bar (TSX-LEDBAR), for example ended by a front key
+        effect = backend.get_ledbar_effect() if device.ledbar_fx else None
+        if (cur, effect) != (device._last_ledbar, device._last_ledbar_fx):
+            device._last_ledbar, device._last_ledbar_fx = cur, effect
             device.ledbar.is_on, device.ledbar.brightness = on, bri / 255.0
-            if on:
+            # Rainbow and Spectrum keep the color of Home Assistant (the bar records white)
+            if on and effect not in LEDBAR_HUE_EFFECTS:
                 device.ledbar.red, device.ledbar.green, device.ledbar.blue = r / 255.0, g / 255.0, b / 255.0
+            if effect is not None:
+                device.ledbar.effect = effect
             msgs.append(device.ledbar._state_response())  # pylint: disable=protected-access
 
     if device.keypad is not None:
