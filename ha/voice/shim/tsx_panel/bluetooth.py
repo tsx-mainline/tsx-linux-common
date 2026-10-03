@@ -51,7 +51,9 @@ Home Assistant can connect to BLE devices through the panel:
          for each notification or indication. Home Assistant writes the
          CCCD itself (REMOTE_CACHING).
   A GATT request that fails -> BluetoothGATTErrorResponse with the ATT
-  error code, or -1 when the link is down.
+  error code, or -1 when no link is up. A request on a link that goes down
+  gets no -1: the BluetoothDeviceConnectionResponse connected=false ends it
+  in the client (btgatt.py).
   A closed Home Assistant connection takes its links down.
 
 No pairing. PAIR and UNPAIR get a negative answer, and so does

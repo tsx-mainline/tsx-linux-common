@@ -22,6 +22,9 @@
 #    (bt-gatt-peer.py): links, GATT, the slot count, timeouts, drops
 #    (bt-gatt-check.py), the pause of the passive scan around a connect,
 #    and the BT_ACTIVE switch.
+#  - btgatt.py: the end of a link and a reconnect to the same address, with
+#    a fake clock, client and HCI (btgatt-race-check.py). No late conn event
+#    and no error -1 reach a client that connects again.
 # The PSR files here are made up. They are not the vendor file.
 set -uo pipefail
 # The board file (tests/boards/xx60/board.sh) for the scripts that read it.
@@ -477,6 +480,9 @@ for _ in $(seq 1 50); do [ -S "$G/bt-gatt.sock" ] && grep -q 'HCI socket open' "
 python3 "$HERE/bt-gatt-check.py" "$G/bt-gatt.sock" "$G/peer.log" > "$G/check.out" 2>&1; rc=$?
 sed 's/^/  /' "$G/check.out" | grep -v '^    ok:' || true
 [ $rc = 0 ] && ok "the GATT socket protocol: $(grep -c '  ok:' "$G/check.out") checks (bt-gatt-check.py)" || bad "bt-gatt-check.py: $rc failure(s)"
+python3 "$HERE/btgatt-race-check.py" "$LIB" > "$G/race.out" 2>&1; rc=$?
+sed 's/^/  /' "$G/race.out" | grep -v '^    ok:' || true
+[ $rc = 0 ] && ok "the end of a link and a reconnect: $(grep -c '  ok:' "$G/race.out") checks (btgatt-race-check.py)" || bad "btgatt-race-check.py: $rc failure(s)"
 # the passive scan pauses while a link comes up and starts again after it
 python3 - "$G/adv.sock" "$G/bt-gatt.sock" <<'PYEOF' && ok "advertisements flow again after a link came up" || bad "no advertisements after a connect: $(grep '^cmd' "$G/hci.log" | tail -12 | tr '\n' ' ')"
 import json, socket, sys, time

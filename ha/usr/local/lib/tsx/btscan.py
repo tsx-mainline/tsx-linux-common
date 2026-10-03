@@ -79,7 +79,9 @@ and gets events (the ESPHome message that each one becomes in brackets):
   {"ev": "notify_data", "addr": A, "handle": H, "data": D}
   {"ev": "error", "addr": A, "handle": H, "error": E}
       E is the ATT error code, or -1 when the link is not up
-      (BluetoothGATTErrorResponse).
+      (BluetoothGATTErrorResponse). A link that goes down sends no -1 for
+      its open requests. Its "conn" event ends them in the client
+      (btgatt.py).
 
 A link belongs to the front end that asked for it. When that front end
 closes its socket, the daemon takes its links down. The daemon connects

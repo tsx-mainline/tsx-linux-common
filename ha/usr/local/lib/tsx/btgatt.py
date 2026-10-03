@@ -20,6 +20,23 @@ The kernel runs its own scan while it connects, and it stops every scan
 when the connection is up or has failed. Links therefore ask the scanner to
 pause the passive scan before connect() and to start it again after.
 
+The end of a link follows the rules of the ESPHome client (aioesphomeapi
+46.x, bleak-esphome 4.x). The client takes the first
+BluetoothDeviceConnectionResponse for an address after its connect request
+as the answer to that connect. A GATT request that waits also ends on that
+message. bleak-esphome takes a GATT error -1 as "the link is down" and can
+connect again at once. Thus:
+  - The "conn" event with connected=false is the first and only message
+    about the end of a link. Requests that wait on the link get no error -1.
+    The "conn" event ends them in the client.
+  - While a link goes down (state closing, for example DOWN_GRACE after a
+    drop), a new request on it gets no answer. The "conn" event answers it.
+  - A connect request for the address of a link that goes down cancels the
+    "conn" event of the old link for that front end. The next "conn" event
+    is the answer to the new connect.
+DOWN_GRACE stays: it gives the HCI Disconnection Complete time to arrive,
+so the event carries the real reason of a drop.
+
 Test hook: TSX_BTSCAN_FAKE_L2CAP=<path of a SOCK_SEQPACKET Unix socket>
 replaces the L2CAP socket (rootfs/tests/bt-gatt-peer.py fake): the link
 sends "ADDRESS TYPE" and waits for "OK HANDLE" or "FAIL CODE" (hex).
@@ -354,6 +371,10 @@ class Links:
                 self.close(link, "requested")
             return
         handle = int(msg.get("handle", 0))
+        if link is not None and link.state == "closing":
+            # No error -1 before the "conn" event of the link. That event
+            # answers this request in the client (module docstring).
+            return
         if link is None or link.state != "connected":
             self.emit(client, {"ev": "error", "addr": addr, "handle": handle, "error": ERR_NOT_CONNECTED})
             return
@@ -382,7 +403,9 @@ class Links:
         link = self.links.get(addr)
         if link is not None:
             if link.state == "closing":
-                # the old link is still on its way down: connect again after
+                # The old link is still on its way down: connect again after
+                # it. Its "conn" event does not go to this client, because
+                # the client would take it as the answer to this connect.
                 link.again = (client, atype)
                 return
             link.owner = client
@@ -428,8 +451,6 @@ class Links:
         if link.state != "mtu":
             return
         if not ok:
-            if isinstance(value, AttError) and value.code == ERR_NOT_CONNECTED:
-                return  # the link went down during the MTU exchange: finish() reports it
             _LOGGER.warning("%s: no answer to the MTU exchange (%s)", link.name, value)
             self.close(link, "no ATT answer")
             return
@@ -456,7 +477,7 @@ class Links:
         link.requested = True
         link.state = "closing"
         link.deadline = time.monotonic() + CLOSE_TIMEOUT
-        self.fail_ops(link)
+        self.drop_ops(link)
         self.hci_send(0x0406, u16(link.handle) + bytes((CONN_REMOTE,)))
 
     def finish(self, link, was_up, reason):
@@ -465,7 +486,7 @@ class Links:
             return
         was_connecting = link.state in ("connecting", "mtu")
         link.state = "down"
-        self.fail_ops(link)
+        self.drop_ops(link)
         if link.bearer is not None:
             try:
                 link.bearer.sock.close()
@@ -474,9 +495,13 @@ class Links:
             link.bearer = None
         del self.links[link.addr]
         if link.again is not None:
-            # a new connect for this address waits: no "down" for it, the
-            # slot stays taken
+            # A new connect for this address waits. Its client gets no
+            # "conn" event for the old link, and the slot stays taken.
+            # Another front end that owned the old link still gets one.
             self.links[link.addr] = Link(link.addr, link.again[1], link.again[0])
+            if link.owner is not None and link.owner is not link.again[0]:
+                self.emit(link.owner, {"ev": "conn", "addr": link.addr, "connected": False, "mtu": 0,
+                                       "error": reason or 0})
         elif link.owner is not None:
             self.emit(link.owner, {"ev": "conn", "addr": link.addr, "connected": False, "mtu": 0,
                                    "error": reason or 0})
@@ -490,12 +515,16 @@ class Links:
         if was_connecting:
             self.scan_resume()
 
-    def fail_ops(self, link):
+    def drop_ops(self, link):
+        """The link goes down: stop its ATT procedures with no answer. The
+        "conn" event of the link ends the requests in the client. An error
+        -1 before it would let the client connect again too early, and the
+        late "conn" event would then fail that connect."""
         cur, link.cur = link.cur, None
-        pending = ([cur] if cur else []) + [[None, done, 0, h] for _, done, h in link.queue]
+        gens = ([cur[0]] if cur else []) + [gen for gen, _, _ in link.queue]
         link.queue.clear()
-        for item in pending:
-            item[1](link, False, AttError(ERR_NOT_CONNECTED, item[3]), item[3])
+        for gen in gens:
+            gen.close()
 
     # ---- ATT transactions -------------------------------------------------------------
     def enqueue(self, link, gen, on_done, handle, front=False):
@@ -639,7 +668,7 @@ class Links:
         if link.state != "closing":
             link.state = "closing"
             link.deadline = grace
-            self.fail_ops(link)
+            self.drop_ops(link)
         else:
             link.deadline = min(link.deadline, grace)
 
@@ -648,8 +677,6 @@ class Links:
         for link in list(self.links.values()):
             if link.handle == handle:
                 link.reason = reason
-                if link.state != "closing":
-                    self.fail_ops(link)
                 self.finish(link, True, reason)
                 return
 
