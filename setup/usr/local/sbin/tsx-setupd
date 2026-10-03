@@ -43,6 +43,18 @@ already set, never its value. It reuses the masking of `tsx-config show`
 and does not reimplement it. The daemon never logs anything about a POST
 body.
 
+A save writes only the fields that the user changed. The state API gives the
+page the revision of panel.conf (tsx-setup-helper "rev": a salted hash of the
+content of the file). The page keeps the values that it showed at load time,
+and a save sends only the fields with a different value, plus that revision.
+The server sets or removes only the keys that the page sent. If panel.conf
+changed after the page loaded (tsx-config, Home Assistant, another browser),
+the server refuses the save, changes nothing and tells the user to reload the
+page. A save that changes nothing does not run tsx-config apply. The page
+fills its fields once, at load time. Its refresh every 20 s reads only
+/setup/api/status (the pairing code and the revision) and never changes a
+field.
+
 On a panel with no light sensor (ALS=no in /run/tsx/hw.conf from tsx-hw), the
 page shows the light sensor settings (AUTO_BRIGHTNESS and ALS_SCALE) as not
 available. A submit then leaves them as they are. A plugin can report more
@@ -219,6 +231,30 @@ def tcfg_show():
     return fields
 
 
+def tcfg_rev():
+    """The revision of panel.conf (tsx-setup-helper "rev"), or None."""
+    ok, text = helper_call("rev")
+    if not ok or not text:
+        sys.stderr.write("tsx-setupd: the revision of panel.conf via helper failed: %s\n" % text)
+        return None
+    return text
+
+
+def tcfg_show_rev():
+    """The values of panel.conf and the revision that belongs to them. The
+    revision is read first. If the file changes during the read, the page
+    gets the older revision, and a save from that page is refused. So a save
+    never goes through with values that the page did not show. A second
+    read of the revision tells whether a new try can get a pair that matches."""
+    rev = shown = None
+    for _ in range(3):
+        rev = tcfg_rev()
+        shown = tcfg_show()
+        if rev is not None and tcfg_rev() == rev:
+            break
+    return shown, rev
+
+
 def tcfg_set(key, val):
     if "\n" in val or "\r" in val:
         return False, "value cannot contain a newline"
@@ -245,18 +281,22 @@ _configured_cache = {"at": float("-inf"), "val": False}
 _configured_cache_lock = threading.Lock()
 
 
+def has_url(shown):
+    """True if the kiosk has a URL: KIOSK_URL of panel.conf (shown is the
+    output of tcfg_show), else the image default that the kiosk falls back
+    to (kiosk-session: /etc/kiosk.conf, then the panel.conf override). An
+    install with --kiosk-url and no panel.conf sets the URL only there."""
+    v = shown.get("KIOSK_URL")
+    if not (v and v.strip()):
+        v = load_conf(KIOSK_CONF_PATH).get("KIOSK_URL")
+    return bool(v and v.strip())
+
+
 def is_configured():
     with _configured_cache_lock:
         now = time.monotonic()
         if now - _configured_cache["at"] > _CONFIGURED_CACHE_S:
-            v = tcfg_show().get("KIOSK_URL")
-            if not (v and v.strip()):
-                # Use the image default that the kiosk falls back to
-                # (kiosk-session: /etc/kiosk.conf, then the panel.conf
-                # override). An install with --kiosk-url and no panel.conf
-                # sets the URL only there.
-                v = load_conf(KIOSK_CONF_PATH).get("KIOSK_URL")
-            _configured_cache["val"] = bool(v and v.strip())
+            _configured_cache["val"] = has_url(tcfg_show())
             _configured_cache["at"] = now
         return _configured_cache["val"]
 
@@ -397,17 +437,18 @@ class Pairing:
 
 PAIRING = Pairing()
 
-# Fields that tsx-config itself owns. Blank means "leave as it is", unless
-# the key is in CLEARABLE_BLANK. There, the own validation of tsx-config
-# already treats an empty value as meaningful ("off" or "allow any").
-# KIOSK_URL is handled separately below (required). These are the keys of the
-# base system. A plugin adds its own keys (see "plugins" below).
+# Fields that tsx-config itself owns. The page sends a field only when the
+# user changed it. Blank means "leave as it is", unless the key is in
+# CLEARABLE_BLANK. There, the own validation of tsx-config already treats an
+# empty value as meaningful ("off" or "allow any"). KIOSK_URL is handled
+# separately below (required). These are the keys of the base system. A
+# plugin adds its own keys (see "plugins" below).
 BASE_SIMPLE_KEYS = ["PANEL_NAME", "TZ_NAME", "SSH_AUTHORIZED_KEY",
                     "KERNEL_FLAVOR", "BLANK_TIMEOUT", "ORIENTATION",
                     "PRESENCE_WAKE", "PRESENCE_DISTANCE_MM", "PRESENCE_HOLD_S",
                     "AUTO_BRIGHTNESS", "ALS_SCALE"]
 # Empty = cleared. The page pre-fills these keys, so an empty one was cleared
-# on purpose, and the script removes the key.
+# on purpose, and the server removes the key.
 BASE_CLEARABLE_BLANK = {"PRESENCE_WAKE", "PRESENCE_DISTANCE_MM",
                         "PRESENCE_HOLD_S", "AUTO_BRIGHTNESS", "ALS_SCALE"}
 # the settings of the base that a panel can lack: name -> the keys that a save
@@ -499,7 +540,18 @@ def hw_unavailable():
     return out
 
 
-def handle_submit(fields):
+STALE_MESSAGE = ("The settings of the panel changed after this page loaded. Nothing is saved. "
+                 "Reload the page, then make your changes again.")
+
+
+def handle_submit(fields, revision=None):
+    """Save the fields that the page sent: only the fields that the user
+    changed. revision is the revision of panel.conf that the page loaded.
+    Returns (HTTP status, JSON object).
+
+    If the page sends a field and panel.conf changed after that revision,
+    nothing is written (409). A value that is already stored is not written
+    again. tsx-config apply runs only when a key or the root password changed."""
     errors = {}
     # A setting that this panel cannot use is not sent by the page. Keep what
     # panel.conf has (tsx-config apply treats VOICE=on as off).
@@ -508,17 +560,33 @@ def handle_submit(fields):
         gone.add(name)
         gone.update(UNAVAILABLE_DROPS.get(name, ()))
     fields = {k: v for k, v in fields.items() if k not in gone}
+
+    # The revision first, then the values (see tcfg_show_rev). A change of
+    # the file after this read and before the writes below is not seen: no
+    # writer of panel.conf takes a lock.
+    current = tcfg_rev()
+    stored = tcfg_show()
+    if fields:
+        if current is None:
+            return 502, {"errors": {"_revision": "could not read the settings of the panel. Try again."}}
+        if not isinstance(revision, str) or revision != current:
+            return 409, {"errors": {"_revision": STALE_MESSAGE}, "stale": True}
+
     to_set = {}
     to_unset = []
     post_unset = []
 
-    url = fields.get("KIOSK_URL")
-    if not isinstance(url, str) or not url.strip():
+    if "KIOSK_URL" in fields:
+        url = fields["KIOSK_URL"]
+        if not isinstance(url, str) or not url.strip():
+            errors["KIOSK_URL"] = page_text("url_required")
+        elif not tcfg_validate("KIOSK_URL", url.strip()):
+            errors["KIOSK_URL"] = "must be a valid http(s) URL with no spaces"
+        else:
+            to_set["KIOSK_URL"] = url.strip()
+    elif not has_url(stored):
+        # the first save: the page sends the URL, because the field was empty
         errors["KIOSK_URL"] = page_text("url_required")
-    elif not tcfg_validate("KIOSK_URL", url.strip()):
-        errors["KIOSK_URL"] = "must be a valid http(s) URL with no spaces"
-    else:
-        to_set["KIOSK_URL"] = url.strip()
 
     for p in PLUGINS:
         if hasattr(p, "submit"):
@@ -551,7 +619,9 @@ def handle_submit(fields):
         to_set[key] = val
 
     rootpw = fields.get("ROOT_PASSWORD") or ""
-    if rootpw and ("\n" in rootpw or "\r" in rootpw):
+    if not isinstance(rootpw, str):
+        errors["ROOT_PASSWORD"] = "invalid value"
+    elif rootpw and ("\n" in rootpw or "\r" in rootpw):
         errors["ROOT_PASSWORD"] = "cannot contain a newline"
     elif rootpw and len(rootpw) < 8:
         errors["ROOT_PASSWORD"] = "must be at least 8 characters"
@@ -559,29 +629,37 @@ def handle_submit(fields):
     if errors:
         return 400, {"errors": errors}
 
-    for key, val in to_set.items():
-        ok, err = tcfg_set(key, val)
+    # Leave out what panel.conf already has. show masks a secret, so a
+    # secret that the page sent is always written.
+    masked = {k for k, v in stored.items() if v == "********"}
+    writes = {k: v for k, v in to_set.items() if k in masked or stored.get(k) != v}
+    removes = [k for k in dict.fromkeys(to_unset + post_unset) if k in stored and k not in to_set]
+    changed = sorted(set(writes) | set(removes) | ({"ROOT_PASSWORD"} if rootpw else set()))
+
+    if changed:
+        for key, val in writes.items():
+            ok, err = tcfg_set(key, val)
+            if not ok:
+                errors[key] = err or "failed to save"
+        for key in removes:
+            tcfg_unset(key)
+        if errors:
+            return 400, {"errors": errors}
+
+        if rootpw:
+            if not set_root_password(rootpw):
+                return 500, {"errors": {"ROOT_PASSWORD": "failed to change the root password"}}
+
+        ok, err = tcfg_apply()
         if not ok:
-            errors[key] = err or "failed to save"
-    for key in to_unset:
-        tcfg_unset(key)
-    for key in post_unset:
-        tcfg_unset(key)
-    if errors:
-        return 400, {"errors": errors}
+            return 500, {"errors": {"_apply": err or "tsx-config apply failed"}}
 
-    if rootpw:
-        if not set_root_password(rootpw):
-            return 500, {"errors": {"ROOT_PASSWORD": "failed to change the root password"}}
-
-    ok, err = tcfg_apply()
-    if not ok:
-        return 500, {"errors": {"_apply": err or "tsx-config apply failed"}}
-
+    # Also a save with no change closes the window: the user is done, and
+    # the kiosk loads the page again.
     _invalidate_configured_cache()
     clear_setup_open()
     restart_kiosk()
-    return 200, {"ok": True}
+    return 200, {"ok": True, "changed": changed, "applied": bool(changed)}
 
 
 # ---- HTTP -----------------------------------------------------------------
@@ -664,6 +742,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/setup/api/state":
             self._api_state()
             return
+        if path == "/setup/api/status":
+            self._api_status()
+            return
         for p in PLUGINS:
             fn = getattr(p, "GET_ROUTES", {}).get(path)
             if fn:
@@ -700,7 +781,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send_json(200, {"need_pairing": True, "window_seconds": WINDOW})
             return
-        shown = tcfg_show()
+        shown, rev = tcfg_show_rev()
         fields = {}
         for k, v in shown.items():
             if k not in STATE_KEYS:
@@ -716,10 +797,29 @@ class Handler(BaseHTTPRequestHandler):
             "loopback": loop,
             "lan_allowed": lan_allowed(),
             "window_seconds": WINDOW,
+            "revision": rev,
             "fields": fields,
             "tz_list": zone_list(),
             "unavailable": hw_unavailable(),
         }
+        if loop:
+            code, code_at = PAIRING.current_code()
+            resp["pairing_code"] = code
+            resp["pairing_code_remaining"] = max(0, int(WINDOW - (time.monotonic() - code_at)))
+        self._send_json(200, resp)
+
+    def _api_status(self):
+        """The refresh of the page (every 20 s): the pairing code and the
+        revision of panel.conf, never a field value. The page fills its
+        fields once, from /setup/api/state."""
+        loop = self._loopback()
+        if not loop and not lan_allowed():
+            self._send_json(403, {"error": "setup is not reachable over the network right now"})
+            return
+        if not self._authorized():
+            self._send_json(200, {"need_pairing": True})
+            return
+        resp = {"need_pairing": False, "revision": tcfg_rev()}
         if loop:
             code, code_at = PAIRING.current_code()
             resp["pairing_code"] = code
@@ -760,8 +860,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send_json(403, {"error": "not authorized"})
             return
-        fields = {k: v for k, v in data.items() if isinstance(k, str)}
-        code, obj = handle_submit(fields)
+        # {"revision": "...", "fields": {KEY: VALUE}}: the fields that the
+        # user changed, and the revision of panel.conf that the page loaded
+        fields = data.get("fields")
+        if not isinstance(fields, dict):
+            self._send_json(400, {"errors": {"_request": "the request has no fields. Reload the page."}})
+            return
+        fields = {k: v for k, v in fields.items() if isinstance(k, str)}
+        code, obj = handle_submit(fields, data.get("revision"))
         self._send_json(code, obj)
 
 
@@ -830,7 +936,8 @@ button:disabled { opacity:.5; }
   padding:14px 18px; margin-bottom:16px; display:none; }
 .code-banner .code { font-size:1.8rem; letter-spacing:.15em; font-weight:700; color:var(--accent); }
 details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
-#gate, #form, #done { display:none; }
+#gate, #form, #done, #stale { display:none; }
+#stale { border-color:var(--warn); }
 .toggle { display:flex; align-items:center; gap:12px; }
 .toggle input { width:44px; height:26px; }
 @media (max-height:640px) { .wrap { padding-top:10px; } h2 { margin-top:18px; padding-top:12px; } }
@@ -854,6 +961,11 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
       <button id="pair-go">Continue</button>
     </div>
     <div id="pair-status" class="status"></div>
+  </div>
+
+  <div id="stale" class="card">
+    <p id="stale-text">The settings of the panel changed after this page loaded. Reload the page before you save.</p>
+    <button type="button" id="reload-btn" class="secondary">Reload the page</button>
   </div>
 
   <form id="form">
@@ -886,7 +998,7 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
       </select>
       <div class="hint">How the panel hangs on the wall. The screen turns as soon as you save.</div>
       <label for="f-blank">Screen blank timeout (seconds, 0 = never)</label>
-      <input id="f-blank" name="BLANK_TIMEOUT" type="number" min="0" max="86400">
+      <input id="f-blank" name="BLANK_TIMEOUT" type="number" min="0" max="86400" placeholder="(default)">
     </div>
 
     <details id="sensors-wrap"><summary>Sensors</summary>
@@ -950,13 +1062,17 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
 
   <div id="done" class="card">
     <p>@@DONE_TEXT@@</p>
+    <p class="hint" id="done-note"></p>
   </div>
 </div>
 <script>
 (function(){
   "use strict";
   var $ = function(id){ return document.getElementById(id); };
-  var state = null;
+  var state = null;    // the state that filled the form
+  var loaded = false;  // the form has its values (once only)
+  var initial = null;  // name -> value of each field after the load
+  var saved = false;
 
   function api(method, path, body){
     return fetch(path, {
@@ -993,19 +1109,53 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     });
   }
 
+  // Set every field from panel.conf, also an empty field and an unchecked
+  // checkbox. The page calls this once, at load time.
   function applyFields(fields){
     fields = fields || {};
-    if (fields.KIOSK_URL) $("f-url").value = fields.KIOSK_URL;
-    if (fields.PANEL_NAME) $("f-name").value = fields.PANEL_NAME;
-    if (fields.ORIENTATION) $("f-orient").value = fields.ORIENTATION;
-    if (fields.PRESENCE_WAKE) $("f-pwake").value = fields.PRESENCE_WAKE;
-    if (fields.PRESENCE_DISTANCE_MM) $("f-pdist").value = fields.PRESENCE_DISTANCE_MM;
-    if (fields.PRESENCE_HOLD_S) $("f-phold").value = fields.PRESENCE_HOLD_S;
-    if (fields.AUTO_BRIGHTNESS) $("f-autobri").value = fields.AUTO_BRIGHTNESS;
-    if (fields.ALS_SCALE) $("f-alsscale").value = fields.ALS_SCALE;
+    $("f-url").value = fields.KIOSK_URL || "";
+    $("f-name").value = fields.PANEL_NAME || "";
+    $("f-orient").value = fields.ORIENTATION || "landscape";
+    $("f-blank").value = fields.BLANK_TIMEOUT || "";
+    $("f-pwake").value = fields.PRESENCE_WAKE || "";
+    $("f-pdist").value = fields.PRESENCE_DISTANCE_MM || "";
+    $("f-phold").value = fields.PRESENCE_HOLD_S || "";
+    $("f-autobri").value = fields.AUTO_BRIGHTNESS || "";
+    $("f-alsscale").value = fields.ALS_SCALE || "";
+    $("f-kernel").value = fields.KERNEL_FLAVOR || "";
     if (fields.SSH_AUTHORIZED_KEY__set) $("f-sshkey").placeholder = "(a key is already set; leave blank to keep it)";
     /*SLOT:apply*/
     populateTz(fields.tz_list, fields.TZ_NAME);
+  }
+
+  // The value of each field that a save can send: name -> text. A disabled
+  // field (a setting that this panel cannot use) is not in it. A checkbox
+  // is "on" or "off". A radio group gives the value of its checked button.
+  function fieldValues(){
+    var out = {};
+    $("form").querySelectorAll("[name]").forEach(function(el){
+      if (el.disabled) return;
+      if (el.type === "radio") { if (el.checked) out[el.name] = el.value; return; }
+      if (el.type === "checkbox") { out[el.name] = el.checked ? "on" : "off"; return; }
+      out[el.name] = el.type === "password" ? el.value : el.value.trim();
+    });
+    return out;
+  }
+
+  // The fields that the user changed after the load. A save sends only
+  // these. A field that the user did not change keeps the value of
+  // panel.conf, also a value that changed elsewhere.
+  function changedFields(){
+    var now = fieldValues(), out = {};
+    Object.keys(now).forEach(function(k){
+      if (!initial || now[k] !== initial[k]) out[k] = now[k];
+    });
+    return out;
+  }
+
+  function showStale(text){
+    if (text) $("stale-text").textContent = text;
+    $("stale").style.display = "block";
   }
 
   function applyUnavailable(u){
@@ -1022,23 +1172,39 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
 
   function loadState(){
     api("GET", "/setup/api/state").then(function(r){
-      state = r.body;
-      if (state.need_pairing) {
+      var s = r.body || {};
+      if (s.need_pairing) {
         $("gate").style.display = "block";
         $("form").style.display = "none";
         return;
       }
+      if (loaded) return;
+      state = s;
       $("gate").style.display = "none";
       $("form").style.display = "block";
-      if (state.loopback) {
-        showCode(state.pairing_code, state.pairing_code_remaining);
+      if (s.loopback) {
+        showCode(s.pairing_code, s.pairing_code_remaining);
       }
-      var f = state.fields || {};
-      f.tz_list = state.tz_list;
+      var f = s.fields || {};
+      f.tz_list = s.tz_list;
       applyFields(f);
-      applyUnavailable(state.unavailable || {});
+      applyUnavailable(s.unavailable || {});
+      initial = fieldValues();
+      loaded = true;
     }).catch(function(){});
   }
+
+  // The refresh every 20 s: the pairing code and the revision of
+  // panel.conf. It never changes a field.
+  function refreshStatus(){
+    api("GET", "/setup/api/status").then(function(r){
+      var s = r.body || {};
+      if (s.pairing_code) showCode(s.pairing_code, s.pairing_code_remaining);
+      if (!saved && s.revision && state && s.revision !== state.revision) showStale();
+    }).catch(function(){});
+  }
+
+  $("reload-btn").addEventListener("click", function(){ location.reload(); });
 
   $("pair-go").addEventListener("click", function(){
     var code = $("pair-code").value.trim();
@@ -1075,28 +1241,21 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     var btn = $("submit-btn");
     btn.disabled = true;
     document.querySelectorAll(".status.bad").forEach(function(e){ e.textContent=""; e.className="status"; });
-    var payload = {
-      KIOSK_URL: $("f-url").value.trim(),
-      PANEL_NAME: $("f-name").value.trim(),
-      TZ_NAME: $("f-tz").value,
-      ORIENTATION: $("f-orient").value,
-      PRESENCE_WAKE: $("f-pwake").disabled ? undefined : $("f-pwake").value,
-      PRESENCE_DISTANCE_MM: $("f-pdist").disabled ? undefined : $("f-pdist").value.trim(),
-      PRESENCE_HOLD_S: $("f-phold").disabled ? undefined : $("f-phold").value.trim(),
-      AUTO_BRIGHTNESS: $("f-autobri").disabled ? undefined : $("f-autobri").value,
-      ALS_SCALE: $("f-alsscale").disabled ? undefined : $("f-alsscale").value.trim(),
-      ROOT_PASSWORD: $("f-rootpw").value,
-      SSH_AUTHORIZED_KEY: $("f-sshkey").value.trim(),
-      KERNEL_FLAVOR: $("f-kernel").value,
-      BLANK_TIMEOUT: $("f-blank").value.trim()
-    };
+    var payload = changedFields();
     /*SLOT:payload*/
-    api("POST", "/setup/api/submit", payload).then(function(r){
+    api("POST", "/setup/api/submit", {revision: state && state.revision, fields: payload}).then(function(r){
       btn.disabled = false;
       if (r.status === 200) {
+        saved = true;
         $("form").style.display = "none";
+        $("stale").style.display = "none";
         $("done").style.display = "block";
+        if (r.body && r.body.changed && !r.body.changed.length) $("done-note").textContent = "No setting changed.";
         return;
+      }
+      if (r.body && r.body.stale) {
+        showStale(r.body.errors && r.body.errors._revision);
+        $("stale").scrollIntoView({behavior:"smooth", block:"center"});
       }
       var errs = (r.body && r.body.errors) || {};
       var first = null;
@@ -1133,9 +1292,8 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
 
   loadState();
   setInterval(function(){
-    if (!state || state.need_pairing || (state.loopback && $("code-banner").style.display === "block")) {
-      loadState();
-    }
+    if (!loaded) { loadState(); return; }   // no state yet, or the page waits for the pairing
+    if (!saved) refreshStatus();
   }, 20000);
 })();
 </script>

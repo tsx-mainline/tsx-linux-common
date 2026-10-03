@@ -24,6 +24,9 @@
 #  - the setup-open window is monotonic. A broken or wrong `date` does not
 #    affect it, because none of this code calls date.
 #  - a save lands in a temp panel.conf
+#  - a save writes only the fields that the page sent (the changed ones), and
+#    refuses a page with an old revision of panel.conf
+#  - the refresh endpoint (/setup/api/status) carries no field value
 #  - no secret ever appears in a JSON response or in the log of either daemon
 set -uo pipefail
 export PYTHONDONTWRITEBYTECODE=1   # the test imports tsx-setupd: no .pyc next to it
@@ -221,6 +224,25 @@ print('' if v is None else v)
 "
 }
 
+jkeys() { python3 -c 'import json, sys; print(" ".join(sorted(json.load(sys.stdin))))'; }
+# rev_now: the revision of panel.conf, as the page gets it at load time
+rev_now() { body_of "$(call GET /setup/api/state)" | jget revision; }
+# submit FIELDS_JSON [REVISION]: a save as the page sends it, the changed
+# fields and the revision of the page. Without REVISION: the current one.
+# An empty REVISION sends none.
+submit() {
+	local rev
+	if [ $# -ge 2 ]; then rev=$2; else rev=$(rev_now); fi
+	call POST /setup/api/submit --data "$(python3 -c 'import json, sys
+print(json.dumps({"revision": sys.argv[2] or None, "fields": json.loads(sys.argv[1])}))' "$1" "$rev")"
+}
+# the requests that tsx-setup-helper logged after line MARK of its log
+hlog_mark() { wc -l < "$T/helper.log"; }
+hlog_since() { tail -n +"$(($1 + 1))" "$T/helper.log" | sed -n 's/^.* tsx-setup-helper: //p'; }
+hlog_writes() { hlog_since "$1" | grep -E '^(set|unset|rootpw|apply)( |$)' | tr '\n' ' ' | sed 's/ $//'; }
+# conf_except KEY...: panel.conf without the lines of these keys
+conf_except() { local re; re=$(printf '%s|' "$@"); grep -Ev "^(${re%|})=" "$CONF"; }
+
 # find a local, non-loopback source address to stand in for a LAN client
 # (there is no real second host in CI): connecting a UDP socket never sends
 # a packet, it only asks the kernel to pick the route/source address.
@@ -275,6 +297,15 @@ printf '%s' "$CODE" | grep -Eq '^[0-9]{6}$' && ok "pairing code is 6 digits ($CO
 [ "$(jget tz_list.0 <<<"$body")" != "" ] && ok "tz_list is non-empty" || bad "tz_list empty"
 
 out=$(call GET /setup); [ "$(status_of "$out")" = 200 ] && ok "GET /setup 200 on loopback" || bad "GET /setup: $(status_of "$out")"
+printf '%s' "$(jget revision <<<"$body")" | grep -Eq '^[0-9a-f]{64}$' && ok "the state has the revision of panel.conf" || bad "no revision in the state: $body"
+
+echo "== the refresh endpoint (/setup/api/status) has the pairing code and the revision, no field =="
+out=$(call GET /setup/api/status); sbody=$(body_of "$out")
+[ "$(status_of "$out")" = 200 ] && ok "GET status 200" || bad "GET status: $(status_of "$out")"
+[ "$(jkeys <<<"$sbody")" = "need_pairing pairing_code pairing_code_remaining revision" ] \
+	&& ok "loopback status has only need_pairing, the pairing code and the revision" || bad "loopback status keys: $(jkeys <<<"$sbody")"
+[ "$(jget pairing_code <<<"$sbody")" = "$CODE" ] && ok "status gives the same pairing code" || bad "status code: $sbody"
+[ "$(jget revision <<<"$sbody")" = "$(jget revision <<<"$body")" ] && ok "status gives the same revision as the state" || bad "status revision: $sbody"
 
 echo "== unconfigured: tsx-setupd listens on 0.0.0.0 (LAN allowed) =="
 ss -ltn 2>/dev/null | grep -q "0\.0\.0\.0:$PORT" \
@@ -288,6 +319,9 @@ if [ -n "$LANIP" ]; then
 	out=$(call GET /setup/api/state --source "$LANIP"); body=$(body_of "$out")
 	[ "$(jget need_pairing <<<"$body")" = True ] && ok "LAN client is asked to pair" || bad "LAN need_pairing: $body"
 	[ "$(jget pairing_code <<<"$body")" = "" ] && ok "LAN state never carries the pairing code" || bad "LAN state leaked the code: $body"
+	out=$(call GET /setup/api/status --source "$LANIP"); sbody=$(body_of "$out")
+	[ "$(jkeys <<<"$sbody")" = "need_pairing" ] && [ "$(jget need_pairing <<<"$sbody")" = True ] \
+		&& ok "LAN status before pairing: need_pairing only (no code, no revision)" || bad "LAN status before pairing: $sbody"
 
 	echo "== pairing =="
 	out=$(call POST /setup/api/pair --source "$LANIP" --data '{"code":"000000"}')
@@ -301,6 +335,8 @@ if [ -n "$LANIP" ]; then
 	out=$(call GET /setup/api/state --source "$LANIP" --cookie="$TOKEN"); body=$(body_of "$out")
 	[ "$(jget need_pairing <<<"$body")" = False ] && ok "paired LAN session no longer needs pairing" || bad "still need_pairing after pairing: $body"
 	[ "$(jget pairing_code <<<"$body")" = "" ] && ok "paired LAN session still never sees the code" || bad "paired LAN state leaked the code: $body"
+	out=$(call GET /setup/api/status --source "$LANIP" --cookie="$TOKEN"); sbody=$(body_of "$out")
+	[ "$(jkeys <<<"$sbody")" = "need_pairing revision" ] && ok "paired LAN status: the revision, never the code" || bad "paired LAN status: $sbody"
 
 	echo "== pairing rate limit =="
 	f=0
@@ -323,6 +359,9 @@ r=$(helper_send "; rm -rf /"); echo "$r" | grep -q '^err' && ok "a shell-metacha
 r=$(helper_send "rootpw short"); echo "$r" | grep -q '^err' && ok "a too-short root password rejected: $r" || bad "short root password accepted: $r"
 [ ! -s "$FAKE_CMD_LOG" ] && ok "none of the rejected lines ever ran the fake chpasswd" || { bad "a rejected line reached a real command"; cat "$FAKE_CMD_LOG"; }
 grep -q '^ok' <(helper_send "show") && ok "the allowed 'show' command still works after the rejected batch" || bad "helper stopped answering after rejections"
+r=$(helper_send "rev"); echo "$r" | grep -Eq '^ok [0-9a-f]{64}$' && ok "rev gives a sha256 revision: $r" || bad "rev: $r"
+r=$(helper_send "rev now"); echo "$r" | grep -q '^err' && ok "rev with an argument is refused" || bad "rev with an argument: $r"
+grep -q 'tsx-setup-helper: rev' "$T/helper.log" && bad "rev writes a log line (the page asks every 20 s)" || ok "rev writes no log line"
 r=$(helper_send "brightness-learn-reset"); [ "$r" = ok ] && grep -qxF 'tsx-panelctl send brightness-learn-reset' "$T/panelctl-cmds.log" && ok "brightness-learn-reset asks tsx-panelctl to forget the learned brightness" || bad "learn reset: '$r' $(cat "$T/panelctl-cmds.log" 2>/dev/null)"
 r=$(helper_send "brightness-learn-reset now"); echo "$r" | grep -q '^err' && ok "brightness-learn-reset with an argument is refused" || bad "learn reset with an argument: $r"
 out=$(call POST /setup/api/brightness-learn-reset --data '{}')
@@ -330,24 +369,24 @@ out=$(call POST /setup/api/brightness-learn-reset --data '{}')
 
 # ---- 4. form validation: bad URL, bad TZ, overlong field, shell metacharacters
 echo "== form validation =="
-out=$(call POST /setup/api/submit --data '{}'); body=$(body_of "$out")
+out=$(submit '{}'); body=$(body_of "$out")
 [ "$(status_of "$out")" = 400 ] && ok "empty submit rejected (400)" || bad "empty submit: $(status_of "$out")"
 [ "$(jget errors.KIOSK_URL <<<"$body")" != "" ] && ok "missing KIOSK_URL flagged" || bad "no KIOSK_URL error: $body"
-[ "$(jget errors.HA_LOGIN_METHOD <<<"$body")" != "" ] && ok "missing HA_LOGIN_METHOD flagged" || bad "no HA_LOGIN_METHOD error: $body"
+[ "$(jget errors.HA_LOGIN_METHOD <<<"$body")" = "" ] && ok "an unchanged login method is not an error (the page sends only changed fields)" || bad "HA_LOGIN_METHOD flagged in an empty submit: $body"
 
-out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"not a url","HA_LOGIN_METHOD":"form"}')
+out=$(submit '{"KIOSK_URL":"not a url","HA_LOGIN_METHOD":"form"}')
 [ "$(status_of "$out")" = 400 ] && ok "bad URL rejected" || bad "bad URL accepted: $out"
 
 LONG=$(python3 -c "print('a'*70)")
-out=$(call POST /setup/api/submit --data "{\"KIOSK_URL\":\"https://ha.example.org\",\"HA_LOGIN_METHOD\":\"form\",\"PANEL_NAME\":\"$LONG\"}")
+out=$(submit "{\"KIOSK_URL\":\"https://ha.example.org\",\"HA_LOGIN_METHOD\":\"form\",\"PANEL_NAME\":\"$LONG\"}")
 body=$(body_of "$out")
 [ "$(jget errors.PANEL_NAME <<<"$body")" != "" ] && ok "overlong PANEL_NAME rejected" || bad "overlong PANEL_NAME accepted: $out"
 
-out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"https://ha.example.org","HA_LOGIN_METHOD":"form","TZ_NAME":"Not A Zone!"}')
+out=$(submit '{"KIOSK_URL":"https://ha.example.org","HA_LOGIN_METHOD":"form","TZ_NAME":"Not A Zone!"}')
 body=$(body_of "$out")
 [ "$(jget errors.TZ_NAME <<<"$body")" != "" ] && ok "malformed TZ_NAME rejected" || bad "malformed TZ_NAME accepted: $out"
 
-out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"https://ha.example.org","HA_LOGIN_METHOD":"form","ORIENTATION":"sideways"}')
+out=$(submit '{"KIOSK_URL":"https://ha.example.org","HA_LOGIN_METHOD":"form","ORIENTATION":"sideways"}')
 body=$(body_of "$out")
 [ "$(jget errors.ORIENTATION <<<"$body")" != "" ] && ok "unknown ORIENTATION rejected" || bad "ORIENTATION sideways accepted: $out"
 
@@ -363,7 +402,7 @@ JSONBODY=$(python3 -c "
 import json
 print(json.dumps({'KIOSK_URL':'https://ha.example.org','HA_LOGIN_METHOD':'form','MQTT_HOST':'mq.example','MQTT_PASSWORD': open('$T/payload.txt').read()}))
 ")
-out=$(call POST /setup/api/submit --data "$JSONBODY")
+out=$(submit "$JSONBODY")
 [ "$(status_of "$out")" = 200 ] && ok "a value with shell metacharacters is accepted (MQTT_PASSWORD has no charset restriction)" || bad "metacharacter payload rejected unexpectedly: $out"
 [ ! -e "$T/PWNED" ] && [ ! -e "$T/PWNED2" ] && ok "the metacharacter payload was never executed by a shell" || bad "the payload WAS executed -- a shell was built from form input"
 STORED=$(TSX_CONF="$CONF" busybox sh "$TSXCONFIG" get MQTT_PASSWORD)
@@ -384,12 +423,12 @@ print(json.dumps({
 	'PANEL_NAME': 'test-panel-1', 'TZ_NAME': 'America/Denver', 'VOICE': 'on', 'WAKE_WORD': 'okay_nabu',
 	'ORIENTATION': 'portrait', 'AUTO_BRIGHTNESS': 'off', 'ALS_SCALE': '2.5',
 	'ROOT_PASSWORD': '$ROOTPW', 'SSH_AUTHORIZED_KEY': '$SSHKEY',
-	# the rest exactly as the page sends an untouched field: empty strings
+	# fields that the user emptied
 	'MQTT_HOST': '', 'MQTT_PORT': '', 'MQTT_USER': '', 'MQTT_PASSWORD': '', 'BT_PROXY': 'off', 'CAMERA': 'snapshot',
 	'KERNEL_FLAVOR': '', 'BLANK_TIMEOUT': ''
 }))
 ")
-out=$(call POST /setup/api/submit --data "$SUBMIT")
+out=$(submit "$SUBMIT")
 [ "$(status_of "$out")" = 200 ] && ok "full submit accepted" || { bad "full submit failed: $out"; }
 grep -q '^KIOSK_URL="https://ha.example.org/lovelace/0"$' "$CONF" && ok "KIOSK_URL landed in the temp panel.conf" || bad "KIOSK_URL missing from $CONF"
 grep -q '^PANEL_NAME="test-panel-1"$' "$CONF" && ok "PANEL_NAME landed in panel.conf" || bad "PANEL_NAME missing"
@@ -420,6 +459,126 @@ printf '%s' "$body" | grep -qF "$TOKEN_VAL" && bad "state response echoed the HA
 
 # rc-service kiosk restart must have been attempted after a successful save
 grep -q 'rc-service kiosk status' "$T/rc-service.log" 2>/dev/null && ok "kiosk restart was attempted after saving" || bad "kiosk was never poked after saving"
+
+# ---- 5c. a save writes only the fields that the user changed --------------
+echo "== a save writes only the changed fields =="
+tcfg() { TSX_CONF="$CONF" busybox sh "$TSXCONFIG" "$@" >/dev/null 2>&1; }
+R=$(rev_now)
+[ "$R" != "$(sha256sum < "$CONF" | cut -d' ' -f1)" ] && ok "the revision is not the plain sha256 of panel.conf (the helper adds a salt)" || bad "the revision is the plain hash of panel.conf"
+cp "$CONF" "$T/conf.before"; M=$(hlog_mark)
+out=$(submit '{"BLANK_TIMEOUT":"123"}' "$R"); body=$(body_of "$out")
+[ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "['BLANK_TIMEOUT']" ] && [ "$(jget applied <<<"$body")" = True ] \
+	&& ok "a save of one changed field reports that one key, and apply ran" || bad "one-field save: $out"
+grep -q '^BLANK_TIMEOUT="123"$' "$CONF" && [ "$(grep -v '^BLANK_TIMEOUT=' "$T/conf.before")" = "$(conf_except BLANK_TIMEOUT)" ] \
+	&& ok "panel.conf: only the BLANK_TIMEOUT line changed" || bad "panel.conf changed more than BLANK_TIMEOUT: $(diff "$T/conf.before" "$CONF")"
+[ "$(hlog_writes "$M")" = "set BLANK_TIMEOUT apply" ] && ok "the helper got one set and one apply" || bad "helper writes: $(hlog_writes "$M")"
+
+R=$(rev_now); cp "$CONF" "$T/conf.before"; M=$(hlog_mark)
+out=$(submit '{}' "$R"); body=$(body_of "$out")
+[ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "[]" ] && [ "$(jget applied <<<"$body")" = False ] \
+	&& ok "a save with no changed field is accepted and reports no change" || bad "empty save: $out"
+cmp -s "$T/conf.before" "$CONF" && [ -z "$(hlog_writes "$M")" ] && ok "a save with no change writes nothing and runs no apply" || bad "empty save wrote: $(hlog_writes "$M")"
+hlog_since "$M" | grep -qx kiosk-restart && ok "a save with no change still restarts the kiosk (the user is done)" || bad "empty save: no kiosk restart"
+M=$(hlog_mark)
+out=$(submit '{"BLANK_TIMEOUT":"123","ORIENTATION":"portrait"}' "$R"); body=$(body_of "$out")
+[ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "[]" ] && cmp -s "$T/conf.before" "$CONF" && [ -z "$(hlog_writes "$M")" ] \
+	&& ok "a value that panel.conf already has is not written again, and apply does not run" || bad "same-value save: $out / $(hlog_writes "$M")"
+
+echo "== a field that the user did not change keeps a value changed elsewhere =="
+tcfg set PANEL_NAME changed-elsewhere
+R=$(rev_now)
+out=$(submit '{"ORIENTATION":"landscape"}' "$R")
+[ "$(status_of "$out")" = 200 ] && grep -q '^PANEL_NAME="changed-elsewhere"$' "$CONF" && grep -q '^ORIENTATION="landscape"$' "$CONF" \
+	&& ok "the save changed ORIENTATION and kept PANEL_NAME from tsx-config" || bad "PANEL_NAME after save: $(grep '^PANEL_NAME=' "$CONF") / $out"
+
+echo "== a page with an old revision is refused, and nothing changes =="
+R=$(rev_now)
+tcfg set BLANK_TIMEOUT 77   # a change elsewhere: tsx-config, Home Assistant, another browser
+R2=$(rev_now)
+[ -n "$R2" ] && [ "$R2" != "$R" ] && ok "a change elsewhere gives a new revision" || bad "the revision did not change: $R / $R2"
+cp "$CONF" "$T/conf.before"; M=$(hlog_mark)
+out=$(submit '{"PANEL_NAME":"from-the-page","BLANK_TIMEOUT":"300"}' "$R"); body=$(body_of "$out")
+[ "$(status_of "$out")" = 409 ] && [ "$(jget stale <<<"$body")" = True ] && ok "a save with the old revision is refused (409, stale)" || bad "stale save: $out"
+case "$(jget errors._revision <<<"$body")" in *"changed after this page loaded"*"Reload the page"*) ok "the refusal tells the user to reload the page";; *) bad "stale message: $body";; esac
+cmp -s "$T/conf.before" "$CONF" && grep -q '^BLANK_TIMEOUT="77"$' "$CONF" && ok "the refused save changed nothing (BLANK_TIMEOUT stays 77)" || bad "the refused save changed panel.conf: $(diff "$T/conf.before" "$CONF")"
+[ -z "$(hlog_writes "$M")" ] && ! hlog_since "$M" | grep -qx kiosk-restart && ok "the refused save sent no write, no apply and no kiosk restart" || bad "refused save: $(hlog_since "$M" | tr '\n' ' ')"
+out=$(submit '{"PANEL_NAME":"from-the-page"}' "")
+[ "$(status_of "$out")" = 409 ] && cmp -s "$T/conf.before" "$CONF" && ok "a save with fields and no revision is refused" || bad "save without a revision: $out"
+out=$(call POST /setup/api/submit --data '{"PANEL_NAME":"from-the-page"}'); body=$(body_of "$out")
+[ "$(status_of "$out")" = 400 ] && [ "$(jget errors._request <<<"$body")" != "" ] && cmp -s "$T/conf.before" "$CONF" \
+	&& ok "a request in the old form (no fields object) is refused and changes nothing" || bad "old-form request: $out"
+out=$(submit '{"PANEL_NAME":"from-the-page"}' "$R2")
+[ "$(status_of "$out")" = 200 ] && grep -q '^PANEL_NAME="from-the-page"$' "$CONF" && grep -q '^BLANK_TIMEOUT="77"$' "$CONF" \
+	&& ok "after a reload (the new revision) the save works and keeps BLANK_TIMEOUT=77" || bad "save after reload: $out"
+
+echo "== the revision follows a change of a secret too =="
+R=$(rev_now); F1=$(body_of "$(call GET /setup/api/state)" | jget fields)
+tcfg set MQTT_PASSWORD another-secret
+R2=$(rev_now); F2=$(body_of "$(call GET /setup/api/state)" | jget fields)
+[ "$F1" = "$F2" ] && [ "$R" != "$R2" ] && ok "a new MQTT_PASSWORD (masked in the state) gives a new revision" || bad "secret change: same fields $([ "$F1" = "$F2" ] && echo yes), $R / $R2"
+
+echo "== the plugin of tsx-ha: only the changed fields =="
+tcfg set VOICE off; tcfg set CAMERA snapshot; tcfg set BT_PROXY on; tcfg set MQTT_HOST mq.example; tcfg set MQTT_PORT 1884
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget fields.VOICE <<<"$body")" = off ] && ok "the state reports VOICE=off (the page unchecks the box)" || bad "state VOICE: $(jget fields.VOICE <<<"$body")"
+R=$(jget revision <<<"$body"); cp "$CONF" "$T/conf.before"; M=$(hlog_mark)
+out=$(submit '{"VOICE":"on"}' "$R"); body=$(body_of "$out")
+[ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "['VOICE']" ] && grep -q '^VOICE="on"$' "$CONF" \
+	&& [ "$(grep -v '^VOICE=' "$T/conf.before")" = "$(conf_except VOICE)" ] \
+	&& ok "a save of the voice switch writes VOICE only (CAMERA, BT_PROXY, WAKE_WORD, MQTT stay)" || bad "VOICE save: $out / $(diff "$T/conf.before" "$CONF")"
+[ "$(hlog_writes "$M")" = "set VOICE apply" ] && ok "the helper got set VOICE and apply only" || bad "helper writes: $(hlog_writes "$M")"
+R=$(rev_now); cp "$CONF" "$T/conf.before"
+out=$(submit '{"VOICE":"off"}' "$R")
+[ "$(status_of "$out")" = 200 ] && grep -q '^VOICE="off"$' "$CONF" && [ "$(grep -v '^VOICE=' "$T/conf.before")" = "$(conf_except VOICE)" ] \
+	&& ok "a save of the switch turned off writes VOICE=off only" || bad "VOICE off save: $out"
+R=$(rev_now); cp "$CONF" "$T/conf.before"
+out=$(submit '{"CAMERA":"live","MQTT_PORT":""}' "$R"); body=$(body_of "$out")
+[ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "['CAMERA', 'MQTT_PORT']" ] && grep -q '^CAMERA="live"$' "$CONF" && ! grep -q '^MQTT_PORT=' "$CONF" \
+	&& [ "$(grep -Ev '^(CAMERA|MQTT_PORT)=' "$T/conf.before")" = "$(conf_except CAMERA MQTT_PORT)" ] \
+	&& ok "CAMERA set and a cleared MQTT_PORT removed, MQTT_HOST stays" || bad "CAMERA and MQTT_PORT save: $out"
+NEWTOK="zyxwvutsrqponmlkjihgfedcba9876543210ZYXWVU"
+R=$(rev_now); cp "$CONF" "$T/conf.before"
+out=$(submit "{\"HA_TOKEN\":\"$NEWTOK\"}" "$R"); body=$(body_of "$out")
+[ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "['HA_TOKEN']" ] && grep -q '^HA_LOGIN_METHOD="token"$' "$CONF" \
+	&& [ "$(TSX_CONF="$CONF" busybox sh "$TSXCONFIG" get HA_TOKEN)" = "$NEWTOK" ] && ok "a new token alone keeps the login method" || bad "token-only save: $out"
+R=$(rev_now)
+out=$(submit '{"HA_LOGIN_METHOD":"form"}' "$R"); body=$(body_of "$out")
+[ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "['HA_LOGIN_METHOD', 'HA_TOKEN']" ] && ! grep -Eq '^HA_(LOGIN_METHOD|TOKEN)=' "$CONF" \
+	&& ok "the login form removes the method and the token" || bad "form save: $out"
+out=$(submit '{"HA_LOGIN_METHOD":"token"}')
+[ "$(status_of "$out")" = 400 ] && [ "$(jget errors.HA_TOKEN <<<"$(body_of "$out")")" != "" ] && ok "the token method with no token is refused" || bad "token without token: $out"
+out=$(submit "{\"HA_LOGIN_METHOD\":\"token\",\"HA_TOKEN\":\"$TOKEN_VAL\"}")
+[ "$(status_of "$out")" = 200 ] && grep -q '^HA_LOGIN_METHOD="token"$' "$CONF" && ok "the token method with a token is saved" || bad "token save: $out"
+R=$(rev_now)
+tcfg set CAMERA snapshot   # a change elsewhere
+cp "$CONF" "$T/conf.before"
+out=$(submit '{"VOICE":"on"}' "$R")
+[ "$(status_of "$out")" = 409 ] && cmp -s "$T/conf.before" "$CONF" && ok "a plugin field with an old revision is refused too, nothing changes" || bad "stale plugin save: $out"
+# back to the values that the later sections expect
+tcfg set VOICE on; tcfg set BT_PROXY off; tcfg set CAMERA snapshot; tcfg unset MQTT_HOST
+
+echo "== the page script: the form is filled once, the refresh reads only the status =="
+out=$(call GET /setup); page=$(body_of "$out")
+printf '%s' "$page" > "$T/page.html"
+python3 - "$T/page.html" <<'PYEOF' && ok "the 20 s refresh calls loadState only before the first load, then refreshStatus, which sets no field" || bad "page refresh logic"
+import re, sys
+page = open(sys.argv[1]).read()
+def body(name):
+    m = re.search(r"function %s\(\)\{\n(.*?)\n  \}\n" % name, page, re.S)
+    assert m, name
+    return m.group(1)
+refresh = body("refreshStatus")
+assert '"/setup/api/status"' in refresh
+assert "applyFields" not in refresh and ".value" not in refresh and ".checked" not in refresh, refresh
+load = body("loadState")
+assert "if (loaded) return;" in load and load.index("if (loaded) return;") < load.index("applyFields(")
+m = re.search(r"setInterval\(function\(\)\{\n(.*?)\n  \}, 20000\);", page, re.S)
+assert m
+assert m.group(1).strip().splitlines()[0].strip().startswith("if (!loaded) { loadState(); return; }"), m.group(1)
+assert "refreshStatus()" in m.group(1)
+PYEOF
+case "$page" in *'$("f-voice").checked = fields.VOICE === "on";'*) ok "the page sets the voice checkbox from VOICE both ways (checked and unchecked)";; *) bad "the page sets the voice checkbox only to checked";; esac
+case "$page" in *'{revision: state && state.revision, fields: payload}'*'var payload = changedFields();'*|*'var payload = changedFields();'*'{revision: state && state.revision, fields: payload}'*) ok "the page sends the changed fields and the revision";; *) bad "the page does not send changed fields with the revision";; esac
 
 # ---- 6. disabled once configured: not just a 403, no listening LAN socket at all
 echo "== configured + no setup-open flag: not even reachable over the network =="
@@ -496,7 +655,7 @@ out=$(call GET /setup/api/state); body=$(body_of "$out")
 out=$(call GET /setup); page=$(body_of "$out")
 case "$page" in *'id="hw-hint"'*"function applyUnavailable"*) ok "the page has the not-available hint and disables the voice switch";; *) bad "the page has no not-available hint";; esac
 GSUBMIT='{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","VOICE":"off","WAKE_WORD":"hey_jarvis","BT_PROXY":"on","CAMERA":"live"}'
-out=$(call POST /setup/api/submit --data "$GSUBMIT")
+out=$(submit "$GSUBMIT")
 [ "$(status_of "$out")" = 200 ] && grep -q '^VOICE="on"$' "$CONF" && grep -q '^WAKE_WORD="okay_nabu"$' "$CONF" \
 	&& grep -q '^BT_PROXY="off"$' "$CONF" && grep -q '^CAMERA="snapshot"$' "$CONF" \
 	&& ok "a submit leaves VOICE, WAKE_WORD, BT_PROXY and CAMERA as they are (a panel.conf from another panel keeps them)" \
@@ -504,7 +663,7 @@ out=$(call POST /setup/api/submit --data "$GSUBMIT")
 case "$page" in *'name="BT_PROXY"'*'id="bt-wrap"'*|*'id="bt-wrap"'*'name="BT_PROXY"'*) ok "the page has the Bluetooth proxy field and hides it when unavailable";; *) bad "the page has no Bluetooth proxy field";; esac
 case "$page" in *'(default: off)'*) ok "the Bluetooth proxy field names the default of the board (off)";; *) bad "the Bluetooth proxy field does not name the board default";; esac
 case "$page" in *'id="camera-wrap"'*'name="CAMERA"'*'value="off"'*'value="snapshot"'*'value="live"'*) ok "the page has the camera field with the three modes, and hides it when unavailable";; *) bad "the page has no camera field with off, snapshot and live";; esac
-case "$page" in *'u.CAMERA'*'payload.CAMERA = $("f-camera").disabled ? undefined'*) ok "the page sends no CAMERA when the panel has no camera";; *) bad "the page sends CAMERA on a panel without a camera";; esac
+case "$page" in *'if (el.disabled) return;'*) case "$page" in *'u.CAMERA'*'$("f-camera").disabled = true'*) ok "the page sends no CAMERA when the panel has no camera (a disabled field is not sent)";; *) bad "the page does not disable CAMERA on a panel without a camera";; esac;; *) bad "the page sends disabled fields";; esac
 rm -f "$RUNDIR/hw.conf"
 
 echo "== a panel with no GOVERNMENT in hw.conf, and a missing voice service =="
@@ -524,11 +683,11 @@ rm -f "$RUNDIR/hw.conf"
 echo "== settings that the page sends for the light sensor =="
 out=$(call GET /setup); page=$(body_of "$out")
 case "$page" in *'id="sensors-wrap"'*'name="AUTO_BRIGHTNESS"'*'name="ALS_SCALE"'*) ok "the page has the Sensors section with AUTO_BRIGHTNESS and ALS_SCALE";; *) bad "no Sensors section";; esac
-out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","ALS_SCALE":"abc"}')
+out=$(submit '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","ALS_SCALE":"abc"}')
 [ "$(jget errors.ALS_SCALE <<<"$(body_of "$out")")" != "" ] && ok "a bad ALS_SCALE is rejected" || bad "ALS_SCALE abc accepted: $out"
-out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","AUTO_BRIGHTNESS":"maybe"}')
+out=$(submit '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","AUTO_BRIGHTNESS":"maybe"}')
 [ "$(jget errors.AUTO_BRIGHTNESS <<<"$(body_of "$out")")" != "" ] && ok "a bad AUTO_BRIGHTNESS is rejected" || bad "AUTO_BRIGHTNESS maybe accepted"
-out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","AUTO_BRIGHTNESS":"","ALS_SCALE":""}')
+out=$(submit '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","AUTO_BRIGHTNESS":"","ALS_SCALE":""}')
 ! grep -Eq '^(AUTO_BRIGHTNESS|ALS_SCALE)=' "$CONF" && ok "empty fields remove both keys (back to the defaults)" || bad "empty fields left keys: $(grep -E '^(AUTO_BRIGHTNESS|ALS_SCALE)=' "$CONF")"
 echo "== ALS=no (hw.conf): the light sensor settings are not available =="
 printf 'GOVERNMENT=0\nMIC=yes\nBT=yes\nALS=no\n' > "$RUNDIR/hw.conf"
@@ -537,7 +696,7 @@ out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.AUTO_BRIGHTNESS <<<"$body")" = "no ambient light sensor on this panel" ] && ok "state: AUTO_BRIGHTNESS not available, with the reason" || bad "ALS=no state: $(jget unavailable <<<"$body")"
 out=$(call GET /setup); page=$(body_of "$out")
 case "$page" in *'Not available on this panel: '*) ok "the page has the Not available on this panel text";; *) bad "no Not available text for the sensor";; esac
-out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","AUTO_BRIGHTNESS":"off","ALS_SCALE":"7"}')
+out=$(submit '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","AUTO_BRIGHTNESS":"off","ALS_SCALE":"7"}')
 grep -q '^AUTO_BRIGHTNESS="on"$' "$CONF" && grep -q '^ALS_SCALE="3"$' "$CONF" && ok "a submit leaves the light sensor keys as they are" || bad "ALS=no submit changed them: $(grep -E '^(AUTO_BRIGHTNESS|ALS_SCALE)=' "$CONF" | tr '\n' ' ')"
 rm -f "$RUNDIR/hw.conf"
 
@@ -552,7 +711,7 @@ TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set PRESENCE_WAKE on >/dev/null 2>&1; T
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.PRESENCE_WAKE <<<"$body")" = "no distance sensor on this panel" ] && ok "PRESENCE=no: the presence fields are not available, with the reason" || bad "PRESENCE=no: unavailable = $(jget unavailable <<<"$body")"
 [ "$(jget unavailable.AUTO_BRIGHTNESS <<<"$body")" = "" ] && ok "PRESENCE=no: the light sensor fields are not touched" || bad "PRESENCE=no hides the light sensor: $(jget unavailable <<<"$body")"
-out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","PRESENCE_WAKE":"off","PRESENCE_HOLD_S":"90"}')
+out=$(submit '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","PRESENCE_WAKE":"off","PRESENCE_HOLD_S":"90"}')
 grep -q '^PRESENCE_WAKE="on"$' "$CONF" && grep -q '^PRESENCE_HOLD_S="45"$' "$CONF" && ok "PRESENCE=no: a submit leaves the presence keys as they are" || bad "PRESENCE=no submit changed them: $(grep -E '^PRESENCE_' "$CONF" | tr '\n' ' ')"
 rm -f "$RUNDIR/hw.conf"
 
@@ -607,12 +766,12 @@ out=$(call GET /setup/api/discover); [ "$(status_of "$out")" = 404 ] && ok "base
 out=$(call POST /setup/api/check-url --data '{"url":"https://ha.example.org"}'); [ "$(status_of "$out")" = 404 ] && ok "base: no /setup/api/check-url" || bad "base: check-url exists: $(status_of "$out")"
 # a submit with no login method works, and the HA keys that a client sends are ignored
 HAKEYS_BEFORE=$(grep -E '^(HA_LOGIN_METHOD|HA_TOKEN|MQTT_HOST|MQTT_PORT|VOICE|WAKE_WORD)=' "$CONF")
-out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"https://example.org/page","PANEL_NAME":"BASE-PANEL","HA_LOGIN_METHOD":"trusted","MQTT_HOST":"198.51.100.9","VOICE":"off"}')
+out=$(submit '{"KIOSK_URL":"https://example.org/page","PANEL_NAME":"BASE-PANEL","HA_LOGIN_METHOD":"trusted","MQTT_HOST":"198.51.100.9","VOICE":"off"}')
 [ "$(status_of "$out")" = 200 ] && ok "base: a submit without a login method is saved" || bad "base submit: $out"
 grep -q '^KIOSK_URL="https://example.org/page"$' "$CONF" && grep -q '^PANEL_NAME="BASE-PANEL"$' "$CONF" && ok "base: the page URL and the panel name are saved" || bad "base submit did not save: $(grep -E '^(KIOSK_URL|PANEL_NAME)=' "$CONF" | tr '\n' ' ')"
 HAKEYS_AFTER=$(grep -E '^(HA_LOGIN_METHOD|HA_TOKEN|MQTT_HOST|MQTT_PORT|VOICE|WAKE_WORD)=' "$CONF")
 [ "$HAKEYS_BEFORE" = "$HAKEYS_AFTER" ] && grep -q '^MQTT_HOST="192.0.2.7"$' "$CONF" && ok "base: the keys of the Home Assistant layer are not written or changed" || bad "base submit touched HA keys: $HAKEYS_AFTER"
-out=$(call POST /setup/api/submit --data '{"KIOSK_URL":""}')
+out=$(submit '{"KIOSK_URL":""}')
 [ "$(jget errors.KIOSK_URL <<<"$(body_of "$out")")" = "the page URL is required" ] && ok "base: the URL message does not name Home Assistant" || bad "base URL message: $(body_of "$out")"
 kill "$SETUPD2_PID" 2>/dev/null; wait "$SETUPD2_PID" 2>/dev/null
 PORT=$PORT_HA
@@ -629,8 +788,8 @@ for want in 'name="HA_LOGIN_METHOD"' 'name="HA_TOKEN"' 'name="VOICE"' 'name="WAK
 	case "$page" in *"$want"*) ok "ha page has $want";; *) bad "ha page lacks $want";; esac
 done
 case "$page" in *'@@'*|*'SLOT'*) bad "ha page has a slot left";; *) ok "ha page: every slot is filled";; esac
-out=$(call POST /setup/api/submit --data '{"KIOSK_URL":"https://ha.example.org/x"}')
-[ "$(jget errors.HA_LOGIN_METHOD <<<"$(body_of "$out")")" = "choose a login method" ] && ok "ha: a submit needs a login method" || bad "ha: login method not required"
+out=$(submit '{"KIOSK_URL":"https://ha.example.org/x","HA_LOGIN_METHOD":"bogus"}')
+[ "$(jget errors.HA_LOGIN_METHOD <<<"$(body_of "$out")")" = "choose a login method" ] && ok "ha: an unknown login method is refused" || bad "ha: login method bogus: $out"
 out=$(call GET /setup/api/discover); [ "$(status_of "$out")" = 200 ] && ok "ha: /setup/api/discover exists" || bad "ha: no discover"
 out=$(call POST /setup/api/check-url --data '{"url":"ftp://x"}'); [ "$(jget kind <<<"$(body_of "$out")")" = invalid ] && ok "ha: /setup/api/check-url exists" || bad "ha: no check-url: $out"
 # a broken plugin is skipped

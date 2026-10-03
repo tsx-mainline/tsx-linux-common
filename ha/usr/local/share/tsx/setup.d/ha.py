@@ -32,13 +32,22 @@ What a plugin gives to tsx-setupd (all names are optional except NAME):
                      a save leaves these keys as they are
   unavailable(hw)    {name: reason} for the settings that this panel cannot use
   submit(fields)     (to_set, to_unset, errors, post_unset) for the fields that
-                     the generic rules do not cover
+                     the generic rules do not cover. fields holds only the
+                     fields that the user changed (the page sends no other
+                     field). A key that is not in fields stays as it is.
   TEXT               {"url_label", "url_placeholder", "url_required",
                      "submit_label", "done_text"}: words of the page
   HTML               {slot: html} for the slots url_buttons, after_url, panel
                      and details of the page
   JS                 {slot: js} for the slots apply, unavailable, payload and
-                     init (the script of the page)
+                     init (the script of the page). apply runs once, at load
+                     time. It must set each field of the plugin, also to
+                     empty, off or unchecked. The page then keeps these
+                     values and sends only the fields that differ from them.
+                     The page reads each field with a name attribute: a
+                     checkbox gives "on" or "off", a disabled field is not
+                     sent. payload can change the object payload (the
+                     changed fields, name -> value) before the page sends it.
   GET_ROUTES, POST_ROUTES  {path: function(handler[, data])} for more API paths
 
 Env override for host tests: TSX_VOICE_SERVICE (the init script of the voice
@@ -66,8 +75,9 @@ def init(ctx):
 
 
 SIMPLE_KEYS = ["VOICE", "WAKE_WORD", "MQTT_HOST", "MQTT_PORT", "MQTT_USER", "MQTT_PASSWORD", "BT_PROXY", "CAMERA"]
-# Empty = cleared. The page pre-fills these keys, so an empty one was cleared
-# on purpose. MQTT_PASSWORD is not one of them: the page never pre-fills it.
+# Empty = cleared. The page pre-fills these keys and sends one only when the
+# user changed it, so an empty one was cleared on purpose. MQTT_PASSWORD is
+# not one of them: the page never pre-fills it, and an empty field keeps it.
 # An empty BT_PROXY is the default of the board.
 CLEARABLE_BLANK = {"MQTT_HOST", "MQTT_PORT", "MQTT_USER", "BT_PROXY"}
 STATE_KEYS = SIMPLE_KEYS + ["HA_LOGIN_METHOD", "HA_TOKEN"]
@@ -112,25 +122,31 @@ def _bt_default():
 
 
 def submit(fields):
-    """The login method and the token. Returns (to_set, to_unset, errors, post_unset)."""
+    """The login method and the token, for the keys that the page sent (the
+    keys that the user changed). Returns (to_set, to_unset, errors, post_unset)."""
     to_set, errors, post_unset = {}, {}, []
     method = fields.get("HA_LOGIN_METHOD")
-    if method not in ("form", "token", "trusted"):
+    tok = fields.get("HA_TOKEN") or ""
+    if not isinstance(tok, str):
+        errors["HA_TOKEN"] = "invalid value"
+        tok = ""
+    if "HA_LOGIN_METHOD" in fields and method not in ("form", "token", "trusted"):
         errors["HA_LOGIN_METHOD"] = "choose a login method"
-    elif method in ("token", "trusted"):
-        to_set["HA_LOGIN_METHOD"] = method
-        if method == "token":
-            tok = fields.get("HA_TOKEN") or ""
-            if tok:
-                if _ctx.validate("HA_TOKEN", tok):
-                    to_set["HA_TOKEN"] = tok
-                else:
-                    errors["HA_TOKEN"] = "does not look like a long-lived access token"
-            elif not _ctx.show().get("HA_TOKEN"):
-                errors["HA_TOKEN"] = "a long-lived access token is required for this login method"
-    else:
+    elif method == "form":
         # the login form: the panel keeps no method and no token
         post_unset = ["HA_LOGIN_METHOD", "HA_TOKEN"]
+    else:
+        if method:
+            to_set["HA_LOGIN_METHOD"] = method
+        # A new token counts for the token method: the method that the user
+        # chose now, or the stored one (method None: not changed).
+        if tok and method in (None, "token"):
+            if _ctx.validate("HA_TOKEN", tok):
+                to_set["HA_TOKEN"] = tok
+            else:
+                errors["HA_TOKEN"] = "does not look like a long-lived access token"
+        elif method == "token" and not _ctx.show().get("HA_TOKEN"):
+            errors["HA_TOKEN"] = "a long-lived access token is required for this login method"
     return to_set, [], errors, post_unset
 
 
@@ -212,26 +228,26 @@ HTML["details"] = HTML["details"].replace("@BT_DEFAULT@", "(default: %s)" % _d i
 
 JS = {
     "apply": """
-    if (fields.VOICE === "on") { $("f-voice").checked = true; $("wake-wrap").style.display = "block"; }
-    if (fields.WAKE_WORD) $("f-wake").value = fields.WAKE_WORD;
-    if (fields.BT_PROXY) $("f-btproxy").value = fields.BT_PROXY;
-    if (fields.CAMERA) $("f-camera").value = fields.CAMERA === "on" ? "live" : fields.CAMERA;
-    if (fields.MQTT_HOST) $("f-mqtt-host").value = fields.MQTT_HOST;
-    if (fields.MQTT_PORT) $("f-mqtt-port").value = fields.MQTT_PORT;
-    if (fields.MQTT_USER) $("f-mqtt-user").value = fields.MQTT_USER;
+    $("f-voice").checked = fields.VOICE === "on";
+    $("wake-wrap").style.display = $("f-voice").checked ? "block" : "none";
+    $("f-wake").value = fields.WAKE_WORD || "";
+    $("f-btproxy").value = fields.BT_PROXY || "";
+    $("f-camera").value = fields.CAMERA === "on" ? "live" : (fields.CAMERA || "off");
+    $("f-mqtt-host").value = fields.MQTT_HOST || "";
+    $("f-mqtt-port").value = fields.MQTT_PORT || "";
+    $("f-mqtt-user").value = fields.MQTT_USER || "";
     if (fields.MQTT_PASSWORD__set) $("f-mqtt-pass").placeholder = "(already set; leave blank to keep)";
     if (fields.HA_TOKEN__set) $("f-token").placeholder = "(already set; leave blank to keep)";
-    if (fields.HA_LOGIN_METHOD) {
-      var r = document.querySelector('input[name=HA_LOGIN_METHOD][value="' + fields.HA_LOGIN_METHOD + '"]');
-      if (r) { r.checked = true; }
-    }
+    var method = document.querySelector('input[name=HA_LOGIN_METHOD][value="' + (fields.HA_LOGIN_METHOD || "form") + '"]')
+      || document.querySelector('input[name=HA_LOGIN_METHOD][value="form"]');
+    method.checked = true;
     $("token-wrap").style.display =
       (document.querySelector('input[name=HA_LOGIN_METHOD]:checked') || {}).value === "token" ? "block" : "none";
 """,
     "unavailable": """
     var notes = [];
     if (u.VOICE) {
-      $("f-voice").checked = false; $("f-voice").disabled = true;
+      $("f-voice").checked = false; $("f-voice").disabled = true; $("f-wake").disabled = true;
       $("wake-wrap").style.display = "none";
       notes.push("Voice assistant: not available, " + u.VOICE + ".");
     }
@@ -244,18 +260,6 @@ JS = {
       notes.push("Camera: not available, " + u.CAMERA + ".");
     }
     if (notes.length) { $("hw-hint").textContent = notes.join(" "); $("hw-hint").style.display = "block"; }
-""",
-    "payload": """
-    payload.HA_LOGIN_METHOD = (document.querySelector('input[name=HA_LOGIN_METHOD]:checked') || {}).value;
-    payload.HA_TOKEN = $("f-token").value;
-    payload.VOICE = $("f-voice").disabled ? undefined : ($("f-voice").checked ? "on" : "off");
-    payload.WAKE_WORD = $("f-voice").disabled ? undefined : $("f-wake").value.trim();
-    payload.BT_PROXY = $("f-btproxy").disabled ? undefined : $("f-btproxy").value;
-    payload.CAMERA = $("f-camera").disabled ? undefined : $("f-camera").value;
-    payload.MQTT_HOST = $("f-mqtt-host").value.trim();
-    payload.MQTT_PORT = $("f-mqtt-port").value.trim();
-    payload.MQTT_USER = $("f-mqtt-user").value.trim();
-    payload.MQTT_PASSWORD = $("f-mqtt-pass").value;
 """,
     "init": """
   document.querySelectorAll('input[name=HA_LOGIN_METHOD]').forEach(function(r){

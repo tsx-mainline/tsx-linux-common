@@ -22,6 +22,15 @@
 # line.
 #
 #   show                 tsx-config show (it already masks the secrets)
+#   rev                  the revision of panel.conf: the sha256 of a salt and
+#                          the content of the file. Each change of the file
+#                          gives a new revision, also a change of a secret
+#                          that show masks. The salt is random and new at each
+#                          start of this script, and the reply never gives it.
+#                          So the revision does not let a client test a guess
+#                          of a secret. A missing file has a revision too.
+#                          tsx-setupd sends the revision to the page and
+#                          refuses a save from a page with an old revision.
 #   set KEY VALUE         tsx-config set KEY VALUE. VALUE can be empty. It
 #                          can contain anything, including shell
 #                          metacharacters. The per-key regex of tsx-config
@@ -44,7 +53,8 @@
 #                          already does for that key.
 #
 # Env overrides for tests: TSX_RUN_DIR, TSX_SETUP_HELPER_REQ,
-# TSX_SETUP_HELPER_RESP, TSX_CONFIG_BIN, TSX_PANELCTL_BIN, TSX_CHPASSWD_BIN, TSX_SHADOW_FILE,
+# TSX_SETUP_HELPER_RESP, TSX_CONF (panel.conf, the same variable and default
+# as tsx-config), TSX_CONFIG_BIN, TSX_PANELCTL_BIN, TSX_CHPASSWD_BIN, TSX_SHADOW_FILE,
 # TSX_RCSERVICE_BIN, TSX_SETUP_HELPER_ONESHOT=1 (handle exactly one request,
 # then exit. Tests only), TSX_APPLY_ALLOW_NONROOT (passed through to
 # tsx-config, tests only).
@@ -58,6 +68,9 @@ CHPASSWD=${TSX_CHPASSWD_BIN:-chpasswd}
 SHADOW=${TSX_SHADOW_FILE:-/etc/shadow}
 RCSERVICE=${TSX_RCSERVICE_BIN:-rc-service}
 ONESHOT=${TSX_SETUP_HELPER_ONESHOT:-0}
+CONF=${TSX_CONF:-/data/tsx/panel.conf}
+# The salt of "rev". It stays in this process only.
+SALT=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
 
 log() { echo "$(date '+%F %T') tsx-setup-helper: $*"; }
 # Use this only to log a hostile or malformed COMMAND NAME. Never apply it to
@@ -90,6 +103,12 @@ handle() {
 		# itself never produces it). tsx-setupd decodes them back.
 		out=$("$CONFIG" show 2>&1) && reply_ok "$(printf '%s' "$out" | tr '\n' '\1')" \
 			|| reply_err "tsx-config show failed"
+		;;
+	rev)
+		[ -z "$rest" ] || { reply_err "rev takes no arguments"; return; }
+		h=$({ printf '%s\n' "$SALT"; cat "$CONF" 2>/dev/null; } | sha256sum) \
+			|| { reply_err "rev failed"; return; }
+		reply_ok "${h%% *}"
 		;;
 	set)
 		key=${rest%% *}
