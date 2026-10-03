@@ -302,6 +302,10 @@ assert len(on) == 2, en        # two subscribed checks, none for the off one
 assert en[-1] == "0000", en
 PYEOF
 
+# After a link drop, tsx-btscan waits 0.5 s for the HCI reason (DOWN_GRACE).
+# The reconnect of the check starts at the same time. The late disconnect
+# message can then reach the client while it connects. A real client retries
+# in this case, so the check uses --retries.
 # The active proxy (BT_ACTIVE=on): the bleak backend of Home Assistant
 # (bleak-esphome ESPHomeClient) connects to a fake peer through each front
 # end. C0:FF:EE:00:00:EE never answers (a connect timeout).
@@ -311,9 +315,9 @@ TSX_TEST_SERVER_ARGS=--no-zeroconf start_server standalone "$T/server-act.log" "
 start_server voice "$T/voice-act.log" "$VACT_PORT" Act-Voice TSX_HA_API_KEY="$KEY" TSX_BT_CONF="$F/run/tsx/bt-active.conf"
 wait_listening "$T/server-act.log" "$T/voice-act.log"
 "$T/venv/bin/python3" "$HERE/esphome-btactive-check.py" 127.0.0.1 "$ACT_PORT" --addr C0:FF:EE:00:00:01 --atype 1 \
-	--silent C0:FF:EE:00:00:EE --cycles 5 --adv || { rc=1; tail -20 "$T/btscan.log"; }
+	--silent C0:FF:EE:00:00:EE --cycles 5 --adv --retries 2 || { rc=1; tail -20 "$T/btscan.log"; }
 "$T/venv/bin/python3" "$HERE/esphome-btactive-check.py" 127.0.0.1 "$VACT_PORT" --key "$KEY" --addr C0:FF:EE:00:00:02 \
-	--cycles 2 || { rc=1; tail -20 "$T/btscan.log"; }
+	--cycles 2 --retries 2 || { rc=1; tail -20 "$T/btscan.log"; }
 grep -q '^cmd 200b 01a000a0' "$T/hci.log" && echo "OK: the active scan mode of Home Assistant reached the controller (scan type 1)" \
 	|| { echo "FAIL: no active scan parameters in hci.log"; rc=1; }
 grep -q 'tsx_lva: Bluetooth proxy on, active connections' "$T/voice-act.log" && echo "OK: the voice satellite logs the active proxy" \
