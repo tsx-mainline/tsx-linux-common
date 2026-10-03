@@ -73,6 +73,7 @@ os.environ.update(TSX_RUN_DIR=t + "/run", TSX_STATE_DIR=t + "/state", TSX_BACKLI
                   TSX_THERMAL_ZONE=t + "/none")
 from tsx_panel.backend import PanelBackend
 from tsx_panel import device as dev
+from tsx_panel.keys import stable_key
 
 fails = 0
 def check(name, got, want):
@@ -288,8 +289,9 @@ check("actions: argument names and types", [[(a.name, a.type) for a in m.args] f
 check("actions: Home Assistant waits for the status", {m.supports_response for m in svc}, {100})
 keys = [m.key for m in svc]
 entity_keys = [e.key for e in d.entities if hasattr(e, "key")]
-check("actions: own keys after the entity keys", (len(set(keys)), min(keys) > max(entity_keys)), (5, True))
-check("actions: the light keeps its key", d.ledbar.key, 0)
+check("actions: own keys, not the keys of entities", (len(set(keys)), set(keys) & set(entity_keys)), (5, set()))
+check("actions: the fixed keys", keys, [stable_key("action:" + m.name) for m in svc])
+check("actions: the light keeps its fixed key", d.ledbar.key, stable_key("ledbar"))
 by_name = {m.name: m.key for m in svc}
 
 def arg(**kw):

@@ -212,7 +212,7 @@ noise_check() {  # noise_check PORT MODE [KEY]
 # ---- standalone tsx-esphome, plaintext (no HA_API_KEY: zero-config) -------
 start_server standalone "$T/server.log" "$API_PORT" Test-Panel TSX_HA_API_KEY=
 wait_listening "$T/server.log"
-full_check "tsx-esphome, plaintext" "$API_PORT"
+full_check "tsx-esphome, plaintext" "$API_PORT" --keys "$T/keys-standalone"
 grep -q 'Page.navigate' "$T/devtools.log" 2>/dev/null && echo "OK: kiosk URL navigated live via DevTools" || { echo "FAIL: no Page.navigate seen"; rc=1; }
 sleep 0.3
 grep -q 'connection accepted: 127.0.0.1 (plaintext)' "$T/server.log" && echo "OK: accepted connection logged (plaintext)" || { echo "FAIL: no accepted-connection log line"; rc=1; }
@@ -251,10 +251,34 @@ noise_check "$VENC_PORT" wrong-key "$BADKEY"
 noise_check "$VENC_PORT" plaintext
 grep -q "('api_encryption', 'Noise_NNpsk0_25519_ChaChaPoly_SHA256')" "$T/voice-enc.log" && echo "OK: mDNS TXT advertises api_encryption" || { echo "FAIL: no api_encryption in the mDNS TXT"; rc=1; }
 grep -q "('friendly_name', 'Voice-Enc')" "$T/voice-enc.log" && echo "OK: mDNS TXT carries friendly_name" || { echo "FAIL: no friendly_name in the mDNS TXT"; rc=1; }
-full_check "voice satellite, plaintext" "$VPLAIN_PORT" --name voice-plain --friendly Voice-Plain --voice
+full_check "voice satellite, plaintext" "$VPLAIN_PORT" --name voice-plain --friendly Voice-Plain --voice --keys "$T/keys-voice"
 grep -q "api_encryption" "$T/voice-plain.log" && { echo "FAIL: plaintext satellite advertises api_encryption"; rc=1; } || echo "OK: no api_encryption in the plaintext mDNS TXT"
 grep -q 'Unknown message type' "$T/voice-plain.log" && { echo "FAIL: MediaPlayerEntity logged Unknown message type noise (voice-plain.log)"; rc=1; } \
 	|| echo "OK: no Unknown message type noise for panel-entity commands (voice-plain.log)"
+
+# ---- the fixed entity keys (tsx_panel/keys.py) ------------------------------
+# Home Assistant pairs an entity by its key when the unique id does not
+# decide. A change of VOICE must not move a key.
+echo "== the same entity keys in both modes =="
+PYTHONPATH="$SHIM" "$T/venv/bin/python3" - "$T/keys-standalone" "$T/keys-voice" <<'PY' || rc=1
+import sys
+from tsx_panel import keys
+
+def read(path):
+    with open(path, encoding="utf-8") as fobj:
+        return {ident: int(key) for ident, key in (line.split() for line in fobj)}
+
+alone, voice = read(sys.argv[1]), read(sys.argv[2])
+moved = {i: (k, voice.get(i)) for i, k in alone.items() if voice.get(i) != k}
+assert not moved, f"keys that differ between the modes: {moved}"
+assert all(k == keys.stable_key(i) for i, k in alone.items()), alone
+satellite = {i: k for i, k in voice.items() if i not in alone}
+assert {"mute", "thinking_sound", "linux_voice_assistant_media_player"} <= satellite.keys(), satellite
+wrong = {i: k for i, k in satellite.items() if k != keys.stable_key(i, keys.SATELLITE)}
+assert not wrong, f"satellite entities without their fixed key: {wrong}"
+assert len(set(voice.values())) == len(voice), "two entities share a key"
+print(f"OK: {len(alone)} panel keys equal in both modes, {len(satellite)} satellite entities with fixed keys")
+PY
 
 # ---- the Bluetooth proxy (BT_PROXY, BT_ACTIVE, tsx_panel/bluetooth.py) -----
 # A fake controller (bt-fake-hci.py) feeds the real scanner daemon

@@ -54,6 +54,7 @@ os.environ.update(TSX_RUN_DIR=t + "/run", TSX_STATE_DIR=t + "/state", TSX_BACKLI
 from aioesphomeapi import api_pb2 as pb
 from tsx_panel import camera
 from tsx_panel import device as dev
+from tsx_panel.keys import stable_key
 from tsx_panel.backend import PanelBackend
 
 fails = 0
@@ -133,7 +134,8 @@ svc = fresh('CAMERA="on"\nSIZE="640x480"\nFPS="5"\n', "GOVERNMENT=0\nCAMERA=yes\
 check("CAMERA=on: on", (svc.enabled(), svc.why_off()), (True, ""))
 d = dev.build_entities(None, Backend())
 cam = d.camera_entity
-check("camera on: one camera entity, the last key", (cam is not None, d.entities[-1] is cam), (True, True))
+check("camera on: one camera entity, the last entity", (cam is not None, d.entities[-1] is cam), (True, True))
+check("camera on: the fixed key of \"camera\"", (cam.key, camera.service().key), (stable_key("camera"),) * 2)
 check("live: no button and no time sensor", (d.camera_button, d.camera_time), (None, None))
 live_key = cam.key
 listed = list(cam.handle_message(pb.ListEntitiesRequest()))
@@ -239,6 +241,8 @@ cam, button, taken = d.camera_entity, d.camera_button, d.camera_time
 check("snapshot: camera, button and time sensor are the last three entities",
       d.entities[-3:] == [cam, button, taken] and None not in (cam, button, taken), True)
 check("snapshot: the camera has the key of live mode", cam.key, live_key)
+check("snapshot: the fixed keys of the button and the time sensor", (button.key, taken.key),
+      (stable_key("take_snapshot"), stable_key("last_snapshot")))
 listed = [m for e in (cam, button, taken) for m in e.handle_message(pb.ListEntitiesRequest())]
 check("snapshot: the entity list", [(type(m).__name__, m.object_id, m.name) for m in listed],
       [("ListEntitiesCameraResponse", "camera", "Camera"), ("ListEntitiesButtonResponse", "take_snapshot", "Take snapshot"),

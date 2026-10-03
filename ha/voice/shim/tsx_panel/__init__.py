@@ -18,6 +18,8 @@ Modules:
                (switch/number/text/button/sensor/binary_sensor/text_sensor).
   device.py    builds the full entity list from a PanelBackend and runs the
                polling loop that pushes state changes to Home Assistant.
+  keys.py      the fixed entity keys: the same key for an entity in both
+               front ends and in each version.
   esphome_server.py   the standalone tsx-esphome entry point.
   security.py  HA_API_KEY (encryption) + HA_ALLOW_FROM, patched into the
                shared linux_voice_assistant APIServer for both front ends.

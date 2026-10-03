@@ -785,20 +785,21 @@ def service():
     return SERVICE
 
 
-def make_entities(server, next_key):
+def make_entities(server, key_for):
     """The entities of the camera: (camera, button, time sensor). Only the
     snapshot mode has the button and the time sensor (else None). Call it
-    only when service().enabled() is True. next_key() gives the next free
-    entity key."""
+    only when service().enabled() is True. key_for(object_id) gives the fixed
+    key of an entity (keys.Keys)."""
     svc = service()
-    svc.key = next_key()
-    cam = CameraEntity(server, svc.key)
+    svc.key = key_for("camera")
+    cam = CameraEntity(server, svc.key, object_id="camera")
     if svc.mode != "snapshot":
         return cam, None, None
     from .entities import ButtonEntity, TextSensorEntity  # noqa: WPS433 - the command line needs no entities
 
-    button = ButtonEntity(server, next_key(), "Take snapshot", "take_snapshot", press=svc.press, icon="mdi:camera-iris")
-    taken = TextSensorEntity(server, next_key(), "Last snapshot", "last_snapshot",
+    button = ButtonEntity(server, key_for("take_snapshot"), "Take snapshot", "take_snapshot", press=svc.press,
+                          icon="mdi:camera-iris")
+    taken = TextSensorEntity(server, key_for("last_snapshot"), "Last snapshot", "last_snapshot",
                              get_state=svc.last_snapshot_time, icon="mdi:camera-timer", device_class="timestamp")
     return cam, button, taken
 

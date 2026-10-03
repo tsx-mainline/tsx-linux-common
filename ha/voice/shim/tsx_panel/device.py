@@ -43,6 +43,7 @@ from .entities import (
     TextSensorEntity,
     UpdateEntity,
 )
+from .keys import Keys
 
 _LOGGER = logging.getLogger("tsx_panel.device")
 
@@ -68,16 +69,6 @@ LEDBAR_EFFECTS = ["None", "Pulse"]  # with the bar firmware TSX-LEDBAR also the 
 LEDBAR_HUE_EFFECTS = ("Rainbow", "Spectrum")
 POLL_INTERVAL = 1.0
 PULSE_PERIOD = 2.0  # seconds per breath, 20%..100% of the set brightness
-
-
-class KeyCounter:
-    def __init__(self, start: int):
-        self._next = start
-
-    def __call__(self) -> int:
-        value = self._next
-        self._next += 1
-        return value
 
 
 @dataclass
@@ -125,14 +116,15 @@ class PanelDevice:
     _pulse_since: float = field(default=0.0, repr=False)
 
 
-def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDevice:
+def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
     """server: the connection/protocol instance entities are constructed
     against (ESPHomeEntity.server; our entities never call back into it).
-    key_base: the next free entity key -- 0 for the standalone server,
-    len(state.entities) when appending to the voice satellite's own list, so
-    keys never collide with its built-in entities.
+    taken: the keys of the entities that the device has already (the own
+    entities of the voice satellite), else nothing. Each entity gets the
+    fixed key of its object id (keys.py), so the keys are the same in both
+    front ends and do not depend on the order or on the optional entities.
     """
-    next_key = KeyCounter(key_base)
+    key_for = Keys(taken=taken)
     entities: List = []
 
     # ---- LED bar (RGB light, + a cheap software "Pulse" effect) ------------
@@ -148,7 +140,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
         ledbar_leds = ledbar_fx and backend.ledbar_leds_present()
         on, bri, r, g, b = backend.get_ledbar(ledbar_fx)
         ledbar = PanelLight(
-            server, next_key(), "LED bar", "ledbar",
+            server, key_for("ledbar"), "LED bar", "ledbar",
             effects=LEDBAR_EFFECTS + (list(LEDBAR_FX) if ledbar_fx else [])
             + (list(LEDBAR_LEDS_FX) if ledbar_leds else []),
             supports_rgb=True, supports_brightness=True, icon="mdi:led-strip-variant",
@@ -174,7 +166,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     if backend.keypad_present():
         kp_on, kp_bri = backend.get_keypad()
         keypad = PanelLight(
-            server, next_key(), "Key LEDs", "keypad",
+            server, key_for("keypad"), "Key LEDs", "keypad",
             supports_rgb=False, supports_brightness=True, icon="mdi:gesture-tap-button",
         )
         keypad.is_on, keypad.brightness = kp_on, kp_bri / 255.0
@@ -187,7 +179,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
 
     # ---- screen + backlight --------------------------------------------------
     screen = SwitchEntity(
-        server, next_key(), "Screen", "screen",
+        server, key_for("screen"), "Screen", "screen",
         get_state=lambda: backend.get_screen()[0],
         set_state=backend.set_screen, icon="mdi:monitor",
     )
@@ -198,7 +190,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
         return level if level is not None else 0
 
     backlight = NumberEntity(
-        server, next_key(), "Backlight", "backlight",
+        server, key_for("backlight"), "Backlight", "backlight",
         get_state=get_backlight, set_state=backend.set_backlight,
         min_value=1, max_value=backend.get_backlight_max(), step=1, icon="mdi:brightness-6",
     )
@@ -206,7 +198,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     # seconds without input before the screen goes dark, 0 = never. Persisted
     # in panel.conf (BLANK_TIMEOUT) and applied by tsx-idled at once
     blank_timeout = NumberEntity(
-        server, next_key(), "Blank timeout", "blank_timeout",
+        server, key_for("blank_timeout"), "Blank timeout", "blank_timeout",
         get_state=backend.get_blank_timeout, set_state=backend.set_blank_timeout,
         min_value=0, max_value=86400, step=10, unit="s", icon="mdi:timer-outline", mode=1,
     )
@@ -214,7 +206,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     # screen orientation (panel.conf ORIENTATION): the kiosk turns at once,
     # the boot splash from the next boot on
     orientation = SelectEntity(
-        server, next_key(), "Orientation", "orientation", options=backend.ORIENTATIONS,
+        server, key_for("orientation"), "Orientation", "orientation", options=backend.ORIENTATIONS,
         get_state=backend.get_orientation, set_state=backend.set_orientation, icon="mdi:screen-rotation",
     )
     entities.append(orientation)
@@ -223,12 +215,12 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     als_auto = illuminance = None
     if backend.als_present():
         illuminance = SensorEntity(
-            server, next_key(), "Illuminance", "illuminance",
+            server, key_for("illuminance"), "Illuminance", "illuminance",
             get_state=backend.get_lux, unit="lx", device_class="illuminance",
         )
         entities.append(illuminance)
         als_auto = SwitchEntity(
-            server, next_key(), "Auto brightness", "als_auto",
+            server, key_for("als_auto"), "Auto brightness", "als_auto",
             get_state=backend.get_als_auto, set_state=backend.set_als_auto, icon="mdi:brightness-auto",
         )
         entities.append(als_auto)
@@ -237,7 +229,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     volume = None
     if backend.sound_card_present():
         volume = NumberEntity(
-            server, next_key(), "Volume", "volume",
+            server, key_for("volume"), "Volume", "volume",
             get_state=backend.get_volume, set_state=backend.set_volume,
             min_value=0, max_value=100, step=1, unit="%", icon="mdi:volume-high",
         )
@@ -245,50 +237,50 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
 
     # ---- verbose boot (BOOT_VERBOSE, panel.conf) ------------------------------
     verbose_boot = SwitchEntity(
-        server, next_key(), "Verbose boot", "verbose_boot",
+        server, key_for("verbose_boot"), "Verbose boot", "verbose_boot",
         get_state=backend.get_verbose_boot, set_state=backend.set_verbose_boot, icon="mdi:console-line",
     )
     entities.append(verbose_boot)
 
     # ---- kiosk: URL (persists through tsx-config), reload, reboot -------------
     kiosk_url = TextEntity(
-        server, next_key(), "Kiosk URL", "kiosk_url",
+        server, key_for("kiosk_url"), "Kiosk URL", "kiosk_url",
         get_state=backend.get_kiosk_url, set_state=backend.set_kiosk_url, icon="mdi:web",
     )
     entities.append(kiosk_url)
     reload_button = ButtonEntity(
-        server, next_key(), "Reload page", "reload_page", press=backend.reload_page, icon="mdi:refresh",
+        server, key_for("reload_page"), "Reload page", "reload_page", press=backend.reload_page, icon="mdi:refresh",
     )
     entities.append(reload_button)
     reboot_button = ButtonEntity(
-        server, next_key(), "Reboot", "reboot", press=backend.reboot, icon="mdi:restart",
+        server, key_for("reboot"), "Reboot", "reboot", press=backend.reboot, icon="mdi:restart",
     )
     entities.append(reboot_button)
 
     # ---- sensors --------------------------------------------------------------
     cpu_temp = SensorEntity(
-        server, next_key(), "CPU temperature", "cpu_temp",
+        server, key_for("cpu_temp"), "CPU temperature", "cpu_temp",
         get_state=backend.get_cpu_temp, unit="°C", device_class="temperature", accuracy_decimals=1,
     )
     entities.append(cpu_temp)
     uptime = SensorEntity(
-        server, next_key(), "Uptime", "uptime",
+        server, key_for("uptime"), "Uptime", "uptime",
         get_state=backend.get_uptime, unit="s", device_class="duration", icon="mdi:clock-outline",
     )
     entities.append(uptime)
     ip_address = TextSensorEntity(
-        server, next_key(), "IP address", "ip_address", get_state=backend.get_ip, icon="mdi:ip-network",
+        server, key_for("ip_address"), "IP address", "ip_address", get_state=backend.get_ip, icon="mdi:ip-network",
     )
     entities.append(ip_address)
     touched_recently = BinarySensorEntity(
-        server, next_key(), "Touched recently", "touched_recently",
+        server, key_for("touched_recently"), "Touched recently", "touched_recently",
         get_state=backend.get_touched_recently, device_class="motion", icon="mdi:gesture-tap",
     )
     entities.append(touched_recently)
 
     # ---- update (tsx-autoupdate status. docs/rootfs.md "Updates") -------------------
     update = UpdateEntity(
-        server, next_key(), "Update", "update",
+        server, key_for("update"), "Update", "update",
         get_state=backend.get_update_status, install=backend.install_update, icon="mdi:package-up",
     )
     entities.append(update)
@@ -298,12 +290,12 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     presence = distance = None
     if backend.presence_present():
         presence = BinarySensorEntity(
-            server, next_key(), "Presence", "presence",
+            server, key_for("presence"), "Presence", "presence",
             get_state=backend.get_presence, device_class="occupancy", icon="mdi:account-eye",
         )
         entities.append(presence)
         distance = SensorEntity(
-            server, next_key(), "Distance", "distance",
+            server, key_for("distance"), "Distance", "distance",
             get_state=backend.get_distance, unit="mm", device_class="distance", icon="mdi:ruler",
         )
         entities.append(distance)
@@ -312,7 +304,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     if backend.lightbar_present():
         lb_on, lb_bri, lb_r, lb_g, lb_b = backend.get_lightbar()
         lightbar = PanelLight(
-            server, next_key(), "Light bar", "lightbar",
+            server, key_for("lightbar"), "Light bar", "lightbar",
             supports_rgb=True, supports_brightness=True, icon="mdi:led-strip-variant",
         )
         lightbar.is_on, lightbar.brightness = lb_on, lb_bri / 255.0
@@ -330,7 +322,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     usb_power = None
     if backend.usb_power_present():
         usb_power = SwitchEntity(
-            server, next_key(), "USB power", "usb_power",
+            server, key_for("usb_power"), "USB power", "usb_power",
             get_state=backend.get_usb_power, set_state=backend.set_usb_power, icon="mdi:usb-port",
         )
         entities.append(usb_power)
@@ -338,7 +330,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     poe_class = None
     if backend.poe_present():
         poe_class = TextSensorEntity(
-            server, next_key(), "PoE class", "poe_class",
+            server, key_for("poe_class"), "PoE class", "poe_class",
             get_state=backend.get_poe_class, icon="mdi:ethernet-cable", entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         )
         entities.append(poe_class)
@@ -346,17 +338,17 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     emmc_life_a = emmc_life_b = emmc_eol = None
     if backend.emmc_present():
         emmc_life_a = SensorEntity(
-            server, next_key(), "eMMC life used A", "emmc_life_a",
+            server, key_for("emmc_life_a"), "eMMC life used A", "emmc_life_a",
             get_state=lambda: backend.get_emmc_life("a"), unit="%", icon="mdi:harddisk",
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         )
         emmc_life_b = SensorEntity(
-            server, next_key(), "eMMC life used B", "emmc_life_b",
+            server, key_for("emmc_life_b"), "eMMC life used B", "emmc_life_b",
             get_state=lambda: backend.get_emmc_life("b"), unit="%", icon="mdi:harddisk",
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         )
         emmc_eol = TextSensorEntity(
-            server, next_key(), "eMMC end of life", "emmc_eol",
+            server, key_for("emmc_eol"), "eMMC end of life", "emmc_eol",
             get_state=backend.get_emmc_eol, icon="mdi:harddisk-remove", entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         )
         entities += [emmc_life_a, emmc_life_b, emmc_eol]
@@ -364,23 +356,21 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     # ---- front-key events (one HA `event` entity per key, like tsx-mqtt) -------
     keys = []
     for name in backend.key_names():
-        key_entity = KeyEventEntity(server, next_key(), f"Key {name}", f"key_{name}")
+        key_entity = KeyEventEntity(server, key_for(f"key_{name}"), f"Key {name}", f"key_{name}")
         entities.append(key_entity)
         keys.append(key_entity)
 
-    # ---- the actions of the 16 LEDs (last, so the keys of the entities stay) --
+    # ---- the actions of the 16 LEDs --------------------------------------------
     if ledbar_leds:
-        ledbar_actions = ActionsEntity(server, ledbar_action_list(backend, next_key))
+        ledbar_actions = ActionsEntity(server, ledbar_action_list(backend, key_for))
         entities.append(ledbar_actions)
 
     # ---- the camera (CAMERA in panel.conf, off by default, camera.py) ----------
-    # Last, so the keys of the other entities stay. The snapshot mode adds the
-    # button and the time sensor after the camera, so the camera key is the
-    # same in both modes.
+    # The snapshot mode adds the button and the time sensor.
     camera_entity = camera_button = camera_time = None
     cam = camera.service()
     if cam.enabled():
-        camera_entity, camera_button, camera_time = camera.make_entities(server, next_key)
+        camera_entity, camera_button, camera_time = camera.make_entities(server, key_for)
         entities += [e for e in (camera_entity, camera_button, camera_time) if e is not None]
         _LOGGER.info("camera: mode %s", cam.mode)
     else:
@@ -399,7 +389,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     )
 
 
-def ledbar_action_list(backend: PanelBackend, next_key) -> List[Action]:
+def ledbar_action_list(backend: PanelBackend, key_for: Keys) -> List[Action]:
     """The actions of the 16 LEDs (bar firmware TSX-LEDBAR 0.1.3 and later).
     Home Assistant names them esphome.<device>_<name>. Colors are levels
     0 to 100 (red, green, blue), as on the bar. A LED is R1 to R8 (right
@@ -407,13 +397,13 @@ def ledbar_action_list(backend: PanelBackend, next_key) -> List[Action]:
     (R1-R4), R, L or ALL."""
     rgb = [("red", ARG_INT), ("green", ARG_INT), ("blue", ARG_INT)]
     return [
-        Action(next_key(), "ledbar_set_led", [("led", ARG_STRING)] + rgb, backend.ledbar_set_led),
-        Action(next_key(), "ledbar_set_side", [("side", ARG_STRING)] + rgb, backend.ledbar_set_side),
-        Action(next_key(), "ledbar_fill", [("percent", ARG_INT)] + rgb, backend.ledbar_fill),
-        Action(next_key(), "ledbar_split",
+        Action(key_for.action("ledbar_set_led"), "ledbar_set_led", [("led", ARG_STRING)] + rgb, backend.ledbar_set_led),
+        Action(key_for.action("ledbar_set_side"), "ledbar_set_side", [("side", ARG_STRING)] + rgb, backend.ledbar_set_side),
+        Action(key_for.action("ledbar_fill"), "ledbar_fill", [("percent", ARG_INT)] + rgb, backend.ledbar_fill),
+        Action(key_for.action("ledbar_split"), "ledbar_split",
                [(f"{side}_{c}", ARG_INT) for side in ("right", "left") for c in ("red", "green", "blue")],
                backend.ledbar_split),
-        Action(next_key(), "ledbar_clear", [], backend.ledbar_clear),
+        Action(key_for.action("ledbar_clear"), "ledbar_clear", [], backend.ledbar_clear),
     ]
 
 

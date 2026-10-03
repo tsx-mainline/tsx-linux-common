@@ -5,12 +5,14 @@ library Home Assistant's ESPHome integration uses) and exercises the panel
 entity list of the panel: list entities, toggle the LED bar
 light, set the kiosk URL text, receive a key-press event.
 
-  esphome-check.py PORT [--key BASE64] [--name N] [--friendly F] [--voice] [--bare]
+  esphome-check.py PORT [--key BASE64] [--name N] [--friendly F] [--voice] [--bare] [--keys FILE]
 
 --key connects with ESPHome's noise encryption (HA_API_KEY), --voice also
 requires the voice satellite's own entities (esphome-lva-harness.py).
 --bare: a panel without front keys, an LED bar or an eMMC that reports its
 wear: those entities must be absent, and their checks are skipped.
+--keys FILE: write one line "<object id> <key>" for each entity and
+"action:<name> <key>" for each action (tsx_panel/keys.py).
 """
 import argparse
 import asyncio
@@ -30,8 +32,12 @@ async def main(args) -> int:
         print(f"OK: device name {info.name!r}, friendly name {info.friendly_name!r}"
               f" ({'noise-encrypted' if args.key else 'plaintext'})")
 
-        entities, _services = await client.list_entities_services()
+        entities, services = await client.list_entities_services()
         by_id = {e.object_id: e for e in entities}
+        if args.keys:
+            with open(args.keys, "w", encoding="utf-8") as fobj:
+                fobj.writelines(f"{e.object_id} {e.key}\n" for e in entities)
+                fobj.writelines(f"action:{s.name} {s.key}\n" for s in services)
         want = {
             "screen", "backlight", "kiosk_url",
             "reload_page", "reboot", "cpu_temp", "uptime", "ip_address",
@@ -164,4 +170,5 @@ if __name__ == "__main__":
     parser.add_argument("--friendly", default="Test-Panel")
     parser.add_argument("--voice", action="store_true")
     parser.add_argument("--bare", action="store_true")
+    parser.add_argument("--keys", help="write the keys of the entities and actions to this file")
     sys.exit(asyncio.run(main(parser.parse_args())))

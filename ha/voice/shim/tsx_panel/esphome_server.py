@@ -199,7 +199,7 @@ async def async_main() -> None:
         PanelAPIServer.model = ha_model
 
     backend = PanelBackend()
-    device = build_entities(None, backend, key_base=0)
+    device = build_entities(None, backend)
     PanelAPIServer.device = device
 
     try:

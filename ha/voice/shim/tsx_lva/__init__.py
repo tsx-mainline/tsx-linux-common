@@ -163,6 +163,7 @@ def _patch_panel():
     )
     from linux_voice_assistant.satellite import VoiceSatelliteProtocol  # noqa: WPS433
     from tsx_panel import device as panel_device  # noqa: WPS433
+    from tsx_panel import keys  # noqa: WPS433
     from tsx_panel.backend import PanelBackend  # noqa: WPS433
 
     poll_started = threading.Event()
@@ -191,7 +192,7 @@ def _patch_panel():
         device = getattr(state, "_tsx_panel_device", None)
         if device is None:
             backend = PanelBackend()
-            device = panel_device.build_entities(self, backend, key_base=len(state.entities))
+            device = panel_device.build_entities(self, backend, taken=keys.keys_in_use(state.entities))
             state._tsx_panel_device = device  # pylint: disable=protected-access
             state.entities.extend(device.entities)
             _LOGGER.info("tsx_panel: added %d panel entities to the voice satellite's device", len(device.entities))
@@ -277,6 +278,36 @@ def _patch_panel():
                                          "on, active connections (BT_ACTIVE)" if bluetooth.PROXY.active() else
                                          "on (BT_PROXY)"),
           file=sys.stderr, flush=True)
+
+
+def _patch_keys():
+    """Fixed keys for the own entities of the satellite (tsx_panel/keys.py).
+    linux-voice-assistant gives each entity the next number
+    (key=len(state.entities)) in VoiceSatelliteProtocol.__init__,
+    register_pending_lights and register_pending_button. So its keys move
+    with each new entity or version. After each of these, the patch gives each
+    satellite entity the fixed key of "lva:<object_id>". The panel entities
+    keep their keys. This runs also with HA_TRANSPORT=mqtt. The satellite
+    entities are on the ESPHome device with each HA_TRANSPORT.
+    """
+    from linux_voice_assistant.satellite import VoiceSatelliteProtocol  # noqa: WPS433
+    from tsx_panel import keys  # noqa: WPS433
+
+    def fixed(orig):
+        def method(self, *args, **kwargs):
+            result = orig(self, *args, **kwargs)
+            try:
+                keys.fix_satellite_keys(self.state.entities)
+            except Exception:  # noqa: BLE001 - counted keys still work
+                _LOGGER.warning("tsx_lva: could not fix the keys of the satellite entities", exc_info=True)
+            return result
+
+        return method
+
+    for name in ("__init__", "register_pending_lights", "register_pending_button"):
+        orig = getattr(VoiceSatelliteProtocol, name, None)
+        if orig is not None:
+            setattr(VoiceSatelliteProtocol, name, fixed(orig))
 
 
 def _patch_names():
@@ -386,6 +417,12 @@ def _patch():
 
         libmpv.LibMpvPlayer.__init__ = init
 
+    # _patch_keys() before _patch_panel(): the satellite entities get their
+    # fixed keys before the panel entities are added.
+    try:
+        _patch_keys()
+    except Exception:  # noqa: BLE001 - counted keys still work
+        _LOGGER.warning("tsx_lva: could not fix the keys of the satellite entities", exc_info=True)
     try:
         _patch_panel()
     except Exception:  # noqa: BLE001 - a broken panel plugin must not break voice
