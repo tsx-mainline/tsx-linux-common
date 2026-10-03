@@ -45,6 +45,23 @@ from .entities import (
 
 _LOGGER = logging.getLogger("tsx_panel.device")
 
+
+class PanelLight(LEDLightEntity):
+    """LEDLightEntity that reports color_brightness 1.0.
+
+    The red, green and blue of the entity have the brightest channel at 1.0,
+    and brightness alone sets the level. LEDLightEntity reports
+    color_brightness equal to brightness. The ESPHome integration of Home
+    Assistant multiplies the color by color_brightness, so Home Assistant sees
+    a dim color, and its color picker then sends brightness x brightness on
+    each color change (100 %, 83 %, 69 %, ...).
+    """
+
+    def _state_response(self):
+        response = super()._state_response()
+        response.color_brightness = 1.0
+        return response
+
 LEDBAR_EFFECTS = ["None", "Pulse"]  # with the bar firmware TSX-LEDBAR also the names of LEDBAR_FX
 # Effects of Home Assistant that keep the color of Home Assistant: the bar records white at their level.
 LEDBAR_HUE_EFFECTS = ("Rainbow", "Spectrum")
@@ -126,7 +143,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
         ledbar_fx = backend.ledbar_fx_present()
         ledbar_leds = ledbar_fx and backend.ledbar_leds_present()
         on, bri, r, g, b = backend.get_ledbar(ledbar_fx)
-        ledbar = LEDLightEntity(
+        ledbar = PanelLight(
             server, next_key(), "LED bar", "ledbar",
             effects=LEDBAR_EFFECTS + (list(LEDBAR_FX) if ledbar_fx else [])
             + (list(LEDBAR_LEDS_FX) if ledbar_leds else []),
@@ -152,7 +169,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     keypad = None
     if backend.keypad_present():
         kp_on, kp_bri = backend.get_keypad()
-        keypad = LEDLightEntity(
+        keypad = PanelLight(
             server, next_key(), "Key LEDs", "keypad",
             supports_rgb=False, supports_brightness=True, icon="mdi:gesture-tap-button",
         )
@@ -290,7 +307,7 @@ def build_entities(server, backend: PanelBackend, key_base: int = 0) -> PanelDev
     lightbar = None
     if backend.lightbar_present():
         lb_on, lb_bri, lb_r, lb_g, lb_b = backend.get_lightbar()
-        lightbar = LEDLightEntity(
+        lightbar = PanelLight(
             server, next_key(), "Light bar", "lightbar",
             supports_rgb=True, supports_brightness=True, icon="mdi:led-strip-variant",
         )
@@ -413,8 +430,9 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
     if device.ledbar is not None and device.ledbar.effect == "Pulse" and device.ledbar.is_on:
         phase = (time.time() % PULSE_PERIOD) / PULSE_PERIOD
         level = 0.2 + 0.8 * abs(1 - 2 * phase)  # 20%..100%..20% triangle wave
-        peak_bri = device._last_ledbar[1] if device._last_ledbar else device.ledbar.brightness
-        backend.set_ledbar(True, round(peak_bri * 255 * level),
+        # the brightness Home Assistant set last. The poll does not read back the
+        # bar while Pulse runs, so _last_ledbar is from before the effect.
+        backend.set_ledbar(True, round(device.ledbar.brightness * 255 * level),
                             round(device.ledbar.red * 255), round(device.ledbar.green * 255), round(device.ledbar.blue * 255))
     elif device.ledbar is not None:
         on, bri, r, g, b = backend.get_ledbar(device.ledbar_fx)

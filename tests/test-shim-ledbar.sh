@@ -55,7 +55,13 @@ class LEDLightEntity(ESPHomeEntity):
         self._on_changed()
 
     def _state_response(self):
-        return ("light", self.object_id, self.is_on, round(self.brightness, 3), self.effect)
+        # like LightStateResponse, the real class reports color_brightness = brightness
+        response = _Response(("light", self.object_id, self.is_on, round(self.brightness, 3), self.effect))
+        response.color_brightness = self.brightness
+        return response
+
+class _Response(tuple):
+    pass
 PY
 python3 - "$HERE/ha/voice/shim" "$T" <<'PY'
 import os, sys
@@ -123,6 +129,13 @@ check("stock: poll keeps the effect", (d.ledbar.effect, d.ledbar.is_on), ("None"
 d.ledbar.effect = "Pulse"; d.ledbar.is_on = True; b.sent.clear()
 dev.poll(d, out.extend)
 check("stock: Pulse is the software effect", len(b.sent) == 1 and b.sent[0].startswith("ledbar set "), True)
+real_time = dev.time.time
+dev.time.time = lambda: 1000.0   # phase 0: the Pulse peak
+d.ledbar.command(brightness=0.4); b.sent.clear()
+dev.poll(d, out.extend)
+check("stock: Pulse peaks at the new brightness", b.sent, ["ledbar set 0 0 40"])
+dev.time.time = real_time
+check("color_brightness is 1.0 (Home Assistant shows the full color)", d.ledbar._state_response().color_brightness, 1.0)
 
 # ---- the bar firmware TSX-LEDBAR ---------------------------------------------
 state("want 0 0 80\nfx breathe 0 0 80 4000\n")
@@ -208,7 +221,7 @@ from aioesphomeapi import api_pb2
 def services(d):
     out = []
     for e in d.entities:
-        if isinstance(e, ent.ESPHomeEntity) and type(e).__name__ != "LEDLightEntity":   # the stand-in light has no handle_message
+        if isinstance(e, ent.ESPHomeEntity) and not isinstance(e, dev.LEDLightEntity):   # the stand-in light has no handle_message
             out.extend(m for m in e.handle_message(ent.ListEntitiesRequest()) if isinstance(m, ent.ListEntitiesServicesResponse))
     return out
 state("want 10 20 30\nfx none\n")
