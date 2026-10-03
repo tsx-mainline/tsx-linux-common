@@ -276,6 +276,46 @@ printf 'firmware TSW-XX60-LB [v1.3443.00018]\neffects no\nleds no\n' > "$T/fw"
 $PFX has ledbar-leds >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-leds: exit 1 with the stock firmware" || bad "has ledbar-leds: yes with the stock firmware"
 rm -f "$T/fw"; $PFX has ledbar-leds >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-leds: exit 1 without a bar" || bad "has ledbar-leds: yes without a bar"
 $PCTL has ledbar-fx >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-fx: exit 1 without tsx-ledbar" || bad "has ledbar-fx: yes without tsx-ledbar"
+# has ledbar-fx and ledbar-leds as a user without root (the voice satellite
+# runs as kiosk): the file ledbar.fw of the LED bar service (root). Without
+# root, tsx-ledbar cannot open the USB device of the bar for the CAPS query.
+# So this fake tool answers "leds no", as the real one does for kiosk, and
+# logs each call.
+cat > "$T/bin/tsx-ledbar-nonroot" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/nonroot.log"
+[ "\$1" = fw ] && printf 'firmware TSX-LEDBAR [v0.1.5]\neffects yes\nleds no\n'
+EOF
+chmod +x "$T/bin/tsx-ledbar-nonroot"
+PNR="env PATH=$T/bin:$PATH TSX_RUN_DIR=$T/run TSX_LEDBAR=$T/bin/tsx-ledbar-nonroot busybox sh $SCRIPT"
+FWF=$T/run/ledbar.fw
+yesno() { $PNR has "$1" >/dev/null 2>&1; case $? in 0) echo yes;; 1) echo no;; *) echo "exit $?";; esac; }
+rm -f "$FWF" "$T/nonroot.log"
+[ "$(yesno ledbar-fx) $(yesno ledbar-leds)" = "yes no" ] && ok "no root, no ledbar.fw: tsx-ledbar answers, fx yes, leds no (CAPS needs root)" || bad "no root, no file: $(yesno ledbar-fx) $(yesno ledbar-leds)"
+grep -qx fw "$T/nonroot.log" && ok "no ledbar.fw: tsx-panelctl asks tsx-ledbar fw" || bad "no ledbar.fw: tsx-ledbar not called"
+printf 'firmware TSX-LEDBAR [v0.1.5]\neffects yes\nleds yes\ncaps tsx-ledbar fade blink breathe rainbow smooth cap status leds16 chase fill spectrum split ledmap\n' > "$FWF"
+rm -f "$T/nonroot.log"
+[ "$(yesno ledbar-fx) $(yesno ledbar-leds)" = "yes yes" ] && ok "no root, ledbar.fw of 0.1.5: fx yes, leds yes" || bad "no root, 0.1.5 file: $(yesno ledbar-fx) $(yesno ledbar-leds)"
+[ ! -e "$T/nonroot.log" ] && ok "ledbar.fw: tsx-ledbar is not called" || bad "ledbar.fw: tsx-ledbar called: $(cat "$T/nonroot.log")"
+printf 'firmware TSX-LEDBAR [v0.1.2]\neffects yes\nleds no\ncaps tsx-ledbar fade blink breathe rainbow smooth cap status\n' > "$FWF"
+[ "$(yesno ledbar-fx) $(yesno ledbar-leds)" = "yes no" ] && ok "ledbar.fw of 0.1.2: fx yes, leds no" || bad "0.1.2 file: $(yesno ledbar-fx) $(yesno ledbar-leds)"
+printf 'firmware TSX-LEDBAR [v0.1.1]\neffects yes\nleds no\ncaps none\n' > "$FWF"
+[ "$(yesno ledbar-fx) $(yesno ledbar-leds)" = "yes no" ] && ok "ledbar.fw of 0.1.1 (no CAPS): fx yes, leds no" || bad "0.1.1 file: $(yesno ledbar-fx) $(yesno ledbar-leds)"
+printf 'firmware TSW-XX60-LB [v1.3443.00018]\neffects no\nleds no\ncaps none\n' > "$FWF"
+[ "$(yesno ledbar-fx) $(yesno ledbar-leds)" = "no no" ] && ok "ledbar.fw of the stock firmware: fx no, leds no (exit 1)" || bad "stock file: $(yesno ledbar-fx) $(yesno ledbar-leds)"
+[ "$(yesno ledbar)" = yes ] && ok "has ledbar: still the tool" || bad "has ledbar: $(yesno ledbar)"
+mv "$FWF" "$T/other.fw"
+sed -i 's/leds no/leds yes/; s/effects no/effects yes/' "$T/other.fw"
+[ "$(TSX_LEDBAR_FW=$T/other.fw yesno ledbar-leds)" = yes ] && ok "TSX_LEDBAR_FW names the file" || bad "TSX_LEDBAR_FW: $(TSX_LEDBAR_FW=$T/other.fw yesno ledbar-leds)"
+rm -f "$T/other.fw"
+if [ "$(id -u)" != 0 ]; then
+	printf 'firmware TSX-LEDBAR [v0.1.5]\neffects yes\nleds yes\ncaps none\n' > "$FWF"; chmod 000 "$FWF"
+	[ "$(yesno ledbar-fx) $(yesno ledbar-leds)" = "yes no" ] && ok "a ledbar.fw that this user cannot read: tsx-ledbar answers" || bad "unreadable file: $(yesno ledbar-fx) $(yesno ledbar-leds)"
+	chmod 644 "$FWF"
+else
+	echo "  note: running as root, the check of a file that the user cannot read is skipped"
+fi
+rm -f "$FWF" "$T/nonroot.log"
 printf 'want 0 0 80\nfx breathe 0 0 80 4000\n' > "$T/run/ledbar.state"
 [ "$($PCTL get ledbar-fx)" = "breathe 0 0 80 4000" ] && ok "get ledbar-fx: the effect" || bad "get ledbar-fx: $($PCTL get ledbar-fx)"
 printf 'want 0 0 80\n' > "$T/run/ledbar.state"

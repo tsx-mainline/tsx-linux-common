@@ -5,7 +5,9 @@
 # user-defined actions (the list, the decode of a call, the argument checks).
 # Small stand-ins replace aioesphomeapi, protobuf and linux_voice_assistant,
 # so the test needs no network and no libmpv. A fake tsx-panelctl answers
-# "has" and records the commands.
+# "has" and records the commands. The last part runs the real tsx-panelctl
+# for "has", as a user without root (the voice satellite runs as kiosk): the
+# file ledbar.fw of the LED bar service gives the zone effects and the actions.
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -63,6 +65,19 @@ class LEDLightEntity(ESPHomeEntity):
 class _Response(tuple):
     pass
 PY
+# The real tsx-panelctl for the last part. Its tsx-ledbar answers as the real
+# tool does for a user without root: it cannot read CAPS, so "leds no".
+cat > "$T/tsx-ledbar" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/ledbar-calls"
+[ "\$1" = fw ] && printf 'firmware TSX-LEDBAR [v0.1.5]\neffects yes\nleds no\n'
+EOF
+PSH=sh; command -v busybox >/dev/null 2>&1 && PSH="busybox sh"
+cat > "$T/tsx-panelctl" <<EOF
+#!/bin/sh
+TSX_LEDBAR=$T/tsx-ledbar TSX_BOARD_CONF=$HERE/tests/boards/xx60/board.sh exec $PSH $HERE/base/usr/local/sbin/tsx-panelctl "\$@"
+EOF
+chmod +x "$T/tsx-ledbar" "$T/tsx-panelctl"
 python3 - "$HERE/ha/voice/shim" "$T" <<'PY'
 import os, sys
 shim, t = sys.argv[1:3]
@@ -351,6 +366,55 @@ b.listening = False
 check("actions: no tsx-panelctl", call("ledbar_clear"), [(7, False, "tsx-panelctl does not listen")])
 b.listening = True
 check("get_ledbar_effect without a state file", (os.remove(t + "/run/ledbar.state"), b.get_ledbar_effect())[1], "None")
+
+# ---- the real tsx-panelctl, as a user without root ----------------------------
+# The voice satellite runs as kiosk. tsx-ledbar cannot read CAPS for kiosk, so
+# the zone effects and the actions come from the file ledbar.fw of the LED bar
+# service (root).
+class RealBackend(PanelBackend):
+    """The real backend and the real tsx-panelctl. Only the FIFO is a stand-in."""
+    def __init__(self):
+        super().__init__()
+        self.sent = []
+    def _ctl(self, *words):
+        self.sent.append(" ".join(words))
+        return True
+
+os.environ["TSX_PANELCTL_BIN"] = t + "/tsx-panelctl"
+fwfile, calls = t + "/run/ledbar.fw", t + "/ledbar-calls"
+def fw(text):
+    with open(fwfile, "w") as f:
+        f.write(text)
+def ledbar_calls():
+    try:
+        with open(calls) as f:
+            return f.read().split()
+    except OSError:
+        return []
+state("want 10 20 30\nfx none\n")
+d = dev.build_entities(None, RealBackend())
+check("no root, no ledbar.fw: no zone effects (CAPS needs root)", d.ledbar.effects_list,
+      ["None", "Pulse", "Breathe", "Blink", "Rainbow"])
+check("no root, no ledbar.fw: no actions", (d.ledbar_actions, services(d)), (None, []))
+check("no root, no ledbar.fw: tsx-panelctl asks tsx-ledbar", "fw" in ledbar_calls(), True)
+os.remove(calls)
+fw("firmware TSX-LEDBAR [v0.1.5]\neffects yes\nleds yes\n"
+   "caps tsx-ledbar fade blink breathe rainbow smooth cap status leds16 chase fill spectrum split ledmap\n")
+d = dev.build_entities(None, RealBackend())
+check("no root, ledbar.fw of 0.1.5: the zone effects", d.ledbar.effects_list,
+      ["None", "Pulse", "Breathe", "Blink", "Rainbow", "Chase", "Fill", "Spectrum"])
+check("no root, ledbar.fw of 0.1.5: the actions", [m.name for m in services(d)],
+      ["ledbar_set_led", "ledbar_set_side", "ledbar_fill", "ledbar_split", "ledbar_clear"])
+check("no root, ledbar.fw: tsx-ledbar is not called", ledbar_calls(), [])
+fw("firmware TSX-LEDBAR [v0.1.2]\neffects yes\nleds no\ncaps tsx-ledbar fade blink breathe rainbow smooth cap status\n")
+d = dev.build_entities(None, RealBackend())
+check("no root, ledbar.fw of 0.1.2: effects, no zone effects, no actions",
+      (d.ledbar.effects_list, services(d)), (["None", "Pulse", "Breathe", "Blink", "Rainbow"], []))
+fw("firmware TSW-XX60-LB [v1.3443.00018]\neffects no\nleds no\ncaps none\n")
+d = dev.build_entities(None, RealBackend())
+check("no root, ledbar.fw of the stock firmware: no bar effects", (d.ledbar.effects_list, services(d)),
+      (["None", "Pulse"], []))
+os.remove(fwfile)
 if fails:
     sys.exit(1)
 print("PASS test-shim-ledbar")
