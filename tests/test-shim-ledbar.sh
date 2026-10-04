@@ -10,6 +10,8 @@
 # file ledbar.fw of the LED bar service gives the zone effects and the actions.
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
+# The made-up board for tsx-panelctl.
+. "$HERE/tests/lib/board.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/run" "$T/state" "$T/bl" "$T/stub/aioesphomeapi" "$T/stub/google/protobuf" "$T/stub/linux_voice_assistant"
 export PYTHONDONTWRITEBYTECODE=1
@@ -75,7 +77,7 @@ EOF
 PSH=sh; command -v busybox >/dev/null 2>&1 && PSH="busybox sh"
 cat > "$T/tsx-panelctl" <<EOF
 #!/bin/sh
-TSX_LEDBAR=$T/tsx-ledbar TSX_BOARD_CONF=$HERE/tests/boards/xx60/board.sh exec $PSH $HERE/base/usr/local/sbin/tsx-panelctl "\$@"
+TSX_LEDBAR=$T/tsx-ledbar TSX_BOARD_CONF=$TSX_BOARD_CONF exec $PSH $HERE/base/usr/local/sbin/tsx-panelctl "\$@"
 EOF
 chmod +x "$T/tsx-ledbar" "$T/tsx-panelctl"
 python3 - "$HERE/ha/voice/shim" "$T" <<'PY'
@@ -410,7 +412,7 @@ fw("firmware TSX-LEDBAR [v0.1.2]\neffects yes\nleds no\ncaps tsx-ledbar fade bli
 d = dev.build_entities(None, RealBackend())
 check("no root, ledbar.fw of 0.1.2: effects, no zone effects, no actions",
       (d.ledbar.effects_list, services(d)), (["None", "Pulse", "Breathe", "Blink", "Rainbow"], []))
-fw("firmware TSW-XX60-LB [v1.3443.00018]\neffects no\nleds no\ncaps none\n")
+fw("firmware FAKE-LB [v2.0.1]\neffects no\nleds no\ncaps none\n")
 d = dev.build_entities(None, RealBackend())
 check("no root, ledbar.fw of the stock firmware: no bar effects", (d.ledbar.effects_list, services(d)),
       (["None", "Pulse"], []))

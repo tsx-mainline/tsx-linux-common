@@ -16,7 +16,7 @@ PROF=$HERE/base/etc/profile.d/tsx.sh
 BAN=$HERE/base/usr/local/sbin/tsx-banner
 ART=$HERE/base/etc/tsx/banner.art
 SSHD=$HERE/base/etc/ssh/sshd_config.d/tsx.conf
-export TSX_BOARD_CONF=$HERE/tests/boards/xx60/board.sh
+. "$HERE/tests/lib/board.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 N=0 F=0
 ok()  { N=$((N + 1)); echo "  ok: $*"; }
@@ -98,7 +98,7 @@ grep -q '^PermitEmptyPasswords no$' "$SSHD" && ok "sshd: PermitEmptyPasswords no
 grep -q '^PermitRootLogin yes$' "$SSHD" && grep -q '^PubkeyAuthentication yes$' "$SSHD" && ok "sshd: root may log in with a key or a password" || bad "sshd policy changed"
 
 echo "== the banner says which case applies =="
-mkdir -p "$T/run"; echo TSS-10 > "$T/run/model"
+mkdir -p "$T/run"; echo FAKE-100 > "$T/run/model"
 ban() { env TSX_BANNER_ART="$ART" TSX_ISSUE_FILE="$T/issue" TSX_MOTD_FILE="$T/motd" TSX_RUN="$T/run" TSX_IP=192.0.2.10 TSX_NO_RESPAWN=1 TSX_ROOTPW_BIN="$RPW" TSX_SHADOW_FILE="$SH" TSX_AUTH_KEYS_FILE="$AK" sh "$BAN"; }
 printf 'root:*::0:::::\n' > "$SH"; echo "$KEY" > "$AK"; ban
 for f in issue motd; do

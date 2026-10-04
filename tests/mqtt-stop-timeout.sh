@@ -6,9 +6,8 @@
 # while a publish is stuck mid-connect, (2) no mosquitto_pub/sub is left
 # behind as an orphan.
 set -eu
-# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
+# The made-up board for the scripts that read a board file.
+. "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$(dirname "$0")/lib/paths.sh"
 T=$(mktemp -d); trap 'rc=$?; kill "${DAEMON:-}" 2>/dev/null || true; rm -rf "$T"; exit $rc' EXIT

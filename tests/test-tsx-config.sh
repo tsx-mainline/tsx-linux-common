@@ -4,9 +4,8 @@
 # the exact same script the panel runs, under busybox ash (the panel's
 # shell), against a throwaway file via $TSX_CONF.
 set -uo pipefail
-# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
+# The made-up board for the scripts that read a board file.
+. "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 SCRIPT="$HERE/base/usr/local/sbin/tsx-config"
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-tsx-config: no busybox on this host"; exit 0; }

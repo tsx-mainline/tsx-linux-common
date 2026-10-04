@@ -39,7 +39,7 @@ def wide():
     return tb.Curve(tb.log_ramp(600, 2400, 500), 123, 4095)
 
 
-XX60_BASE = [(0, 3), (5, 5), (20, 8), (80, 12), (300, 17), (1000, 21), (3000, 23)]
+NARROW_BASE = [(0, 2), (5, 4), (20, 6), (80, 8), (300, 11), (1000, 13), (3000, 15)]
 
 print("== the start curve")
 c = wide()
@@ -110,14 +110,14 @@ d.reset()
 g = wide()
 check("reset: the start curve again", all(abs(d.level_for_lux(l) - g.level_for_lux(l)) < 1e-9 for l in (0, 10, 100, 500)) and not d.user)
 
-print("== 24 steps (xx60)")
-c = tb.Curve(XX60_BASE, 1, 23)
+print("== 15 steps (a narrow backlight)")
+c = tb.Curve(NARROW_BASE, 1, 15)
 levels = [round(c.level_for_lux(l)) for l in (0, 5, 20, 80, 300, 1000, 3000)]
-check("the start curve is ALS_CURVE", levels == [3, 5, 8, 12, 17, 21, 23], levels)
-c.add_user_point(tb.lux_to_x(150), 9, 1)
-check("the point holds in whole steps", round(c.level_for_lux(150)) == 9)
+check("the start curve is ALS_CURVE", levels == [2, 4, 6, 8, 11, 13, 15], levels)
+c.add_user_point(tb.lux_to_x(150), 7, 1)
+check("the point holds in whole steps", round(c.level_for_lux(150)) == 7)
 sweep = [round(c.level_for_lux((3001.0) ** (i / 199.0) - 1)) for i in range(200)]
-check("levels are whole steps from 1 to 23", all(1 <= v <= 23 for v in sweep))
+check("levels are whole steps from 1 to 15", all(1 <= v <= 15 for v in sweep))
 check("the sweep up never goes down", all(b >= a for a, b in zip(sweep, sweep[1:])))
 down = [round(c.level_for_lux((3001.0) ** ((199 - i) / 199.0) - 1)) for i in range(200)]
 check("the sweep down is the sweep up reversed (no hysteresis loop in the curve)", down == sweep[::-1])

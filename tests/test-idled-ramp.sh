@@ -5,7 +5,7 @@
 #   - the floor: BACKLIGHT_MIN, and the default of 3 percent of max_brightness
 #   - blanking still goes to 0
 #   - the ramp of the slider (400 ms) and of the ambient light (slower), on a
-#     0..4095 and on a 0..31 backlight
+#     0..4095 and on a 0..47 backlight
 #   - no extra timer while the level is steady
 # Usage: tests/test-idled-ramp.sh [path-to-tsx-idled-binary]
 set -uo pipefail
@@ -48,9 +48,9 @@ kill -USR2 $PID; waitb 0 2 && ok "blanking still turns the backlight off" || bad
 kill -USR1 $PID; waitb 123 2 && ok "wake: back at the floor level" || bad "wake: $(b)"
 start 4095 'BRIGHTNESS_DAY=2400\nBRIGHTNESS_NIGHT=2400\nBACKLIGHT_MAX=4095\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\n'
 [ "$(st min)" = 123 ] && ok "default floor on 0..4095 is 123 (3 percent)" || bad "default min: '$(st min)'"
-start 31 'BRIGHTNESS_DAY=17\nBRIGHTNESS_NIGHT=17\nBACKLIGHT_MAX=23\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\n'
-[ "$(st min)" = 1 ] && ok "default floor on 0..31 is 1" || bad "default min on 31: '$(st min)'"
-echo -40 > $T/run/brightness-offset; waitb 1 2 && ok "0..31: offset -40 stops at 1" || bad "0..31 floor: $(b)"
+start 47 'BRIGHTNESS_DAY=23\nBRIGHTNESS_NIGHT=23\nBACKLIGHT_MAX=29\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\n'
+[ "$(st min)" = 1 ] && ok "default floor on 0..47 is 1" || bad "default min on 47: '$(st min)'"
+echo -40 > $T/run/brightness-offset; waitb 1 2 && ok "0..47: offset -40 stops at 1" || bad "0..47 floor: $(b)"
 
 echo "== the slider ramp, 0..4095"
 start 4095 'BRIGHTNESS_DAY=2400\nBRIGHTNESS_NIGHT=2400\nBACKLIGHT_MAX=4095\nBACKLIGHT_MIN=123\nRAMP_SLIDER_MS=400\nRAMP_AUTO_MS=2000\n'
@@ -81,14 +81,14 @@ sleep 3
 c1=$(awk '/voluntary_ctxt_switches/ && !/nonvol/ {print $2}' /proc/$pid/status)
 [ $((c1 - c0)) -le 8 ] && ok "$((c1 - c0)) wakeups in 3 s while steady" || bad "$((c1 - c0)) wakeups in 3 s"
 
-echo "== the slider ramp, 0..31"
-start 31 'BRIGHTNESS_DAY=17\nBRIGHTNESS_NIGHT=17\nBACKLIGHT_MAX=23\nRAMP_SLIDER_MS=400\nRAMP_AUTO_MS=2000\n'
+echo "== the slider ramp, 0..47"
+start 47 'BRIGHTNESS_DAY=23\nBRIGHTNESS_NIGHT=23\nBACKLIGHT_MAX=29\nRAMP_SLIDER_MS=400\nRAMP_AUTO_MS=2000\n'
 echo 6 > $T/run/brightness-offset
 sample $T/s3 800
-[ "$(tail -n 1 $T/s3)" = 23 ] && ok "17 + 6 ends at 23" || bad "end $(tail -n 1 $T/s3)"
+[ "$(tail -n 1 $T/s3)" = 29 ] && ok "23 + 6 ends at 29" || bad "end $(tail -n 1 $T/s3)"
 sort -n $T/s3 | diff -q - $T/s3 >/dev/null && ok "steps only go up, no oscillation" || bad "not monotone"
 [ "$(sort -u $T/s3 | wc -l)" -ge 5 ] && ok "every step shows ($(sort -u $T/s3 | wc -l) levels)" || bad "steps skipped"
-echo 0 > $T/run/brightness-offset; waitb 17 2 && ok "offset 0: back to 17" || bad "back: $(b)"
+echo 0 > $T/run/brightness-offset; waitb 23 2 && ok "offset 0: back to 23" || bad "back: $(b)"
 
 echo "== a ramp that a new change cuts"
 start 4095 'BRIGHTNESS_DAY=2400\nBRIGHTNESS_NIGHT=2400\nBACKLIGHT_MAX=4095\nBACKLIGHT_MIN=123\nRAMP_SLIDER_MS=400\nRAMP_AUTO_MS=2000\n'

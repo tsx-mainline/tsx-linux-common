@@ -10,9 +10,8 @@
 set -uo pipefail
 # A board that sets TSX_VOLUME_CMD (tsx-audio). The case of a board without it is at the end.
 export TSX_VOLUME_CMD="tsx-audio volume"
-# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
+# The made-up board for the scripts that read a board file.
+. "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 SCRIPT="$HERE/../base/usr/local/sbin/tsx-panelctl"
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-panelctl: no busybox on this host"; exit 0; }
@@ -243,10 +242,10 @@ t0=$(date +%s); env TSX_RUN_DIR="$T/run2" busybox sh "$SCRIPT" send blank on 2>/
 [ $(( $(date +%s) - t0 )) -le 6 ] && ok "send gives up after a few seconds, it does not hang" || bad "send waited too long"
 env TSX_RUN_DIR="$T/run3" busybox sh "$SCRIPT" send blank on 2>/dev/null && bad "send with no FIFO succeeded" || ok "send with no FIFO fails at once"
 # get volume: the sound card exists, tsx-audio gives the level
-mkdir -p "$T/asound/TSW1060"
+mkdir -p "$T/asound/FakeCard"
 printf '#!/bin/sh\n[ "${1:-}" = volume ] && [ -z "${2:-}" ] && echo 63\n' > "$T/bin2-audio"; mkdir -p "$T/bin2"; mv "$T/bin2-audio" "$T/bin2/tsx-audio"; chmod +x "$T/bin2/tsx-audio"
 [ "$(env PATH="$T/bin2:$PATH" TSX_RUN_DIR="$T/run" TSX_ASOUND_DIR="$T/asound" busybox sh "$SCRIPT" get volume)" = 63 ] && ok "get volume: the level from tsx-audio" || bad "get volume wrong"
-rm -rf "$T/asound/TSW1060"
+rm -rf "$T/asound/FakeCard"
 env PATH="$T/bin2:$PATH" TSX_RUN_DIR="$T/run" TSX_ASOUND_DIR="$T/asound" busybox sh "$SCRIPT" get volume >/dev/null 2>&1 && bad "get volume without a sound card succeeded" || ok "get volume without a sound card: nothing, exit 1"
 printf 'want 10 20 30\n' > "$T/run/ledbar.state"; printf 'led 128 day\nlast home short 12:00:01\n' > "$T/run/buttons.state"; printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T/run/als.state"
 printf 'present on\ndistance 640\nwake on\n' > "$T/run/presence.state"; echo "power on" > "$T/run/usb-power.state"; echo "class plus" > "$T/run/poe.state"
@@ -261,10 +260,10 @@ $PCTL get nothing >/dev/null 2>&1; [ $? = 2 ] && ok "get of an unknown name: exi
 rm -f "$T/run/als.state"; $PCTL get lux >/dev/null 2>&1 && bad "get lux with no sensor succeeded" || ok "get lux with no sensor: nothing, exit 1"
 printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T/run/als.state"
 printf '#!/bin/sh\n' > "$T/als.conf"; : > "$T/buttons.conf"; : > "$T/bin/tsx-ledbar-none"; chmod +x "$T/bin/tsx-ledbar-none"
-mkdir -p "$T/asound/TSW1060" "$T/leds/rgb:lightbar-0" "$T/nfc/nfc0"; printf 'count 0\nlast -\n' > "$T/run/nfc.state"
+mkdir -p "$T/asound/FakeCard" "$T/leds/rgb:lightbar-0" "$T/nfc/nfc0"; printf 'count 0\nlast -\n' > "$T/run/nfc.state"
 for h in ledbar keypad als sound presence lightbar usbpower poe nfc; do $PCTL has $h && ok "has $h: yes" || bad "has $h: no"; done
 rm -f "$T/als.conf" "$T/buttons.conf" "$T/run/als.state" "$T/run/presence.state" "$T/run/usb-power.state" "$T/run/poe.state" "$T/run/nfc.state" "$T/bin/tsx-ledbar-none"
-rm -rf "$T/asound/TSW1060" "$T/leds/rgb:lightbar-0" "$T/nfc/nfc0"
+rm -rf "$T/asound/FakeCard" "$T/leds/rgb:lightbar-0" "$T/nfc/nfc0"
 for h in ledbar keypad als sound presence lightbar usbpower poe nfc; do $PCTL has $h && bad "has $h: yes without the hardware" || ok "has $h: no without the hardware"; done
 for h in ledbar keypad als sound presence lightbar usbpower poe nfc; do $PCTL has $h >/dev/null 2>&1; [ $? = 1 ] && ok "has $h: exit 1 without the hardware" || bad "has $h: exit is not 1"; done
 $PCTL has toaster >/dev/null 2>&1; [ $? = 2 ] && ok "has of an unknown name: exit 2" || bad "has of an unknown name"
@@ -273,7 +272,7 @@ printf '#!/bin/sh\n[ "$1" = fw ] && cat "%s/fw"\n' "$T" > "$T/bin/tsx-ledbar-fw"
 PFX="env PATH=$T/bin:$PATH TSX_RUN_DIR=$T/run TSX_LEDBAR=$T/bin/tsx-ledbar-fw busybox sh $SCRIPT"
 printf 'firmware TSX-LEDBAR [v0.1.1]\neffects yes\n' > "$T/fw"
 $PFX has ledbar-fx && ok "has ledbar-fx: yes with TSX-LEDBAR" || bad "has ledbar-fx: no with TSX-LEDBAR"
-printf 'firmware TSW-XX60-LB [v1.3443.00018]\neffects no\n' > "$T/fw"
+printf 'firmware FAKE-LB [v2.0.1]\neffects no\n' > "$T/fw"
 $PFX has ledbar-fx >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-fx: exit 1 with the stock firmware" || bad "has ledbar-fx: yes with the stock firmware"
 rm -f "$T/fw"; $PFX has ledbar-fx >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-fx: exit 1 without a bar" || bad "has ledbar-fx: yes without a bar"
 # has ledbar-leds: the line "leds yes" of "tsx-ledbar fw" (0.1.3 and later)
@@ -282,7 +281,7 @@ $PFX has ledbar-leds && ok "has ledbar-leds: yes with 0.1.3" || bad "has ledbar-
 printf 'firmware TSX-LEDBAR [v0.1.2]\neffects yes\nleds no\n' > "$T/fw"
 $PFX has ledbar-leds >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-leds: exit 1 with 0.1.2" || bad "has ledbar-leds: yes with 0.1.2"
 $PFX has ledbar-fx && ok "has ledbar-fx: yes with 0.1.2" || bad "has ledbar-fx: no with 0.1.2"
-printf 'firmware TSW-XX60-LB [v1.3443.00018]\neffects no\nleds no\n' > "$T/fw"
+printf 'firmware FAKE-LB [v2.0.1]\neffects no\nleds no\n' > "$T/fw"
 $PFX has ledbar-leds >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-leds: exit 1 with the stock firmware" || bad "has ledbar-leds: yes with the stock firmware"
 rm -f "$T/fw"; $PFX has ledbar-leds >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-leds: exit 1 without a bar" || bad "has ledbar-leds: yes without a bar"
 $PCTL has ledbar-fx >/dev/null 2>&1; [ $? = 1 ] && ok "has ledbar-fx: exit 1 without tsx-ledbar" || bad "has ledbar-fx: yes without tsx-ledbar"
@@ -311,7 +310,7 @@ printf 'firmware TSX-LEDBAR [v0.1.2]\neffects yes\nleds no\ncaps tsx-ledbar fade
 [ "$(yesno ledbar-fx) $(yesno ledbar-leds)" = "yes no" ] && ok "ledbar.fw of 0.1.2: fx yes, leds no" || bad "0.1.2 file: $(yesno ledbar-fx) $(yesno ledbar-leds)"
 printf 'firmware TSX-LEDBAR [v0.1.1]\neffects yes\nleds no\ncaps none\n' > "$FWF"
 [ "$(yesno ledbar-fx) $(yesno ledbar-leds)" = "yes no" ] && ok "ledbar.fw of 0.1.1 (no CAPS): fx yes, leds no" || bad "0.1.1 file: $(yesno ledbar-fx) $(yesno ledbar-leds)"
-printf 'firmware TSW-XX60-LB [v1.3443.00018]\neffects no\nleds no\ncaps none\n' > "$FWF"
+printf 'firmware FAKE-LB [v2.0.1]\neffects no\nleds no\ncaps none\n' > "$FWF"
 [ "$(yesno ledbar-fx) $(yesno ledbar-leds)" = "no no" ] && ok "ledbar.fw of the stock firmware: fx no, leds no (exit 1)" || bad "stock file: $(yesno ledbar-fx) $(yesno ledbar-leds)"
 [ "$(yesno ledbar)" = yes ] && ok "has ledbar: still the tool" || bad "has ledbar: $(yesno ledbar)"
 mv "$FWF" "$T/other.fw"
@@ -376,18 +375,18 @@ send "brightness-learn-reset now"
 rm -f "$T/run/brightness" "$T/run/brightness-offset"
 printf 'level 17\nmax 31\n' > "$T/run/brightness.state"
 send "brightness 1"
-[ "$(cat "$T/run/brightness" 2>/dev/null)" = 1 ] && ok "without a min line the floor is 1 (xx60)" || bad "floor without a min line"
+[ "$(cat "$T/run/brightness" 2>/dev/null)" = 1 ] && ok "without a min line the floor is 1" || bad "floor without a min line"
 rm -f "$T/run/brightness"
 
 echo "== volume without TSX_VOLUME_CMD: the Master control of the sound card =="
-mkdir -p "$T/asound/TSW1060" "$T/bin3"
+mkdir -p "$T/asound/FakeCard" "$T/bin3"
 printf '#!/bin/sh\necho "Simple mixer control Master,0"\necho "  Front Left: Playback 40 [63%%] [on]"\n' > "$T/bin3/amixer"; chmod +x "$T/bin3/amixer"
 [ "$(env -u TSX_VOLUME_CMD PATH="$T/bin3:$PATH" TSX_RUN_DIR="$T/run" TSX_ASOUND_DIR="$T/asound" busybox sh "$SCRIPT" get volume)" = 63 ] && ok "get volume: the percent of the Master control" || bad "get volume (amixer) wrong"
-rm -rf "$T/asound/TSW1060"
+rm -rf "$T/asound/FakeCard"
 : > "$T/cmds.log"
 env -u TSX_VOLUME_CMD PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_PANELCTL_ONESHOT=1 TSX_PANELCTL="$T/fifo3" busybox sh "$SCRIPT" > "$T/oneshot.log" 2>&1 &
 OP=$!; sleep 0.5; echo "volume 42" > "$T/fifo3"; wait $OP 2>/dev/null
-grep -qxF 'amixer -q -c TSW1060 sset Master 42%' "$T/cmds.log" && ok "volume 42 -> amixer sset Master 42%" || bad "volume (amixer): $(cat "$T/cmds.log") $(cat "$T/oneshot.log")"
+grep -qxF 'amixer -q -c FakeCard sset Master 42%' "$T/cmds.log" && ok "volume 42 -> amixer sset Master 42%" || bad "volume (amixer): $(cat "$T/cmds.log") $(cat "$T/oneshot.log")"
 
 echo "== $N ok, $F failed =="
 [ $F = 0 ] && echo PASS test-panelctl || echo FAIL test-panelctl

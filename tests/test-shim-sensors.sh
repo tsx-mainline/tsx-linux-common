@@ -38,9 +38,9 @@ assert b.poll_nfc_tag() is None          # the first read is no scan
 assert b.poll_nfc_tag() is None
 w("nfc.state", "count 2\nlast 04:B2\n")
 assert b.poll_nfc_tag() == "04:B2" and b.poll_nfc_tag() is None
-# the model of the ESPHome device (the xx60 reports "xx60 panel", a board that gives the model of the unit "Crestron <model>")
-assert esphome_model("xx60", "xx60") == "xx60 panel"
-assert esphome_model("", "xx60") == "xx60 panel"
+# the model of the ESPHome device (a board that gives only its family name reports "<family> panel", a board that gives the model of the unit "Crestron <model>")
+assert esphome_model("fake", "fake") == "fake panel"
+assert esphome_model("", "other") == "other panel"
 assert esphome_model("FAKE-100", "fake") == "Crestron FAKE-100"
 assert esphome_model("Crestron FAKE-100", "fake") == "Crestron FAKE-100"
 assert esphome_model("", "fake") == "fake panel"

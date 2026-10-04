@@ -11,11 +11,31 @@ every field of the response must be the same in both modes. Only the voice
 feature flags differ (docs/esphome.md, "Voice features").
 """
 import asyncio
+import os
+import subprocess
 import sys
 
 from aioesphomeapi import APIClient
 
 VOICE_FIELDS = {"voice_assistant_feature_flags", "legacy_voice_assistant_version"}
+
+
+def board(how, name):
+    """One value of the board file (TSX_BOARD_CONF), read with tsx-board."""
+    run = subprocess.run([os.environ["TSX_BOARD_BIN"], how, name], capture_output=True, text=True, check=False)
+    return run.stdout.strip()
+
+
+def expected_model():
+    """The model that the board gives (docs/layout.md, tsx_board_ha_model).
+
+    A board that names only its family (or gives the same name twice)
+    reports "<name> panel". A board that gives the model of the unit
+    reports "Crestron <model>"."""
+    ha, family = board("call", "tsx_board_ha_model"), board("get", "TSX_HA_MODEL")
+    if ha and ha != family:
+        return ha if ha.startswith("Crestron") else "Crestron " + ha
+    return f"{ha or family} panel"
 
 
 async def info(port):
@@ -35,7 +55,7 @@ async def main(off_port, on_port) -> int:
     print(f"OK: the device information is the same with VOICE=off and VOICE=on ({len(off) - len(VOICE_FIELDS)} fields, only the voice feature flags differ)")
     assert off["project_name"] == "tsx-mainline.tsx-esphome", off["project_name"]
     assert off["manufacturer"] == "Crestron (mainline Linux)", off["manufacturer"]
-    assert off["model"] == "xx60 panel", off["model"]
+    assert off["model"] == expected_model(), (off["model"], expected_model())
     assert off["project_name"].split(".") == ["tsx-mainline", "tsx-esphome"]  # the manufacturer and the model that Home Assistant shows
     print(f"OK: project {off['project_name']!r}, manufacturer {off['manufacturer']!r}, model {off['model']!r}, version {off['project_version']!r} (ESPHome {off['esphome_version']!r})")
     return 0

@@ -21,18 +21,18 @@ HERE=$(cd "$(dirname "$0")" && pwd); SRC=$HERE/../kiosk/src/tsx-idled.c
 DP=$HERE/../kiosk/usr/local/bin/tsx-display-power
 T=$(mktemp -d); PID=; trap '[ -n "$PID" ] && kill $PID 2>/dev/null; rm -rf $T' EXIT
 gcc -O2 -Wall -Werror -o $T/tsx-idled $SRC
-mkdir -p $T/bl/mp3309c $T/input $T/run
-echo 31 > $T/bl/mp3309c/max_brightness; echo 17 > $T/bl/mp3309c/brightness
+mkdir -p $T/bl/fakebl $T/input $T/run
+echo 47 > $T/bl/fakebl/max_brightness; echo 19 > $T/bl/fakebl/brightness
 mkfifo $T/input/event0
 # The fake command writes "<arg> <brightness at call time>" per call.
 cat > $T/disp <<EOF
 #!/bin/sh
 [ -n "\${DISP_SLEEP:-}" ] && sleep "\$DISP_SLEEP"
-echo "\$1 \$(cat $T/bl/mp3309c/brightness)" >> $T/calls
+echo "\$1 \$(cat $T/bl/fakebl/brightness)" >> $T/calls
 EOF
 chmod +x $T/disp
 conf() {
-	printf 'RAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nBLANK_TIMEOUT=0\nBRIGHTNESS_DAY=10\nBRIGHTNESS_NIGHT=10\nBACKLIGHT_MAX=23\nNIGHT_START=0\nNIGHT_END=0\nWAKE_SWALLOW_MS=200\n' > $T/kiosk.conf
+	printf 'RAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nBLANK_TIMEOUT=0\nBRIGHTNESS_DAY=10\nBRIGHTNESS_NIGHT=10\nBACKLIGHT_MAX=29\nNIGHT_START=0\nNIGHT_END=0\nWAKE_SWALLOW_MS=200\n' > $T/kiosk.conf
 	printf '%s\n' "$@" >> $T/kiosk.conf
 }
 exec 7<>$T/input/event0
@@ -43,7 +43,7 @@ start() {
 	PID=$!
 }
 stop() { kill $PID; wait $PID || true; PID=; }
-fail=0; b() { cat $T/bl/mp3309c/brightness; }
+fail=0; b() { cat $T/bl/fakebl/brightness; }
 pass() { echo "ok   $*"; }
 no() { echo "FAIL $*"; fail=1; }
 calls() { [ -f $T/calls ] && tr '\n' ',' < $T/calls || true; }
@@ -52,7 +52,7 @@ expect() { if [ "$(calls)" = "$1" ]; then pass "$2 ($1)"; else no "$2: calls '$(
 # 1. order of backlight and display output
 conf "DISPLAY_POWER_CMD=$T/disp"
 start; sleep 0.5
-expect "on 17," "start runs on (before the first level)"
+expect "on 19," "start runs on (before the first level)"
 [ "$(b)" = 10 ] && pass "start level 10" || no "start level $(b)"
 rm -f $T/calls
 kill -USR2 $PID; sleep 0.4
@@ -99,7 +99,7 @@ stop
 [ ! -f $T/calls ] && pass "empty command runs nothing" || no "empty command ran: $(calls)"
 
 # 5. tsx-display-power with a fake sway: the first "power on" after "power
-#    off" fails (as on the Meson display), the second one works.
+#    off" fails (as on some displays), the second one works.
 mkdir -p $T/ru/$(id -u) $T/fb/fb0
 echo 0 > $T/fb/fb0/blank
 mksock() { python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$1"; }
@@ -110,7 +110,7 @@ st=$T/sway.\${SWAYSOCK##*.1.}
 [ -f $T/stale ] && [ "\${SWAYSOCK##*/}" = "\$(cat $T/stale)" ] && exit 1
 [ -f "\$st" ] || echo true > "\$st"
 case "\$*" in
-"-t get_outputs -r") echo "[ { \"name\": \"LVDS-1\", \"power\": \$(cat "\$st") } ]";;
+"-t get_outputs -r") echo "[ { \"name\": \"OUT-1\", \"power\": \$(cat "\$st") } ]";;
 "output * power off") echo false > "\$st"; rm -f "\$st.tried";;
 "output * power on")
 	if [ -f $T/never ]; then :

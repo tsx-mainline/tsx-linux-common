@@ -11,8 +11,8 @@
 # The test needs the network only to fetch pinned, public packages (as
 # test-esphome.sh, also the system libmpv). The test compiles nothing.
 set -euo pipefail
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
+# The made-up board for the scripts that read a board file.
+. "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 SHIM=$HERE/../ha/voice/shim
 T=$(mktemp -d)
@@ -37,9 +37,9 @@ python3 -m venv "$T/venv"
 F=$T/fixture
 mkdir -p "$F/run/tsx" "$F/etc/tsx" "$F/sys/thermal" "$F/proc/asound" "$F/bin"
 echo "want 10 20 30" > "$F/run/tsx/ledbar.state"
-echo "on 17" > "$F/run/tsx-idled.state"
+echo "on 11" > "$F/run/tsx-idled.state"
 echo 40000 > "$F/sys/thermal/temp"
-printf 'BACKLIGHT_MAX=23\nKIOSK_URL="https://ha.example.org/"\n' > "$F/etc/kiosk.conf"
+printf 'BACKLIGHT_MAX=15\nKIOSK_URL="https://ha.example.org/"\n' > "$F/etc/kiosk.conf"
 printf 'firmware TSX-LEDBAR [v0.1.3]\neffects yes\nleds yes\n' > "$F/fw13"
 printf 'firmware TSX-LEDBAR [v0.1.2]\neffects yes\nleds no\n' > "$F/fw12"
 cat > "$F/bin/tsx-ledbar" <<EOF

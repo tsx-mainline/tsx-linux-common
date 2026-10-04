@@ -15,8 +15,7 @@ set -uo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 . "$HERE/tests/lib/paths.sh"
-export TSX_BOARD_CONF=$HERE/tests/boards/xx60/board.sh
-export TSX_BOARD_BIN=$HERE/base/usr/local/bin/tsx-board
+. "$HERE/tests/lib/board.sh"
 SETUPD=$(P usr/local/sbin/tsx-setupd)
 PLUGINS=$(dirname "$(P usr/local/share/tsx/setup.d/ha.py)")
 command -v node >/dev/null 2>&1 || { echo "SKIPPED test-setup-page: no node on this host"; exit 0; }

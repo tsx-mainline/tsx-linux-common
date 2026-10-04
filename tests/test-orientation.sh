@@ -11,7 +11,7 @@
 #     marker shows must map back to that frame position. The map goes through
 #     the touch matrix and then the output transform. This is how wlroots
 #     applies a touch device that is mapped to an output. We measured this on
-#     a TSS-10 with injected touches.
+#     a real panel with injected touches.
 #   - kiosk-session puts the sway lines into the session config.
 #   - the layout of tsx-overlay (tsx-overlay-layout.h) on the four outputs
 #     (1280x800, 1024x600, and both turned). It must stay unchanged in
@@ -202,10 +202,10 @@ int main(void)
 	want("wide range, slider to the bottom", overlay_offset(1, 2400, 4095), -2399);
 	want("wide range, slider step of 100", overlay_offset(2500, 2400, 4095), 100);
 	want("wide range, level 2369 on base 2400", overlay_offset(2369, 2400, 4095), -31);
-	/* 0..23 backlight (xx60): same offsets as with the old limit of 31 */
-	want("xx60 slider to the top", overlay_offset(23, 17, 23), 6);
-	want("xx60 slider to the bottom", overlay_offset(1, 17, 23), -16);
-	want("xx60 night base", overlay_offset(23, 1, 23), 22);
+	/* narrow backlight, levels 1 to 15 */
+	want("narrow range, slider to the top", overlay_offset(15, 11, 15), 4);
+	want("narrow range, slider to the bottom", overlay_offset(1, 11, 15), -10);
+	want("narrow range, night base", overlay_offset(15, 1, 15), 14);
 	/* the offset never leaves the backlight range */
 	want("clamp above the range", overlay_offset(9000, 10, 4095), 4095);
 	want("clamp below the range", overlay_offset(-9000, 10, 4095), -4095);
@@ -234,10 +234,10 @@ int main(void)
 	want("wide range, level 1024 of 4095", overlay_percent(1024, 4095), 25);
 	want("wide range, full level", overlay_percent(4095, 4095), 100);
 	want("wide range, level 1", overlay_percent(1, 4095), 0);
-	want("xx60 level 17 of 23", overlay_percent(17, 23), 74);
-	want("xx60 level 12 of 23", overlay_percent(12, 23), 52);
-	want("xx60 full level", overlay_percent(23, 23), 100);
-	want("level above the maximum", overlay_percent(30, 23), 100);
+	want("narrow range, level 11 of 15", overlay_percent(11, 15), 73);
+	want("narrow range, level 8 of 15", overlay_percent(8, 15), 53);
+	want("narrow range, full level", overlay_percent(15, 15), 100);
+	want("level above the maximum", overlay_percent(30, 15), 100);
 	want("no level", overlay_percent(-1, 4095), 0);
 	want("no maximum", overlay_percent(10, 0), 0);
 	/* the text "100 %" at 30 px is about 5 * 0.6 * 30 = 90 px wide: it fits the 150 px slider */

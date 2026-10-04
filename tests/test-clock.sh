@@ -8,9 +8,8 @@
 #  - the clock line of `tsx-config show`
 # The test runs under busybox or dash sh and needs no compiler.
 set -eu
-# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
+# The made-up board for the scripts that read a board file.
+. "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 . "$(dirname "$0")/lib/paths.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT

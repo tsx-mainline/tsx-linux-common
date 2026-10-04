@@ -35,14 +35,14 @@ int main(void)
 	CHECK(tsx_level_to_pos(123, 123, 4095) == 0 && tsx_level_to_pos(4095, 123, 4095) == 1, "wide: ends of level_to_pos");
 	CHECK(tsx_level_to_pos(50, 123, 4095) == 0, "wide: a level below the floor shows as position 0");
 
-	/* narrow range: 24 steps stay linear */
-	CHECK(tsx_pos_to_level(0, 1, 23) == 1 && tsx_pos_to_level(1, 1, 23) == 23, "narrow: ends");
-	CHECK(tsx_pos_to_level(0.5, 1, 23) == 12, "narrow: the middle is linear (%d)", tsx_pos_to_level(0.5, 1, 23));
+	/* narrow range: 15 steps stay linear */
+	CHECK(tsx_pos_to_level(0, 1, 15) == 1 && tsx_pos_to_level(1, 1, 15) == 15, "narrow: ends");
+	CHECK(tsx_pos_to_level(0.5, 1, 15) == 8, "narrow: the middle is linear (%d)", tsx_pos_to_level(0.5, 1, 15));
 	mono = 1; prev = 0;
-	for (p = 0; p <= 1.0001; p += 0.001) { l = tsx_pos_to_level(p, 1, 23); if (l < prev) mono = 0; prev = l; }
+	for (p = 0; p <= 1.0001; p += 0.001) { l = tsx_pos_to_level(p, 1, 15); if (l < prev) mono = 0; prev = l; }
 	CHECK(mono, "narrow: monotone");
 	round = 1;
-	for (l = 1; l <= 23; l++) if (tsx_pos_to_level(tsx_level_to_pos(l, 1, 23), 1, 23) != l) round = 0;
+	for (l = 1; l <= 15; l++) if (tsx_pos_to_level(tsx_level_to_pos(l, 1, 15), 1, 15) != l) round = 0;
 	CHECK(round, "narrow: every step maps back to itself");
 	CHECK(tsx_pos_to_level(0.5, 5, 5) == 5, "a range of one level");
 	CHECK(tsx_sqrt(4) > 1.9999 && tsx_sqrt(4) < 2.0001 && tsx_sqrt(0.25) > 0.4999 && tsx_sqrt(0.25) < 0.5001, "tsx_sqrt without libm");

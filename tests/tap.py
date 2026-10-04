@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Inject real touch taps on the panel: writes multitouch (type B) events to
-/dev/input/event1 (ft5x06) over ssh. The input core forwards them exactly like
+/dev/input/event1 (the touch screen) over ssh. The input core forwards them exactly like
 driver events, so they go through libinput and the compositor to whatever
 surface is under the point (browser or keyboard layer).
 Usage: tap.py [--ip IP] [--hold MS] [--gap MS] x,y [x,y ...]   (screen pixels,
