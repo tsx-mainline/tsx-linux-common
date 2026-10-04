@@ -24,7 +24,7 @@ from aioesphomeapi.api_pb2 import (  # pylint: disable=no-name-in-module
 )
 from linux_voice_assistant.entity import LEDLightEntity
 
-from . import camera
+from . import camera, plugins
 from .backend import LEDBAR_FX, LEDBAR_LEDS_FX, PanelBackend
 from .entities import (
     ARG_INT,
@@ -110,6 +110,7 @@ class PanelDevice:
     camera_button: Optional[ButtonEntity] = None
     camera_time: Optional[TextSensorEntity] = None
     key_leds_screen_off: Optional[NumberEntity] = None
+    plugin_entities: List = field(default_factory=list)
     _last_lightbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar_fx: Optional[str] = field(default=None, repr=False)
@@ -386,6 +387,12 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
     else:
         _LOGGER.info("no camera entity: %s", cam.why_off())
 
+    # ---- the entities of the plugins (esphome.d, plugins.py) --------------------
+    plugin_entities = plugins.entities(server, key_for)
+    entities += plugin_entities
+    if plugin_entities:
+        _LOGGER.info("plugins: %d entities", len(plugin_entities))
+
     return PanelDevice(
         backend=backend, entities=entities, ledbar=ledbar, key_leds=key_leds, screen=screen,
         backlight=backlight, blank_timeout=blank_timeout, als_auto=als_auto, illuminance=illuminance, volume=volume,
@@ -396,6 +403,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         emmc_life_a=emmc_life_a, emmc_life_b=emmc_life_b, emmc_eol=emmc_eol, nfc=backend.nfc_present(),
         ledbar_fx=ledbar_fx, ledbar_leds=ledbar_leds, ledbar_actions=ledbar_actions, camera_entity=camera_entity,
         camera_button=camera_button, camera_time=camera_time, key_leds_screen_off=key_leds_screen_off,
+        plugin_entities=plugin_entities,
     )
 
 
@@ -495,6 +503,8 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
         msg = entity.poll()
         if getattr(entity, "_state", None) != before:
             msgs.append(msg)
+
+    msgs += plugins.poll(device.plugin_entities)
 
     before = device.orientation._state  # pylint: disable=protected-access
     msg = device.orientation.poll()

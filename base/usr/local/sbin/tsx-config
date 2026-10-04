@@ -113,6 +113,9 @@
 #   target before "away", 1 to 3600). Only a board with a distance sensor
 #   uses these four keys. Apply writes them to /run/tsx/sensors.conf for
 #   tsx-sensord.
+# A board can add keys with the plugins of the folder config.d (see "Plugins"
+# below). get, set, validate, unset, show and apply treat these keys like the
+# keys above.
 # A panel without a microphone, a Bluetooth module or a camera (government=1,
 # the TSW-760-NC: /run/tsx/hw.conf, written by tsx-hw at boot) accepts
 # VOICE=on, BT_PROXY=on, BT_ACTIVE=on and a CAMERA mode other than off, so
@@ -181,7 +184,10 @@ hw_missing() {
 	# ALS=no or LIGHT=no: a board names its light sensor part either way
 	AUTO_BRIGHTNESS|ALS_SCALE) [ "$(hw_get ALS)" = no ] || [ "$(hw_get LIGHT)" = no ] || return 1
 		echo "this panel has no ambient light sensor";;
-	*) return 1;;
+	# a key of a plugin: the plugin says if its part is missing
+	*) hm_plugin=$(plugin_of "$1") || return 1
+		plugin_has "$hm_plugin" missing || return 1
+		"cfg_${hm_plugin}_missing" "$1";;
 	esac
 }
 
@@ -192,6 +198,135 @@ hw_warn() {
 	why=$(hw_missing "$1") || return 0
 	log "WARNING: $1=$2 ${3:-is set}, but $why. apply leaves it out"
 }
+
+# ---- plugins: the folder config.d ------------------------------------------------
+# A board adds keys with one file NAME.sh in /usr/local/lib/tsx/config.d. NAME
+# has lowercase letters, digits and underscores. The file defines only
+# variables and functions. docs/layout.md "Plugin folders" has the contract.
+# A file defines:
+#   CFG_NAME_KEYS         the keys of the plugin, separated by spaces (required)
+#   CFG_NAME_SECRET_KEYS  the keys among them that `show` masks (optional)
+#   cfg_NAME_valid KEY VALUE   exit 0 for a valid pair (required)
+#   cfg_NAME_missing KEY       print why the part is missing and exit 0, else
+#                              exit 1 (like hw_missing, optional)
+#   cfg_NAME_apply             write the override files of the plugin, with
+#                              cfg_get, write_override, hw_warn and RUN
+#                              (optional). apply runs it once.
+#   CFG_NAME_SIG               set by cfg_NAME_apply. apply adds this text to
+#                              the restart signatures of tsx-esphome and
+#                              tsx-voice. They restart when the text changes.
+# In the variable names, NAME is in capitals. In the function names, it is in
+# lowercase.
+# Trust: root owns the folder and the file, and the group and others cannot
+# write them. A link is skipped. Test hooks: TSX_CONFIG_PLUGIN_DIR (the
+# folder) and TSX_PLUGIN_OWNER_UID (the owner, default 0).
+# A host run from a checkout (the installer) has no /usr/local/lib/tsx. There
+# the script reads the folder next to it, as it does for board.sh. Root still
+# checks the owner. A user who is not root does not, because a plugin gives
+# this user no new right.
+CFG_PLUGINS=
+CFG_PLUGIN_KEYS=
+PLUGIN_UID=${TSX_PLUGIN_OWNER_UID:-0}
+PLUGIN_TRUST=0
+
+# plugin_check PATH d|-: succeed when PATH is a folder (d) or a regular file (-)
+# that PLUGIN_UID owns and that the group and others cannot write. Else print
+# why not and fail.
+plugin_check() {
+	pc_path=$1; pc_type=$2
+	[ "$PLUGIN_TRUST" = 1 ] && return 0
+	pc_ls=$(ls -ldn "$pc_path" 2>/dev/null) || { echo "cannot be read"; return 1; }
+	set -f; set -- $pc_ls; set +f
+	case "$1" in
+	"$pc_type"*) ;;
+	*) if [ "$pc_type" = d ]; then echo "is not a folder"; else echo "is not a regular file"; fi
+		return 1;;
+	esac
+	[ "$3" = "$PLUGIN_UID" ] || { echo "is not owned by user $PLUGIN_UID"; return 1; }
+	case "$1" in
+	?????w*|????????w*) echo "can be changed by its group or by others"; return 1;;
+	esac
+	return 0
+}
+
+# plugin_of KEY: print the name of the plugin that owns KEY. Fail if none does.
+plugin_of() {
+	for po_w in $CFG_PLUGIN_KEYS; do
+		if [ "${po_w%%:*}" = "$1" ]; then echo "${po_w#*:}"; return 0; fi
+	done
+	return 1
+}
+
+# plugin_has NAME SUFFIX: succeed when the plugin defines cfg_NAME_SUFFIX
+plugin_has() { command -v "cfg_$1_$2" >/dev/null 2>&1; }
+
+# plugin_key_list: the keys of all plugins, separated by spaces
+plugin_key_list() {
+	for pk_w in $CFG_PLUGIN_KEYS; do printf '%s ' "${pk_w%%:*}"; done
+}
+
+load_plugins() {
+	pl_dir=${TSX_CONFIG_PLUGIN_DIR:-}
+	if [ -z "$pl_dir" ]; then
+		pl_dir=/usr/local/lib/tsx/config.d
+		if [ ! -d "$pl_dir" ]; then
+			pl_dir=$(dirname "$0")/../lib/tsx/config.d
+			[ "$(id -u)" = 0 ] || PLUGIN_TRUST=1
+		fi
+	fi
+	[ -d "$pl_dir" ] || return 0
+	if ! pl_why=$(plugin_check "$pl_dir" d); then
+		log "WARNING: no plugin loaded: $pl_dir $pl_why"
+		return 0
+	fi
+	for pl_file in "$pl_dir"/*.sh; do
+		[ -e "$pl_file" ] || [ -L "$pl_file" ] || continue
+		pl_name=$(basename "$pl_file" .sh)
+		case "$pl_name" in
+		[a-z]*) case "$pl_name" in *[!a-z0-9_]*) pl_name=;; esac;;
+		*) pl_name=;;
+		esac
+		if [ -z "$pl_name" ]; then
+			log "WARNING: plugin $pl_file skipped: use lowercase letters, digits and _ in the name"
+			continue
+		fi
+		if ! pl_why=$(plugin_check "$pl_file" -); then
+			log "WARNING: plugin $pl_file skipped: the file $pl_why"
+			continue
+		fi
+		# A syntax error or a failing command in the file must not stop
+		# tsx-config. A subshell takes the failure first.
+		if ! ( . "$pl_file" ) >/dev/null 2>&1; then
+			log "WARNING: plugin $pl_file skipped: it does not load"
+			continue
+		fi
+		. "$pl_file"
+		pl_up=$(printf '%s' "$pl_name" | tr a-z A-Z)
+		eval "pl_keys=\${CFG_${pl_up}_KEYS-} pl_secret=\${CFG_${pl_up}_SECRET_KEYS-}"
+		if [ -z "$pl_keys" ] || ! plugin_has "$pl_name" valid; then
+			log "WARNING: plugin $pl_file skipped: it needs CFG_${pl_up}_KEYS and cfg_${pl_name}_valid"
+			continue
+		fi
+		pl_own=
+		for pl_key in $pl_keys; do
+			if ! printf '%s' "$pl_key" | grep -Eq '^[A-Z][A-Z0-9_]*$'; then
+				log "WARNING: plugin $pl_name: the key $pl_key is ignored: use capital letters, digits and _"
+			elif key_known "$pl_key"; then
+				log "WARNING: plugin $pl_name: the key $pl_key is ignored: it is known already"
+			else
+				KNOWN_KEYS="$KNOWN_KEYS $pl_key"
+				CFG_PLUGIN_KEYS="$CFG_PLUGIN_KEYS $pl_key:$pl_name"
+				pl_own="$pl_own $pl_key"
+			fi
+		done
+		for pl_key in $pl_secret; do
+			case " $pl_own " in *" $pl_key "*) SECRET_KEYS="$SECRET_KEYS $pl_key";; esac
+		done
+		CFG_PLUGINS="$CFG_PLUGINS $pl_name"
+	done
+	return 0
+}
+load_plugins
 
 # Escape a value for the OWN panel.conf storage of this script (unquote()
 # below reverses it). Escape only the backslash and the double quote. No
@@ -286,7 +421,9 @@ val_ok() {
 		&& [ "$v" != 00:00:00:00:00:00 ];;
 	ROOT_PASSWORD_HASH) printf '%s' "$v" | grep -Eq '^\$[0-9A-Za-z$./]{10,}$';;
 	SSH_AUTHORIZED_KEY) printf '%s' "$v" | grep -Eq '^(ssh-[a-z0-9]+|ecdsa-sha2-[a-z0-9-]+) [A-Za-z0-9+/]+=*([[:space:]].*)?$';;
-	*) return 1;;
+	# a key of a plugin: the plugin checks the value
+	*) vo_plugin=$(plugin_of "$k") || return 1
+		"cfg_${vo_plugin}_valid" "$k" "$v";;
 	esac
 }
 
@@ -370,7 +507,7 @@ cfg_show() {
 		is_secret "$k" && v="********"
 		printf '%s=%s\n' "$k" "$v"
 	done
-	for k in VOICE BT_PROXY BT_ACTIVE BT_MAC CAMERA PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE; do
+	for k in VOICE BT_PROXY BT_ACTIVE BT_MAC CAMERA PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE $(plugin_key_list); do
 		v=$(cfg_get "$k") || continue
 		hw_warn "$k" "$v" 2>&1 | sed 's/^tsx-config: /# /' >&2
 	done
@@ -492,11 +629,23 @@ keyled_apply() {
 	fi
 }
 
+# warn_unknown_keys: one warning for each key of panel.conf that this panel
+# does not use. This is the case for a key of a plugin that is not installed,
+# for example when panel.conf comes from another panel. apply ignores the key.
+warn_unknown_keys() {
+	[ -r "$TSX_CONF" ] || return 0
+	sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$TSX_CONF" | sort -u | while IFS= read -r wu_key; do
+		key_known "$wu_key" || log "WARNING: panel.conf has the key $wu_key, which this panel does not use. apply ignores it"
+	done
+	return 0
+}
+
 apply() {
 	[ "${TSX_APPLY_ALLOW_NONROOT:-0}" = 1 ] || [ "$(id -u)" = 0 ] || die "apply must run as root"
 	mkdir -p "$RUN"
 	seed_promote
 	if [ ! -r "$TSX_CONF" ]; then log "no $TSX_CONF: nothing to apply"; return 0; fi
+	warn_unknown_keys
 
 	name=$(cfg_get PANEL_NAME) || name=
 	if [ -n "$name" ]; then printf '%s\n' "$name" > "$RUN/panel-name"; else rm -f "$RUN/panel-name"; fi
@@ -645,6 +794,18 @@ apply() {
 	if hw_missing CAMERA >/dev/null; then hw_warn CAMERA "$camv"; cam=off; fi
 	printf 'CAMERA="%s"\n' "$cam" | write_override "$RUN/camera.conf" 644
 
+	# The plugins of config.d (load_plugins above) write their own overrides.
+	# Each plugin sets CFG_NAME_SIG. The signatures below hold these texts, so
+	# that a change restarts tsx-esphome and tsx-voice.
+	plugin_sig=
+	for ap_name in $CFG_PLUGINS; do
+		if plugin_has "$ap_name" apply; then
+			"cfg_${ap_name}_apply" || log "WARNING: plugin $ap_name: apply failed"
+		fi
+		eval "ap_sig=\${CFG_$(printf '%s' "$ap_name" | tr a-z A-Z)_SIG-}"
+		plugin_sig="$plugin_sig|$ap_sig"
+	done
+
 	# The same warning as `show` (docs/ha.md "Security"). Not with HA_TRANSPORT=mqtt.
 	[ "$transport" = mqtt ] || warn_open_api
 
@@ -661,7 +822,7 @@ apply() {
 	# apply` for its Kiosk URL entity. An unconditional restart killed it in
 	# the middle of that command (and dropped the connection of Home Assistant
 	# each time).
-	sig="$(cat "$RUN/esphome.conf" 2>/dev/null)|$name|$voice|$keysum|$btp|$bta|$cam"
+	sig="$(cat "$RUN/esphome.conf" 2>/dev/null)|$name|$voice|$keysum|$btp|$bta|$cam$plugin_sig"
 	oldsig=; [ -r "$RUN/.esphome-sig" ] && oldsig=$(cat "$RUN/.esphome-sig")
 	printf '%s\n' "$sig" > "$RUN/.esphome-sig"
 	if [ "$sig" != "$oldsig" ] && command -v rc-service >/dev/null 2>&1 && rc-service tsx-esphome status >/dev/null 2>&1; then
@@ -674,7 +835,7 @@ apply() {
 	# restart it on the first apply after boot (no signature yet), because that
 	# apply runs before tsx-voice starts. Its kiosk URL entity runs `apply`
 	# through tsx-panelctl, which changes neither, so that never restarts it.
-	vsig="$name|$keysum|$btp|$bta|$cam"
+	vsig="$name|$keysum|$btp|$bta|$cam$plugin_sig"
 	oldvsig=; [ -r "$RUN/.voice-sig" ] && oldvsig=$(cat "$RUN/.voice-sig")
 	printf '%s\n' "$vsig" > "$RUN/.voice-sig"
 	if [ -n "$oldvsig" ] && [ "$vsig" != "$oldvsig" ] && command -v rc-service >/dev/null 2>&1 \

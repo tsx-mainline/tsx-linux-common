@@ -44,7 +44,7 @@ from linux_voice_assistant.api_server import APIServer
 from linux_voice_assistant.util import get_default_interface, get_default_ipv4
 from linux_voice_assistant.zeroconf import HomeAssistantZeroconf
 
-from . import bluetooth, camera, deviceinfo, hw, naming, security
+from . import bluetooth, camera, deviceinfo, hw, naming, plugins, security
 from .backend import PanelBackend
 from .device import build_entities, poll
 
@@ -117,6 +117,7 @@ class PanelAPIServer(APIServer):
         super().connection_lost(exc)
         bluetooth.PROXY.connection_lost(self)
         camera.connection_lost(self)
+        plugins.connection_lost(self)
         if self in PanelAPIServer.connections:
             PanelAPIServer.connections.remove(self)
             _LOGGER.info("connection closed: %s (%s)", getattr(self, "_tsx_peer", "?"),
@@ -158,6 +159,8 @@ class PanelAPIServer(APIServer):
         if bluetooth.handle_message(self, msg):
             return
         if camera.handle_message(self, msg):
+            return
+        if plugins.handle_message(self, msg):
             return
         if isinstance(msg, SubscribeHomeassistantServicesRequest):
             self._tsx_services = True    # no reply: service calls come later, when there is one

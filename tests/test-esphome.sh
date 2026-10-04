@@ -446,6 +446,33 @@ wait_listening "$T/server-bare.log"
 echo "== tsx-esphome, no front keys, no LED bar, no eMMC health =="
 "$T/venv/bin/python3" "$HERE/esphome-check.py" "$BARE_PORT" --name bare-panel --friendly Bare-Panel --bare || rc=1
 
+# ---- the plugins of esphome.d (tsx_panel/plugins.py): the fake plugin of the made-up board
+# Both front ends load the same file. The folder and the file belong to the
+# user of the test, so the test sets TSX_PLUGIN_OWNER_UID. A server with
+# another owner id must refuse the plugin.
+echo "== the plugins of esphome.d, in both front ends =="
+mkdir -p "$F/esphome.d"; chmod 755 "$F/esphome.d"
+cp "$HERE/boards/fake/esphome.d/fakeent.py" "$F/esphome.d/"; chmod 644 "$F/esphome.d/fakeent.py"
+PLUG_PORT=$((API_PORT + 80)); VPLUG_PORT=$((API_PORT + 81)); NOPLUG_PORT=$((API_PORT + 82)); VNOPLUG_PORT=$((API_PORT + 83))
+start_server standalone "$T/server-plug.log" "$PLUG_PORT" Plug-Panel TSX_HA_API_KEY= TSX_ESPHOME_PLUGIN_DIR="$F/esphome.d" TSX_PLUGIN_OWNER_UID="$(id -u)"
+start_server voice "$T/voice-plug.log" "$VPLUG_PORT" Plug-Voice TSX_HA_API_KEY= TSX_ESPHOME_PLUGIN_DIR="$F/esphome.d" TSX_PLUGIN_OWNER_UID="$(id -u)"
+start_server standalone "$T/server-noplug.log" "$NOPLUG_PORT" NoPlug-Panel TSX_HA_API_KEY= TSX_ESPHOME_PLUGIN_DIR="$F/esphome.d" TSX_PLUGIN_OWNER_UID="$(( $(id -u) + 1 ))"
+start_server voice "$T/voice-noplug.log" "$VNOPLUG_PORT" NoPlug-Voice TSX_HA_API_KEY= TSX_ESPHOME_PLUGIN_DIR="$F/esphome.d" TSX_PLUGIN_OWNER_UID="$(( $(id -u) + 1 ))"
+wait_listening "$T/server-plug.log" "$T/voice-plug.log" "$T/server-noplug.log" "$T/voice-noplug.log"
+echo "-- tsx-esphome --"
+PYTHONPATH="$SHIM" "$T/venv/bin/python3" "$HERE/esphome-plugin-check.py" "$PLUG_PORT" present || rc=1
+grep -q 'esphome.d: fakeent.py' "$T/server-plug.log" && echo "OK: tsx-esphome logs the plugin" || { echo "FAIL: no plugin line in server-plug.log"; rc=1; }
+echo "-- voice satellite --"
+PYTHONPATH="$SHIM" "$T/venv/bin/python3" "$HERE/esphome-plugin-check.py" "$VPLUG_PORT" present || rc=1
+grep -q 'tsx_lva: ESPHome plugins fakeent.py' "$T/voice-plug.log" && echo "OK: the voice satellite logs the plugin" || { echo "FAIL: no plugin line in voice-plug.log"; rc=1; }
+grep -q 'Unknown message type' "$T/voice-plug.log" && { echo "FAIL: a message of the plugin reached satellite.py (voice-plug.log)"; rc=1; } \
+	|| echo "OK: the messages of the plugin never reach satellite.py"
+echo "-- another owner: no plugin --"
+PYTHONPATH="$SHIM" "$T/venv/bin/python3" "$HERE/esphome-plugin-check.py" "$NOPLUG_PORT" absent || rc=1
+PYTHONPATH="$SHIM" "$T/venv/bin/python3" "$HERE/esphome-plugin-check.py" "$VNOPLUG_PORT" absent || rc=1
+grep -q 'no plugin loaded' "$T/server-noplug.log" && grep -q 'no plugin loaded' "$T/voice-noplug.log" \
+	&& echo "OK: both front ends log why no plugin loaded" || { echo "FAIL: no refusal line"; rc=1; }
+
 # ---- a configured key that cannot be used: refuse to start, never plaintext
 echo "== unusable key file: fail closed =="
 echo "not-a-key" > "$F/run/tsx/esphome.key.bad"

@@ -6,6 +6,10 @@
 # The file follows the board interface (docs/layout.md "Board interface").
 # A value that is in the environment wins. A test can change a value that way.
 #
+# The folders config.d and esphome.d hold the fake plugins for the loader
+# tests (docs/layout.md "Plugin folders"). A test copies a folder and sets
+# the test hook of the loader to the copy.
+#
 # Test hooks of this board:
 #   TSX_MAC_DEV         a plain file with the MAC on its first line
 #                       (default /etc/tsx/fake-mac)
