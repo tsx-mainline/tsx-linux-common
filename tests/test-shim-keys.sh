@@ -108,9 +108,9 @@ class ServerState:
     def broadcast(self, msgs):
         pass
 PY
-python3 - "$HERE/ha/voice/shim" "$T" "$HERE/buttons/etc/tsx/buttons.conf" <<'PY'
+python3 - "$HERE/ha/voice/shim" "$T" "$HERE/tests/boards/fake/buttons-board.conf" <<'PY'
 import itertools, logging, os, random, sys
-shim, t, buttons_conf = sys.argv[1:4]
+shim, t, board_keys = sys.argv[1:4]
 sys.path[:0] = [t + "/stub", shim]
 os.environ.update(TSX_RUN_DIR=t + "/run", TSX_STATE_DIR=t + "/state", TSX_HA_TRANSPORT="esphome",
                   TSX_PANELCTL_BIN="/nonexistent")
@@ -135,6 +135,9 @@ check("fixed values", [keys.stable_key("screen"), keys.stable_key("backlight"), 
                        keys.stable_key("action:ledbar_fill"), keys.stable_key("thinking_sound", keys.SATELLITE)],
       [keys.fnv1a32("tsx:screen"), keys.fnv1a32("tsx:backlight"), keys.fnv1a32("tsx:ledbar"),
        keys.fnv1a32("tsx:action:ledbar_fill"), keys.fnv1a32("lva:thinking_sound")])
+# the key LEDs: the object ids since the rename (the old ids keypad and key_led_blank are gone)
+check("fixed values (key LEDs)", [keys.stable_key("key_leds"), keys.stable_key("key_leds_screen_off")],
+      [keys.fnv1a32("tsx:key_leds"), keys.fnv1a32("tsx:key_leds_screen_off")])
 check("fixed values (numbers)", [hex(keys.stable_key(i)) for i in ("screen", "ledbar")], ["0xb2ffb04a", "0x72592420"])
 
 # ---- the rules of Keys: no key below MIN_KEY (so never 0), collisions move ----------
@@ -144,7 +147,7 @@ check("a hash below MIN_KEY is not a key", (first >= keys.MIN_KEY, first == keys
 k = keys.Keys(taken=[keys.stable_key("screen")])
 check("a taken key moves to the hash of <text>#1", k("screen"), keys.fnv1a32("tsx:screen#1"))
 check("the same identity keeps its key", k("screen"), keys.fnv1a32("tsx:screen#1"))
-idents = ["screen", "backlight", "volume", "camera", "key_home", "action:ledbar_clear"]
+idents = ["screen", "backlight", "volume", "camera", "key_prog2", "action:ledbar_clear"]
 orders = set()
 for seed in range(20):
     random.Random(seed).shuffle(idents)
@@ -153,9 +156,10 @@ for seed in range(20):
 check("the keys do not depend on the order", len(orders), 1)
 
 # ---- a stand-in backend: each optional part on or off ----------------------------------
-KEY_NAMES = [line.split()[1] for line in open(buttons_conf) if line.startswith("button ")]
-check("the front keys of buttons.conf", KEY_NAMES, ["power", "home", "lights", "up", "down"])
-PARTS = ("ledbar", "ledbar_fx", "ledbar_leds", "keypad", "als", "sound_card", "presence", "lightbar",
+KEY_NAMES = [line.split()[1] for line in open(board_keys) if line.startswith("button ")]
+check("the keys of the board layer of the made-up board", KEY_NAMES,
+      ["prog1", "prog2", "prog3", "prog4", "extra1", "extra2", "extra3"])
+PARTS = ("ledbar", "ledbar_fx", "ledbar_leds", "key_leds", "als", "sound_card", "presence", "lightbar",
          "usb_power", "poe", "emmc", "nfc")
 
 class Backend:
@@ -221,7 +225,12 @@ set_bt(False)
 ALL = dict.fromkeys(PARTS, True)
 d = standalone(ALL)
 REF = listed(d.entities)
-check("all parts: the entity count (with the actions)", len(REF), 40)
+check("all parts: the entity count (with the actions)", len(REF), 42)
+check("all parts: the key LED entities have the new ids, the old ids are gone",
+      sorted(i for i in REF if "key_leds" in i or i in ("keypad", "key_led_blank")),
+      ["key_leds", "key_leds_screen_off"])
+check("all parts: an event entity for each key", sorted(i for i in REF if i.startswith("key_") and "leds" not in i),
+      sorted("key_" + n for n in KEY_NAMES))
 check("all parts: each key is the fixed key of its identity",
       {i: k for i, k in REF.items() if k != keys.stable_key(i)}, {})
 

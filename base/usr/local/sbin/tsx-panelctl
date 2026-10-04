@@ -22,9 +22,13 @@
 #                                     ledbar, ledbar-fx (the LED bar firmware
 #                                     TSX-LEDBAR, with effects), ledbar-leds
 #                                     (TSX-LEDBAR 0.1.3 and later, with the
-#                                     16 LEDs and the zone effects), keypad, als,
-#                                     sound, presence, lightbar, usbpower, poe
-#                                     or nfc. It needs no root (see "LED bar
+#                                     16 LEDs and the zone effects), keypad (the
+#                                     panel has front keys: a `button` line in
+#                                     /etc/tsx/buttons-board.conf or in
+#                                     /etc/tsx/buttons.conf), keyleds (the keys
+#                                     have LEDs: "leds yes" in buttons.state),
+#                                     als, sound, presence, lightbar, usbpower,
+#                                     poe or nfc. It needs no root (see "LED bar
 #                                     firmware" below).
 #   tsx-panelctl events               print a line when a value changes, until it
 #                                     is stopped: "button NAME short|long|hold",
@@ -54,7 +58,7 @@
 # unprivileged Home Assistant ESPHome plugin (docs/ha.md "One Home Assistant device"). It runs
 # as root and reads fixed, whitelisted commands from a FIFO that the group
 # "kiosk" can write. It runs them with the existing root-only CLIs
-# (tsx-ledbar, tsx-keypad, tsx-blank, tsx-config, reboot), or it writes the
+# (tsx-ledbar, tsx-keypad, tsx-kiosk-page, tsx-blank, tsx-config, reboot), or it writes the
 # runtime override files that they use. Its second client is the
 # quick-settings overlay (tsx-overlay, also user kiosk): brightness-offset,
 # brightness-learn-reset (forget the points that the automatic brightness
@@ -94,7 +98,7 @@
 # Env overrides for tests: TSX_RUN_DIR, TSX_PANELCTL, TSX_LEDBAR, TSX_KEYPAD,
 # TSX_BLANK, TSX_ALS_BIN, TSX_CONFIG_BIN, TSX_REBOOT_BIN, TSX_AMIXER,
 # TSX_SOUND_CARD, TSX_UPDATE_BIN, TSX_IDLED_STATE, TSX_BUTTONS_CONF,
-# TSX_ALS_CONF, TSX_ASOUND_DIR, TSX_BACKLIGHT_DIR, TSX_LIGHTBAR_BIN,
+# TSX_BUTTONS_BOARD_CONF, TSX_KIOSK_PAGE, TSX_ALS_CONF, TSX_ASOUND_DIR, TSX_BACKLIGHT_DIR, TSX_LIGHTBAR_BIN,
 # TSX_USBPOWER_BIN, TSX_LEDS_DIR, TSX_STATE_DIR, TSX_NFC_SYS_DIR,
 # TSX_VOLUME_CMD, TSX_EVENTS_POLL (seconds
 # between two reads of `events`), TSX_EVENTS_MAX (stop `events` after that many
@@ -106,6 +110,7 @@ FIFO=${TSX_PANELCTL:-$R/panelctl}
 LEDBAR_FW=${TSX_LEDBAR_FW:-$R/ledbar.fw}
 LEDBAR=${TSX_LEDBAR:-tsx-ledbar}
 KEYPAD=${TSX_KEYPAD:-tsx-keypad}
+KIOSK_PAGE=${TSX_KIOSK_PAGE:-tsx-kiosk-page}
 BLANK=${TSX_BLANK:-tsx-blank}
 ALS=${TSX_ALS_BIN:-tsx-als}
 CONFIG=${TSX_CONFIG_BIN:-tsx-config}
@@ -126,6 +131,7 @@ UPDATE_BIN=${TSX_UPDATE_BIN:-tsx-autoupdate}
 ONESHOT=${TSX_PANELCTL_ONESHOT:-0}
 IDLED_STATE=${TSX_IDLED_STATE:-/run/tsx-idled.state}
 BUTTONS_CONF=${TSX_BUTTONS_CONF:-/etc/tsx/buttons.conf}
+BUTTONS_BOARD_CONF=${TSX_BUTTONS_BOARD_CONF:-/etc/tsx/buttons-board.conf}
 ALS_CONF=${TSX_ALS_CONF:-/etc/tsx/als.conf}
 ASOUND=${TSX_ASOUND_DIR:-/proc/asound}
 BL_DIR=${TSX_BACKLIGHT_DIR:-/sys/class/backlight}
@@ -262,7 +268,11 @@ has_hw() {
 	ledbar-fx) ledbar_fw | grep -qx 'effects yes';;
 	# the LED bar firmware has the 16 LEDs (TSX-LEDBAR 0.1.3 and later)
 	ledbar-leds) ledbar_fw | grep -qx 'leds yes';;
-	keypad) [ -r "$BUTTONS_CONF" ];;
+	# a `button` line in the board layer or in buttons.conf (the template has none)
+	# (grep gives 2 for a missing file. The answer of has is 0 or 1.)
+	keypad) grep -qsE '^[[:space:]]*button[[:space:]]' "$BUTTONS_BOARD_CONF" "$BUTTONS_CONF" && return 0 || return 1;;
+	# tsx-buttons writes "leds yes" when the keys have LEDs
+	keyleds) [ "$(field "$R/buttons.state" leds)" = yes ];;
 	als) [ -r "$ALS_CONF" ] || [ -r "$R/als.state" ];;
 	sound) [ -n "$CARD" ] && [ -e "$ASOUND/$CARD" ];;
 	presence) [ -r "$R/presence.state" ];;
@@ -446,7 +456,7 @@ handle() {
 		esac;;
 	reload-page)
 		if [ -z "$a1$a2$a3$a4$rest" ]; then
-			log "reload-page"; "$KEYPAD" page reload
+			log "reload-page"; "$KIOSK_PAGE" reload
 		else reject "reload-page $a1 $a2 $a3 $a4 $rest"; fi;;
 	volume)
 		if in_range "$a1" 0 100 && [ -z "$a2$a3$a4$rest" ]; then

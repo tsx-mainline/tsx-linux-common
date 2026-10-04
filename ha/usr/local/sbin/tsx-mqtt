@@ -4,15 +4,17 @@
 # It publishes HA MQTT discovery (retained) for one device with:
 #   light  "LED bar"      RGB (tsx-ledbar. HA 0..255 <-> bar 0..100 per channel.
 #                         Only where tsx-ledbar is installed)
-#   light  "Key LEDs"     brightness 0..255 (tsx-keypad led N|off. Only with
-#                         /etc/tsx/buttons.conf)
+#   light  "Key LEDs"     brightness 0..255 (tsx-keypad led N|off. Only where the
+#                         keys have LEDs: tsx-panelctl has keyleds)
 #   switch "Screen"       ON = lit, OFF = blanked (tsx-blank)
 #   number "Backlight"    1..BACKLIGHT_MAX of /etc/kiosk.conf (tsx-idled override)
 #   number "Blank timeout"  seconds without input before the screen goes dark,
 #                         0 = never (panel.conf BLANK_TIMEOUT via tsx-config)
 #   binary_sensor "Touched recently"  last real input < 30 s ago (tsx-idled's
 #                         /run/tsx/last-input)
-#   event  "Key NAME"     per front-panel key: short / long / hold
+#   event  "Key NAME"     per front key: short / long / hold. The keys are the
+#                         `button` lines of /etc/tsx/buttons-board.conf and
+#                         /etc/tsx/buttons.conf
 #   device triggers       per key: button_short_press / button_long_press
 #   sensor "Illuminance"  lux of the MAX44009 (tsx-als. Only with /etc/tsx/als.conf
 #                         or /run/tsx/als.state)
@@ -40,7 +42,7 @@
 # files under /run/tsx, which are the event interface of the base system.
 #
 # Env overrides for tests: TSX_MQTT_CONF, TSX_RUN_DIR, TSX_IDLED_STATE,
-# TSX_BUTTONS_CONF, TSX_KIOSK_CONF, TSX_PANELCTL_BIN, TSX_MQTT_DRY=1 (print
+# TSX_BUTTONS_CONF, TSX_BUTTONS_BOARD_CONF, TSX_KIOSK_CONF, TSX_PANELCTL_BIN, TSX_MQTT_DRY=1 (print
 # instead of publish, read commands from stdin, one pass).
 # TSX_MQTT_PUB_TIMEOUT=seconds limits each mosquitto_pub connect+publish
 # (default 5), so an unreachable broker cannot hang the script. See pub()
@@ -50,6 +52,7 @@ CONF=${TSX_MQTT_CONF:-/etc/tsx/mqtt.conf}
 R=${TSX_RUN_DIR:-/run/tsx}
 IDLED=${TSX_IDLED_STATE:-/run/tsx-idled.state}
 BCONF=${TSX_BUTTONS_CONF:-/etc/tsx/buttons.conf}
+BBCONF=${TSX_BUTTONS_BOARD_CONF:-/etc/tsx/buttons-board.conf}   # the board layer of the keys
 KCONF=${TSX_KIOSK_CONF:-/etc/kiosk.conf}
 KBCONF=${TSX_PANEL_BOARD_CONF:-/etc/tsx/panel-board.conf}   # the board layer of kiosk.conf
 ACONF=${TSX_ALS_CONF:-/etc/tsx/als.conf}
@@ -126,7 +129,7 @@ fi
 # drops an entity an older build announced)
 has_ledbar() { "$PCTL" has ledbar >/dev/null 2>&1; }
 has_sound() { "$PCTL" has sound >/dev/null 2>&1; }
-has_keypad() { [ -r "$BCONF" ]; }
+has_keyleds() { "$PCTL" has keyleds >/dev/null 2>&1; }
 has_als() { [ -r "$ACONF" ] || [ -r "$R/als.state" ]; }
 has_presence() { [ -r "$R/presence.state" ]; }
 has_lightbar() { "$PCTL" has lightbar >/dev/null 2>&1; }
@@ -135,8 +138,8 @@ has_poe() { [ -r "$R/poe.state" ]; }
 has_emmc() { [ -r "$R/emmc.state" ]; }
 has_nfc() { "$PCTL" has nfc >/dev/null 2>&1; }
 
-keys() {  # names of the "button NAME KEY" lines of buttons.conf
-	[ -r "$BCONF" ] && sed -n 's/^[[:space:]]*button[[:space:]]\{1,\}\([A-Za-z0-9_-]\{1,\}\)[[:space:]].*/\1/p' "$BCONF"
+keys() {  # names of the "button NAME KEY" lines of the board layer and buttons.conf, each name once
+	cat "$BBCONF" "$BCONF" 2>/dev/null | sed -n 's/^[[:space:]]*button[[:space:]]\{1,\}\([A-Za-z0-9_-]\{1,\}\)[[:space:]].*/\1/p' | awk '!seen[$0]++'
 }
 
 field() {  # field FILE KEY -> rest of the first line "KEY ..."
@@ -153,8 +156,8 @@ AV="\"avty_t\":\"$BASE/availability\""
 discovery() {
 	if has_ledbar; then pub -r "$DP/light/$NODE/ledbar/config" "{\"name\":\"LED bar\",\"uniq_id\":\"${NODE}_ledbar\",\"cmd_t\":\"$BASE/ledbar/set\",\"stat_t\":\"$BASE/ledbar/state\",\"bri_cmd_t\":\"$BASE/ledbar/brightness/set\",\"bri_stat_t\":\"$BASE/ledbar/brightness\",\"bri_scl\":255,\"rgb_cmd_t\":\"$BASE/ledbar/rgb/set\",\"rgb_stat_t\":\"$BASE/ledbar/rgb\",\"on_cmd_type\":\"last\",\"icon\":\"mdi:led-strip-variant\",$AV,$DEV}"
 	else pub -r "$DP/light/$NODE/ledbar/config" ""; fi
-	if has_keypad; then pub -r "$DP/light/$NODE/keypad/config" "{\"name\":\"Key LEDs\",\"uniq_id\":\"${NODE}_keypad\",\"cmd_t\":\"$BASE/keypad/set\",\"stat_t\":\"$BASE/keypad/state\",\"bri_cmd_t\":\"$BASE/keypad/brightness/set\",\"bri_stat_t\":\"$BASE/keypad/brightness\",\"bri_scl\":255,\"on_cmd_type\":\"brightness\",\"icon\":\"mdi:gesture-tap-button\",$AV,$DEV}"
-	else pub -r "$DP/light/$NODE/keypad/config" ""; fi
+	if has_keyleds; then pub -r "$DP/light/$NODE/key_leds/config" "{\"name\":\"Key LEDs\",\"uniq_id\":\"${NODE}_key_leds\",\"cmd_t\":\"$BASE/key_leds/set\",\"stat_t\":\"$BASE/key_leds/state\",\"bri_cmd_t\":\"$BASE/key_leds/brightness/set\",\"bri_stat_t\":\"$BASE/key_leds/brightness\",\"bri_scl\":255,\"on_cmd_type\":\"brightness\",\"icon\":\"mdi:gesture-tap-button\",$AV,$DEV}"
+	else pub -r "$DP/light/$NODE/key_leds/config" ""; fi
 	pub -r "$DP/switch/$NODE/screen/config" "{\"name\":\"Screen\",\"uniq_id\":\"${NODE}_screen\",\"cmd_t\":\"$BASE/screen/set\",\"stat_t\":\"$BASE/screen/state\",\"icon\":\"mdi:monitor\",$AV,$DEV}"
 	pub -r "$DP/number/$NODE/backlight/config" "{\"name\":\"Backlight\",\"uniq_id\":\"${NODE}_backlight\",\"cmd_t\":\"$BASE/backlight/set\",\"stat_t\":\"$BASE/backlight/state\",\"min\":1,\"max\":$BL_MAX,\"step\":1,\"mode\":\"slider\",\"icon\":\"mdi:brightness-6\",$AV,$DEV}"
 	pub -r "$DP/number/$NODE/blank_timeout/config" "{\"name\":\"Blank timeout\",\"uniq_id\":\"${NODE}_blank_timeout\",\"cmd_t\":\"$BASE/blank_timeout/set\",\"stat_t\":\"$BASE/blank_timeout/state\",\"min\":0,\"max\":86400,\"step\":10,\"unit_of_meas\":\"s\",\"mode\":\"box\",\"icon\":\"mdi:timer-outline\",$AV,$DEV}"
@@ -210,7 +213,7 @@ ledbar_state() {
 		echo "OFF 0 0,0,0"
 	fi
 }
-keypad_state() {  # the level while the screen is awake. An older tsx-buttons: the level now
+key_leds_state() {  # the level while the screen is awake. An older tsx-buttons: the level now
 	l=$(field "$R/buttons.state" led_awake); [ -n "$l" ] || l=$(field "$R/buttons.state" led); set -- ${l:-0 unknown}
 	[ "${1:-0}" -gt 0 ] 2>/dev/null && echo "ON $1" || echo "OFF 0"
 }
@@ -275,13 +278,13 @@ update_state() {  # raw HA-ready JSON from tsx-autoupdate (same $R), or a safe d
 	fi
 }
 
-P_LED= P_KP= P_SCR= P_BL= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_LB= P_USB= P_POE= P_EMMC=
+P_LED= P_KL= P_SCR= P_BL= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_LB= P_USB= P_POE= P_EMMC=
 publish_states() {  # $1 = force
 	f=${1:-}
 	v=$(ledbar_state); if [ "$v" != "$P_LED" ] || [ -n "${1:-}" ]; then
 		set -- $v; pub -r "$BASE/ledbar/state" "$1"; pub -r "$BASE/ledbar/brightness" "$2"; pub -r "$BASE/ledbar/rgb" "$3"; P_LED=$v; fi
-	v=$(keypad_state); if [ "$v" != "$P_KP" ] || [ -n "${1:-}" ]; then
-		set -- $v; pub -r "$BASE/keypad/state" "$1"; pub -r "$BASE/keypad/brightness" "$2"; P_KP=$v; fi
+	v=$(key_leds_state); if [ "$v" != "$P_KL" ] || [ -n "${1:-}" ]; then
+		set -- $v; pub -r "$BASE/key_leds/state" "$1"; pub -r "$BASE/key_leds/brightness" "$2"; P_KL=$v; fi
 	v=$(screen_state); if [ "$v" != "$P_SCR" ] || [ -n "${1:-}" ]; then
 		set -- $v; pub -r "$BASE/screen/state" "$1"; P_SCR=$v
 		if [ -n "${2:-}" ] && [ "$2" != none ] && [ "$2" != "$P_BL" ]; then pub -r "$BASE/backlight/state" "$2"; P_BL=$2; fi
@@ -365,9 +368,9 @@ handle() {  # topic payload
 		"$PCTL" send lightbar set "$r" "$g" "$b" "$bri";;
 	usb_power/set)
 		case $p in ON) "$PCTL" send usbpower on;; OFF) "$PCTL" send usbpower off;; esac;;
-	keypad/set)
+	key_leds/set)
 		case $p in OFF) "$PCTL" send keypad led off;; ON) "$PCTL" send keypad led auto;; esac;;
-	keypad/brightness/set)
+	key_leds/brightness/set)
 		case $p in *[!0-9]*|'') return;; esac
 		[ "${#p}" -le 3 ] || return
 		if [ "$p" -le 0 ]; then "$PCTL" send keypad led off

@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""tsx-kiosk-page: reload the page of the kiosk, or open another page.
+
+  tsx-kiosk-page reload            reload the page that the kiosk shows
+  tsx-kiosk-page home              open KIOSK_URL (the start page)
+  tsx-kiosk-page navigate URL      open URL. An absolute http or https URL, or
+                                   a path that starts with / (relative to the
+                                   origin of KIOSK_URL)
+
+The tool sends one command to the Chromium DevTools on 127.0.0.1:9222. It
+needs KIOSK_DEVTOOLS=1 in /etc/kiosk.conf. It uses only the Python standard
+library, and it needs no root.
+
+tsx-panelctl runs "reload" for the command reload-page of the quick-settings
+overlay. So the Reload button of the overlay works on every board, also on a
+board with no front keys. tsx-buttons has its own code for the `reload`,
+`home` and `navigate` actions of a key.
+
+Exit code: 0 when the browser took the command, 1 when it did not (DevTools
+off, no page, no KIOSK_URL, an error reply), 2 for a wrong command line.
+
+Env overrides (also for tests): TSX_DEVTOOLS (host:port, default
+127.0.0.1:9222), TSX_KIOSK_CONF (default /etc/kiosk.conf), TSX_RUN_DIR
+(default /run/tsx. tsx-config apply writes kiosk.conf there with the
+KIOSK_URL of panel.conf. It wins over /etc/kiosk.conf).
+"""
+import base64
+import http.client
+import json
+import os
+import socket
+import struct
+import sys
+import urllib.parse
+import urllib.request
+
+TIMEOUT = 3
+
+
+def say(msg):
+    print("tsx-kiosk-page: " + msg, file=sys.stderr)
+
+
+USAGE = """usage: tsx-kiosk-page reload
+       tsx-kiosk-page home
+       tsx-kiosk-page navigate URL"""
+
+
+def usage():
+    print(USAGE, file=sys.stderr)
+    return 2
+
+
+def configured_url():
+    """KIOSK_URL as kiosk-session reads it: /etc/kiosk.conf, then the override
+    in the run directory."""
+    run = os.environ.get("TSX_RUN_DIR", "/run/tsx")
+    url = ""
+    for path in (os.environ.get("TSX_KIOSK_CONF", "/etc/kiosk.conf"), os.path.join(run, "kiosk.conf")):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if line.startswith("KIOSK_URL="):
+                url = line.split("=", 1)[1].split(" #", 1)[0].strip().strip("'\"")
+    return url
+
+
+def page_socket_url(devtools):
+    """The websocket URL of the first page of the browser."""
+    with urllib.request.urlopen("http://%s/json/list" % devtools, timeout=TIMEOUT) as resp:
+        tabs = json.loads(resp.read().decode("utf-8"))
+    for tab in tabs:
+        if tab.get("type") == "page" and tab.get("webSocketDebuggerUrl") \
+                and not tab.get("url", "").startswith("devtools://"):
+            return tab["webSocketDebuggerUrl"]
+    return None
+
+
+def read_exact(sock, count):
+    data = b""
+    while len(data) < count:
+        chunk = sock.recv(count - len(data))
+        if not chunk:
+            raise OSError("the browser closed the connection")
+        data += chunk
+    return data
+
+
+def cdp_call(ws_url, method, params):
+    """One command over the websocket of the page. Return the reply."""
+    parsed = urllib.parse.urlparse(ws_url)
+    if parsed.scheme != "ws" or not parsed.hostname:
+        raise OSError("unexpected websocket URL " + ws_url)
+    sock = socket.create_connection((parsed.hostname, parsed.port or 80), timeout=TIMEOUT)
+    try:
+        key = base64.b64encode(os.urandom(16)).decode()
+        path = parsed.path + ("?" + parsed.query if parsed.query else "")
+        sock.sendall((
+            "GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            % (path, parsed.hostname, parsed.port or 80, key)).encode())
+        head = b""
+        while b"\r\n\r\n" not in head and len(head) < 4096:
+            head += read_exact(sock, 1)
+        if not head.startswith(b"HTTP/1.1 101"):
+            raise OSError("the browser refused the websocket")
+        body = json.dumps({"id": 1, "method": method, "params": params}).encode()
+        mask = os.urandom(4)
+        if len(body) < 126:
+            frame = struct.pack("!BB", 0x81, 0x80 | len(body))
+        elif len(body) < 65536:
+            frame = struct.pack("!BBH", 0x81, 0x80 | 126, len(body))
+        else:
+            raise OSError("command too long")
+        sock.sendall(frame + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(body)))
+        for _ in range(20):    # events can come before the reply
+            b1, b2 = read_exact(sock, 2)
+            length = b2 & 0x7F
+            if length == 126:
+                length = struct.unpack("!H", read_exact(sock, 2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", read_exact(sock, 8))[0]
+            payload = read_exact(sock, length)
+            if b1 & 0x0F != 1:     # not a text frame
+                continue
+            try:
+                reply = json.loads(payload.decode("utf-8"))
+            except ValueError:
+                continue
+            if reply.get("id") == 1:
+                try:
+                    sock.sendall(struct.pack("!BB", 0x88, 0x80) + b"\0\0\0\0")
+                except OSError:
+                    pass
+                return reply
+        raise OSError("no reply from the browser")
+    finally:
+        sock.close()
+
+
+def target_url(arg):
+    """The URL for navigate. Return None when the argument is not allowed."""
+    if arg.startswith("/") and not arg.startswith("//"):
+        base = urllib.parse.urlparse(configured_url())
+        if not base.scheme or not base.netloc:
+            say("no KIOSK_URL, cannot open " + arg)
+            return None
+        return "%s://%s%s" % (base.scheme, base.netloc, arg)
+    parsed = urllib.parse.urlparse(arg)
+    if parsed.scheme in ("http", "https") and parsed.netloc:
+        return arg
+    say("not an http or https URL: " + arg)
+    return None
+
+
+def main(argv):
+    if len(argv) == 2 and argv[1] == "reload":
+        method, params = "Page.reload", {"ignoreCache": False}
+    elif len(argv) == 2 and argv[1] == "home":
+        url = configured_url()
+        if not url:
+            say("no KIOSK_URL in the kiosk configuration")
+            return 1
+        method, params = "Page.navigate", {"url": url}
+    elif len(argv) == 3 and argv[1] == "navigate":
+        url = target_url(argv[2])
+        if url is None:
+            return 1
+        method, params = "Page.navigate", {"url": url}
+    else:
+        return usage()
+    devtools = os.environ.get("TSX_DEVTOOLS", "127.0.0.1:9222")
+    try:
+        ws_url = page_socket_url(devtools)
+        if not ws_url:
+            say("the browser has no page")
+            return 1
+        reply = cdp_call(ws_url, method, params)
+    except (OSError, ValueError, http.client.HTTPException) as err:
+        say("DevTools not reachable at %s (KIOSK_DEVTOOLS=1?): %s" % (devtools, err))
+        return 1
+    if "error" in reply:
+        say("%s failed: %s" % (method, reply["error"]))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

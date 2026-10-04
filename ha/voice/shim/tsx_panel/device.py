@@ -76,7 +76,7 @@ class PanelDevice:
     backend: PanelBackend
     entities: List
     ledbar: Optional[LEDLightEntity]
-    keypad: Optional[LEDLightEntity]
+    key_leds: Optional[LEDLightEntity]
     screen: SwitchEntity
     backlight: NumberEntity
     blank_timeout: NumberEntity
@@ -109,11 +109,11 @@ class PanelDevice:
     camera_entity: Optional[camera.CameraEntity] = None
     camera_button: Optional[ButtonEntity] = None
     camera_time: Optional[TextSensorEntity] = None
-    key_led_blank: Optional[NumberEntity] = None
+    key_leds_screen_off: Optional[NumberEntity] = None
     _last_lightbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar_fx: Optional[str] = field(default=None, repr=False)
-    _last_keypad: Optional[tuple] = field(default=None, repr=False)
+    _last_key_leds: Optional[tuple] = field(default=None, repr=False)
     _pulse_since: float = field(default=0.0, repr=False)
 
 
@@ -162,30 +162,30 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         ledbar.update_on_changed(ledbar_changed)
         entities.append(ledbar)
 
-    # ---- key LEDs (brightness-only light; only with front keys) --------------
-    keypad = key_led_blank = None
-    if backend.keypad_present():
-        kp_on, kp_bri = backend.get_keypad()
-        keypad = PanelLight(
-            server, key_for("keypad"), "Key LEDs", "keypad",
+    # ---- key LEDs (brightness-only light; only where the keys have LEDs) -----
+    key_leds = key_leds_screen_off = None
+    if backend.key_leds_present():
+        kl_on, kl_bri = backend.get_keypad()
+        key_leds = PanelLight(
+            server, key_for("key_leds"), "Key LEDs", "key_leds",
             supports_rgb=False, supports_brightness=True, icon="mdi:gesture-tap-button",
         )
-        keypad.is_on, keypad.brightness = kp_on, kp_bri / 255.0
+        key_leds.is_on, key_leds.brightness = kl_on, kl_bri / 255.0
 
-        def keypad_changed(_keypad=keypad):
-            backend.set_keypad(_keypad.is_on, round(_keypad.brightness * 255))
+        def key_leds_changed(_key_leds=key_leds):
+            backend.set_keypad(_key_leds.is_on, round(_key_leds.brightness * 255))
 
-        keypad.update_on_changed(keypad_changed)
-        entities.append(keypad)
+        key_leds.update_on_changed(key_leds_changed)
+        entities.append(key_leds)
         # the level of the key LEDs while the screen is blank, 0 to 255 (the
         # raw level, like buttons.conf). Stored in panel.conf (KEY_LED_BLANK),
         # and tsx-buttons applies it at once
-        key_led_blank = NumberEntity(
-            server, key_for("key_led_blank"), "Key LEDs screen-off level", "key_led_blank",
+        key_leds_screen_off = NumberEntity(
+            server, key_for("key_leds_screen_off"), "Key LEDs screen-off level", "key_leds_screen_off",
             get_state=backend.get_key_led_blank, set_state=backend.set_key_led_blank,
             min_value=0, max_value=255, step=1, icon="mdi:gesture-tap-button",
         )
-        entities.append(key_led_blank)
+        entities.append(key_leds_screen_off)
 
     # ---- screen + backlight --------------------------------------------------
     screen = SwitchEntity(
@@ -387,7 +387,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         _LOGGER.info("no camera entity: %s", cam.why_off())
 
     return PanelDevice(
-        backend=backend, entities=entities, ledbar=ledbar, keypad=keypad, screen=screen,
+        backend=backend, entities=entities, ledbar=ledbar, key_leds=key_leds, screen=screen,
         backlight=backlight, blank_timeout=blank_timeout, als_auto=als_auto, illuminance=illuminance, volume=volume,
         verbose_boot=verbose_boot, kiosk_url=kiosk_url, reload_button=reload_button, reboot_button=reboot_button,
         cpu_temp=cpu_temp, uptime=uptime, ip_address=ip_address, touched_recently=touched_recently,
@@ -395,7 +395,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         lightbar=lightbar, usb_power=usb_power, presence=presence, distance=distance, poe_class=poe_class,
         emmc_life_a=emmc_life_a, emmc_life_b=emmc_life_b, emmc_eol=emmc_eol, nfc=backend.nfc_present(),
         ledbar_fx=ledbar_fx, ledbar_leds=ledbar_leds, ledbar_actions=ledbar_actions, camera_entity=camera_entity,
-        camera_button=camera_button, camera_time=camera_time, key_led_blank=key_led_blank,
+        camera_button=camera_button, camera_time=camera_time, key_leds_screen_off=key_leds_screen_off,
     )
 
 
@@ -467,13 +467,13 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
                 device.ledbar.effect = effect
             msgs.append(device.ledbar._state_response())  # pylint: disable=protected-access
 
-    if device.keypad is not None:
-        kp_on, kp_bri = backend.get_keypad()
-        kp_cur = (kp_on, round(kp_bri / 255.0, 3))
-        if kp_cur != device._last_keypad:
-            device._last_keypad = kp_cur
-            device.keypad.is_on, device.keypad.brightness = kp_on, kp_bri / 255.0
-            msgs.append(device.keypad._state_response())  # pylint: disable=protected-access
+    if device.key_leds is not None:
+        kl_on, kl_bri = backend.get_keypad()
+        kl_cur = (kl_on, round(kl_bri / 255.0, 3))
+        if kl_cur != device._last_key_leds:
+            device._last_key_leds = kl_cur
+            device.key_leds.is_on, device.key_leds.brightness = kl_on, kl_bri / 255.0
+            msgs.append(device.key_leds._state_response())  # pylint: disable=protected-access
 
     if device.lightbar is not None:
         lb_on, lb_bri, lb_r, lb_g, lb_b = backend.get_lightbar()
@@ -488,7 +488,7 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
                    device.volume, device.verbose_boot, device.cpu_temp, device.uptime, device.ip_address,
                    device.touched_recently, device.update, device.presence, device.distance, device.usb_power,
                    device.poe_class, device.emmc_life_a, device.emmc_life_b, device.emmc_eol, device.camera_time,
-                   device.key_led_blank):
+                   device.key_leds_screen_off):
         if entity is None:
             continue
         before = getattr(entity, "_state", None)

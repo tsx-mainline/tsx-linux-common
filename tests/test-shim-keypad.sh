@@ -1,6 +1,7 @@
 #!/bin/sh
-# Host test of the key LED parts of tsx_panel (backend.py and device.py): the
-# Key LEDs light and the number "Key LEDs screen-off level".
+# Host test of the key parts of tsx_panel (backend.py and device.py): the key
+# names, the Key LEDs light and the number "Key LEDs screen-off level".
+#  - The key names are the `button` lines of the board layer and buttons.conf.
 #  - The light shows the level while the screen is awake (buttons.state
 #    "led_awake"). It does not change at a blank or a wake. An older
 #    tsx-buttons without that line: the level now ("led").
@@ -8,7 +9,7 @@
 #  - The number reads "led_blank" (else LED_BLANK of buttons.conf), sends
 #    "keypad led-blank N" (0 to 255) and shows a value that it just set until
 #    tsx-buttons has it.
-#  - Without front keys, neither entity exists.
+#  - Without key LEDs (tsx-panelctl has keyleds says no), neither entity exists.
 # Small stand-ins replace aioesphomeapi, protobuf and linux_voice_assistant,
 # so the test needs no network and no libmpv.
 set -eu
@@ -60,9 +61,11 @@ class LEDLightEntity(ESPHomeEntity):
 class _Response(tuple):
     pass
 PY
+# the board layer is the made-up board; buttons.conf adds one key and names one board key again
+cp "$HERE/tests/boards/fake/buttons-board.conf" "$T/buttons-board.conf"
 cat > "$T/buttons.conf" <<'C'
-button power KEY_F13 led=1
-button home  KEY_F14 led=2
+button extra KEY_F21
+button prog2 KEY_F22 led=2
 LED_DAY=128
 LED_NIGHT=24
 LED_BLANK=17
@@ -72,7 +75,8 @@ import os, sys, time
 shim, t = sys.argv[1:3]
 sys.path[:0] = [t + "/stub", shim]
 os.environ.update(TSX_RUN_DIR=t + "/run", TSX_STATE_DIR=t + "/state", TSX_BACKLIGHT_DIR=t + "/bl",
-                  TSX_KIOSK_CONF=t + "/none", TSX_BUTTONS_CONF=t + "/buttons.conf", TSX_ALS_CONF=t + "/none",
+                  TSX_KIOSK_CONF=t + "/none", TSX_BUTTONS_CONF=t + "/buttons.conf",
+                  TSX_BUTTONS_BOARD_CONF=t + "/buttons-board.conf", TSX_ALS_CONF=t + "/none",
                   TSX_ASOUND_DIR=t + "/none", TSX_IDLED_STATE=t + "/none", TSX_PANELCTL_BIN="/nonexistent",
                   TSX_THERMAL_ZONE=t + "/none")
 from aioesphomeapi import api_pb2 as pb
@@ -90,11 +94,12 @@ def check(name, got, want):
 
 class Backend(PanelBackend):
     """The real backend. The fake tsx-panelctl records each command."""
+    keyleds = True      # what `tsx-panelctl has keyleds` says
     def __init__(self):
         super().__init__()
         self.sent = []
     def _panelctl(self, *args, timeout=5):
-        return False, ""
+        return (self.keyleds and args == ("has", "keyleds")), ""
     def _ctl(self, *words):
         self.sent.append(" ".join(words))
         return True
@@ -103,12 +108,15 @@ def state(text):
     with open(t + "/run/buttons.state", "w") as f:
         f.write(text)
 
-AWAKE = "screen awake\nled 128 day\nled_awake 128 day\nled_blank 24\nkey_leds 1 1 1 1 1\n"
-BLANK = "screen blank\nled 24 blank\nled_awake 128 day\nled_blank 24\nkey_leds 1 1 1 1 1\n"
-OFF_BLANK = "screen blank\nled 0 override\nled_awake 0 override\nled_blank 24\nkey_leds 0 0 0 0 0\n"
+AWAKE = "screen awake\nleds yes\nled 128 day\nled_awake 128 day\nled_blank 24\nkey_leds 1 1 1 1 1 1 1\n"
+BLANK = "screen blank\nleds yes\nled 24 blank\nled_awake 128 day\nled_blank 24\nkey_leds 1 1 1 1 1 1 1\n"
+OFF_BLANK = "screen blank\nleds yes\nled 0 override\nled_awake 0 override\nled_blank 24\nkey_leds 0 0 0 0 0 0 0\n"
 
 # ---- the backend ------------------------------------------------------------
 b = Backend()
+check("keys: the board layer, then buttons.conf, each name once",
+      b.key_names(), ["prog1", "prog2", "prog3", "prog4", "extra1", "extra2", "extra3", "extra"])
+check("key LEDs: present when tsx-panelctl says so", b.key_leds_present(), True)
 state(AWAKE)
 check("light: the awake level", b.get_keypad(), (True, 128))
 state(BLANK)
@@ -142,25 +150,26 @@ check("number: a new backend has no pending value", Backend()._key_led_blank_pen
 state(AWAKE)
 b = Backend()
 d = dev.build_entities(None, b)
-num = d.key_led_blank
+num = d.key_leds_screen_off
 info = list(num.handle_message(pb.ListEntitiesRequest()))[0]
 check("entity: the number of the screen-off level",
       (info.name, info.object_id, info.min_value, info.max_value, info.step, info.unit_of_measurement),
-      ("Key LEDs screen-off level", "key_led_blank", 0, 255, 1, ""))
-check("entity: the fixed key of key_led_blank", num.key, stable_key("key_led_blank"))
-check("entity: the light", (d.keypad.object_id, d.keypad.is_on, round(d.keypad.brightness * 255)), ("keypad", True, 128))
-check("entity: the number after the light", d.entities.index(num), d.entities.index(d.keypad) + 1)
+      ("Key LEDs screen-off level", "key_leds_screen_off", 0, 255, 1, ""))
+check("entity: the fixed key of key_leds_screen_off", num.key, stable_key("key_leds_screen_off"))
+check("entity: the light", (d.key_leds.object_id, d.key_leds.is_on, round(d.key_leds.brightness * 255)),
+      ("key_leds", True, 128))
+check("entity: the number after the light", d.entities.index(num), d.entities.index(d.key_leds) + 1)
 reply = list(num.handle_message(pb.NumberCommandRequest(key=num.key, state=12.0)))
 check("entity: a number command from Home Assistant", (b.sent, reply[0].state), (["keypad led-blank 12"], 12.0))
-d.keypad.command(is_on=False)
-d.keypad.command(is_on=True, brightness=0.5)
+d.key_leds.command(is_on=False)
+d.key_leds.command(is_on=True, brightness=0.5)
 check("entity: light off and on", b.sent[1:], ["keypad led off", "keypad led 128"])
 
 def mine(msgs):
     """The messages of the two key LED entities (uptime and others also move)."""
     out = []
     for m in msgs:
-        if isinstance(m, tuple) and m[1] == "keypad":
+        if isinstance(m, tuple) and m[1] == "key_leds":
             out.append(tuple(m))
         elif getattr(m, "key", None) == num.key:
             out.append(("number", m.state))
@@ -175,18 +184,24 @@ dev.poll(d, msgs.extend)
 check("poll: a blank screen changes neither entity", mine(msgs), [])
 state(OFF_BLANK.replace("led_blank 24", "led_blank 12"))
 dev.poll(d, msgs.extend)
-check("poll: an off on a blank screen reaches the light at once", mine(msgs), [("light", "keypad", False, 0.0)])
+check("poll: an off on a blank screen reaches the light at once", mine(msgs), [("light", "key_leds", False, 0.0)])
 msgs.clear()
 state(OFF_BLANK.replace("led_blank 24", "led_blank 30"))
 dev.poll(d, msgs.extend)
 check("poll: a new screen-off level reaches the number", mine(msgs), [("number", 30.0)])
 
-# ---- a panel without front keys -------------------------------------------------
-os.environ["TSX_BUTTONS_CONF"] = t + "/none"
+# ---- a panel with keys and no key LEDs -----------------------------------------
+Backend.keyleds = False
 d = dev.build_entities(None, Backend())
-check("no front keys: no light and no number", (d.keypad, d.key_led_blank), (None, None))
-check("no front keys: no key_led_blank in the list",
-      [e for e in d.entities if getattr(e, "object_id", "") in ("keypad", "key_led_blank")], [])
+check("no key LEDs: no light and no number", (d.key_leds, d.key_leds_screen_off), (None, None))
+check("no key LEDs: the key events stay", len(d.keys), 8)
+check("no key LEDs: no key_leds in the list",
+      [e for e in d.entities if getattr(e, "object_id", "") in ("key_leds", "key_leds_screen_off")], [])
+
+# ---- a panel with no keys ---------------------------------------------------------
+os.environ["TSX_BUTTONS_CONF"] = os.environ["TSX_BUTTONS_BOARD_CONF"] = t + "/none"
+b = Backend()
+check("no keys: no key names", b.key_names(), [])
 dev.poll(d, lambda m: None)
 if fails:
     sys.exit(1)

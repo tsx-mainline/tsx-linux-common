@@ -24,7 +24,7 @@ N=0 F=0
 ok() { echo "  ok: $*"; N=$((N + 1)); }
 bad() { echo "  FAIL: $*"; F=$((F + 1)); }
 
-for b in tsx-ledbar tsx-keypad tsx-blank tsx-als tsx-config tsx-autoupdate tsx-lightbar tsx-usbpower tsx-audio amixer; do
+for b in tsx-ledbar tsx-keypad tsx-kiosk-page tsx-blank tsx-als tsx-config tsx-autoupdate tsx-lightbar tsx-usbpower tsx-audio amixer; do
 	cat > "$T/bin/$b" <<EOF
 #!/bin/sh
 echo "$b \$*" >> "$T/cmds.log"
@@ -80,11 +80,12 @@ for want in \
 	'tsx-blank on' 'tsx-blank off' 'tsx-als auto on' \
 	'tsx-config set KIOSK_URL https://ha.example.org/lovelace/0' 'tsx-config apply' \
 	'tsx-audio volume 42' 'reboot' 'tsx-autoupdate now' \
-	'tsx-keypad page reload' 'tsx-config set BLANK_TIMEOUT 600' 'tsx-config setup' \
+	'tsx-kiosk-page reload' 'tsx-config set BLANK_TIMEOUT 600' 'tsx-config setup' \
 	'tsx-config set BOOT_VERBOSE 1' 'tsx-config set BOOT_VERBOSE 0'
 do
 	grep -qxF "$want" "$T/cmds.log" 2>/dev/null && ok "ran: $want" || bad "missing: $want"
 done
+grep -q '^tsx-keypad page' "$T/cmds.log" && bad "reload-page ran tsx-keypad (a board with no tsx-buttons has no tsx-keypad)" || ok "reload-page runs tsx-kiosk-page, not tsx-keypad"
 [ "$(cat "$T/run/brightness-offset" 2>/dev/null)" = -3 ] && ok "brightness-offset file has -3" || bad "brightness-offset wrong: '$(cat "$T/run/brightness-offset" 2>/dev/null)'"
 [ ! -e "$T/run/brightness" ] && ok "brightness-offset removed the absolute override" || bad "override left next to the offset"
 send "brightness-offset 0"
@@ -230,7 +231,7 @@ done
 kill -0 "$PID" 2>/dev/null && ok "daemon is still alive after the bad LED lines" || bad "daemon died"
 
 echo "== the seam: tsx-panelctl send, get, has, events =="
-PCTL="env PATH=$T/bin:$PATH TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled.state TSX_BUTTONS_CONF=$T/buttons.conf TSX_ALS_CONF=$T/als.conf TSX_ASOUND_DIR=$T/asound TSX_LEDS_DIR=$T/leds TSX_STATE_DIR=$T/state TSX_NFC_SYS_DIR=$T/nfc TSX_LEDBAR=$T/bin/tsx-ledbar-none busybox sh $SCRIPT"
+PCTL="env PATH=$T/bin:$PATH TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled.state TSX_BUTTONS_CONF=$T/buttons.conf TSX_BUTTONS_BOARD_CONF=$T/buttons-board.conf TSX_ALS_CONF=$T/als.conf TSX_ASOUND_DIR=$T/asound TSX_LEDS_DIR=$T/leds TSX_STATE_DIR=$T/state TSX_NFC_SYS_DIR=$T/nfc TSX_LEDBAR=$T/bin/tsx-ledbar-none busybox sh $SCRIPT"
 : > "$T/cmds.log"
 $PCTL send lightbar set 4 5 6 && sleep 0.2 && grep -qxF 'tsx-lightbar set 4 5 6' "$T/cmds.log" && ok "send writes the command, the daemon runs it" || bad "send did not reach the daemon"
 $PCTL send 2>/dev/null && bad "send with no command succeeded" || ok "send with no command fails"
@@ -247,7 +248,7 @@ printf '#!/bin/sh\n[ "${1:-}" = volume ] && [ -z "${2:-}" ] && echo 63\n' > "$T/
 [ "$(env PATH="$T/bin2:$PATH" TSX_RUN_DIR="$T/run" TSX_ASOUND_DIR="$T/asound" busybox sh "$SCRIPT" get volume)" = 63 ] && ok "get volume: the level from tsx-audio" || bad "get volume wrong"
 rm -rf "$T/asound/FakeCard"
 env PATH="$T/bin2:$PATH" TSX_RUN_DIR="$T/run" TSX_ASOUND_DIR="$T/asound" busybox sh "$SCRIPT" get volume >/dev/null 2>&1 && bad "get volume without a sound card succeeded" || ok "get volume without a sound card: nothing, exit 1"
-printf 'want 10 20 30\n' > "$T/run/ledbar.state"; printf 'led 128 day\nlast home short 12:00:01\n' > "$T/run/buttons.state"; printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T/run/als.state"
+printf 'want 10 20 30\n' > "$T/run/ledbar.state"; printf 'leds yes\nled 128 day\nlast home short 12:00:01\n' > "$T/run/buttons.state"; printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T/run/als.state"
 printf 'present on\ndistance 640\nwake on\n' > "$T/run/presence.state"; echo "power on" > "$T/run/usb-power.state"; echo "class plus" > "$T/run/poe.state"
 mkdir -p "$T/state"; echo "on 255 128 0 200" > "$T/state/lightbar"
 echo "on 17" > "$T/idled.state"
@@ -259,13 +260,31 @@ done
 $PCTL get nothing >/dev/null 2>&1; [ $? = 2 ] && ok "get of an unknown name: exit 2" || bad "get of an unknown name"
 rm -f "$T/run/als.state"; $PCTL get lux >/dev/null 2>&1 && bad "get lux with no sensor succeeded" || ok "get lux with no sensor: nothing, exit 1"
 printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T/run/als.state"
-printf '#!/bin/sh\n' > "$T/als.conf"; : > "$T/buttons.conf"; : > "$T/bin/tsx-ledbar-none"; chmod +x "$T/bin/tsx-ledbar-none"
+printf '#!/bin/sh\n' > "$T/als.conf"; : > "$T/bin/tsx-ledbar-none"; chmod +x "$T/bin/tsx-ledbar-none"
+# the keys: a `button` line in the board layer. buttons.conf is the template of this repo (no keys).
+cp "$HERE/../buttons/etc/tsx/buttons.conf" "$T/buttons.conf"; printf '# board layer\nbutton prog1 KEY_PROG1 led=1\n' > "$T/buttons-board.conf"
 mkdir -p "$T/asound/FakeCard" "$T/leds/rgb:lightbar-0" "$T/nfc/nfc0"; printf 'count 0\nlast -\n' > "$T/run/nfc.state"
-for h in ledbar keypad als sound presence lightbar usbpower poe nfc; do $PCTL has $h && ok "has $h: yes" || bad "has $h: no"; done
-rm -f "$T/als.conf" "$T/buttons.conf" "$T/run/als.state" "$T/run/presence.state" "$T/run/usb-power.state" "$T/run/poe.state" "$T/run/nfc.state" "$T/bin/tsx-ledbar-none"
-rm -rf "$T/asound/FakeCard" "$T/leds/rgb:lightbar-0" "$T/nfc/nfc0"
-for h in ledbar keypad als sound presence lightbar usbpower poe nfc; do $PCTL has $h && bad "has $h: yes without the hardware" || ok "has $h: no without the hardware"; done
-for h in ledbar keypad als sound presence lightbar usbpower poe nfc; do $PCTL has $h >/dev/null 2>&1; [ $? = 1 ] && ok "has $h: exit 1 without the hardware" || bad "has $h: exit is not 1"; done
+for h in ledbar keypad keyleds als sound presence lightbar usbpower poe nfc; do $PCTL has $h && ok "has $h: yes" || bad "has $h: no"; done
+# has keypad reads the `button` lines: the board layer alone, buttons.conf alone, and not the template
+rm -f "$T/buttons-board.conf"
+$PCTL has keypad >/dev/null 2>&1; [ $? = 1 ] && ok "has keypad: no with the template only (no button line)" || bad "has keypad: yes with the template only"
+printf '#button hidden KEY_PROG1\n' >> "$T/buttons.conf"
+$PCTL has keypad >/dev/null 2>&1; [ $? = 1 ] && ok "has keypad: a commented button line does not count" || bad "has keypad: counted a commented line"
+printf '  button prog2 KEY_PROG2\n' >> "$T/buttons.conf"
+$PCTL has keypad && ok "has keypad: yes with a button line in buttons.conf only" || bad "has keypad: no with a button line in buttons.conf"
+printf 'button prog1 KEY_PROG1 led=1\n' > "$T/buttons-board.conf"; cp "$HERE/../buttons/etc/tsx/buttons.conf" "$T/buttons.conf"
+# has keyleds reads "leds yes" of buttons.state
+printf 'leds no\nled 128 day\n' > "$T/run/buttons.state"
+$PCTL has keyleds >/dev/null 2>&1; [ $? = 1 ] && ok "has keyleds: exit 1 with leds no" || bad "has keyleds: yes with leds no"
+rm -f "$T/run/buttons.state"
+$PCTL has keyleds >/dev/null 2>&1; [ $? = 1 ] && ok "has keyleds: exit 1 without buttons.state" || bad "has keyleds: yes without buttons.state"
+printf 'leds yes\nled 128 day\n' > "$T/run/buttons.state"
+$PCTL has keyleds && ok "has keyleds: yes with leds yes" || bad "has keyleds: no with leds yes"
+printf 'leds yes\nled 128 day\nlast home short 12:00:01\n' > "$T/run/buttons.state"
+rm -f "$T/als.conf" "$T/buttons.conf" "$T/buttons-board.conf" "$T/run/als.state" "$T/run/presence.state" "$T/run/usb-power.state" "$T/run/poe.state" "$T/run/nfc.state" "$T/bin/tsx-ledbar-none"
+rm -rf "$T/asound/FakeCard" "$T/leds/rgb:lightbar-0" "$T/nfc/nfc0" "$T/run/buttons.state"
+for h in ledbar keypad keyleds als sound presence lightbar usbpower poe nfc; do $PCTL has $h && bad "has $h: yes without the hardware" || ok "has $h: no without the hardware"; done
+for h in ledbar keypad keyleds als sound presence lightbar usbpower poe nfc; do $PCTL has $h >/dev/null 2>&1; [ $? = 1 ] && ok "has $h: exit 1 without the hardware" || bad "has $h: exit is not 1"; done
 $PCTL has toaster >/dev/null 2>&1; [ $? = 2 ] && ok "has of an unknown name: exit 2" || bad "has of an unknown name"
 # has ledbar-fx: the answer of "tsx-ledbar fw". get ledbar-fx: the record in ledbar.state
 printf '#!/bin/sh\n[ "$1" = fw ] && cat "%s/fw"\n' "$T" > "$T/bin/tsx-ledbar-fw"; chmod +x "$T/bin/tsx-ledbar-fw"

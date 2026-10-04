@@ -44,7 +44,8 @@ async def main(args) -> int:
             "touched_recently", "update", "blank_timeout",
             "verbose_boot",
         }
-        optional = {"ledbar", "keypad", "key_power", "key_home", "emmc_life_a", "emmc_life_b", "emmc_eol"}
+        optional = {"ledbar", "key_leds", "key_leds_screen_off", "key_power", "key_home",
+                    "emmc_life_a", "emmc_life_b", "emmc_eol"}
         if not args.bare:
             want |= optional
         if args.voice:

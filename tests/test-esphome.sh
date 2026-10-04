@@ -61,7 +61,7 @@ python3 -m venv "$T/venv"
 F=$T/fixture
 mkdir -p "$F/run/tsx" "$F/etc/tsx" "$F/sys/thermal" "$F/proc/asound" "$F/bin"
 echo "want 50 60 70" > "$F/run/tsx/ledbar.state"
-printf 'led 128 unknown\nlast power short\n' > "$F/run/tsx/buttons.state"
+printf 'leds yes\nled 128 unknown\nlast power short\n' > "$F/run/tsx/buttons.state"
 echo "on 17" > "$F/run/tsx-idled.state"
 # the own status of tsx-autoupdate (the shape of write_ha_json, docs/rootfs.md "Updates")
 cat > "$F/run/tsx/update-ha-state.json" <<'EOF'
@@ -104,7 +104,8 @@ exec sh "$HERE/../base/usr/local/sbin/tsx-panelctl" "\$@"
 EOF
 chmod +x "$F/bin/reboot" "$F/bin/amixer" "$F/bin/tsx-panelctl"
 env PATH="$F/bin:$PATH" TSX_RUN_DIR="$F/run/tsx" TSX_REBOOT_BIN="$F/bin/reboot" TSX_IDLED_STATE="$F/run/tsx-idled.state" \
-	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf" TSX_ALS_CONF="$F/etc/tsx/als.conf.missing" TSX_ASOUND_DIR="$F/proc/asound" \
+	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf" TSX_BUTTONS_BOARD_CONF="$F/etc/tsx/buttons-board.conf.missing" \
+	TSX_ALS_CONF="$F/etc/tsx/als.conf.missing" TSX_ASOUND_DIR="$F/proc/asound" \
 	sh "$HERE/../base/usr/local/sbin/tsx-panelctl" > "$T/panelctl.log" 2>&1 &
 PIDS="$PIDS $!"
 for _ in $(seq 1 30); do grep -q "listening on" "$T/panelctl.log" 2>/dev/null && break; sleep 0.1; done
@@ -136,7 +137,8 @@ start_server() {
 	env PATH="$F/bin:$PATH" \
 	PYTHONPATH="$SHIM:$LVA_SRC" \
 	TSX_RUN_DIR="$F/run/tsx" TSX_IDLED_STATE="$F/run/tsx-idled.state" \
-	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf" TSX_KIOSK_CONF="$F/etc/kiosk.conf" \
+	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf" TSX_BUTTONS_BOARD_CONF="$F/etc/tsx/buttons-board.conf.missing" \
+	TSX_KIOSK_CONF="$F/etc/kiosk.conf" \
 	TSX_ALS_CONF="$F/etc/tsx/als.conf.missing" TSX_ASOUND_DIR="$F/proc/asound" \
 	TSX_THERMAL_ZONE="$F/sys/thermal/temp" TSX_DEVTOOLS="127.0.0.1:$DT_HTTP" \
 	TSX_BOOT_VERBOSE_FLAG="$F/etc/tsx/boot-verbose" \
@@ -184,10 +186,10 @@ full_check() {
 	: > "$F/cmds.log"; rm -f "$F/run/tsx/brightness" "$F/etc/tsx/boot-verbose"
 	echo 120 > "$F/run/tsx/blank-timeout"      # tsx-config apply's file (panel.conf BLANK_TIMEOUT)
 	date +%s > "$F/run/tsx/last-input"        # tsx-idled: a touch just now
-	printf 'led 128 unknown\nlast power short\n' > "$F/run/tsx/buttons.state"
+	printf 'leds yes\nled 128 unknown\nlast power short\n' > "$F/run/tsx/buttons.state"
 	# simulate a front-key long-press partway through the client check
 	# (which polls for it for up to 10 s)
-	( sleep 3; printf 'led 128 unknown\nlast home long\n' > "$F/run/tsx/buttons.state" ) &
+	( sleep 3; printf 'leds yes\nled 128 unknown\nlast home long\n' > "$F/run/tsx/buttons.state" ) &
 	PIDS="$PIDS $!"
 	"$T/venv/bin/python3" "$HERE/esphome-check.py" "$port" "$@" || rc=1
 	sleep 0.5   # tsx-panelctl runs the commands a moment after the backend sent them
@@ -436,9 +438,10 @@ BARE_PORT=$((API_PORT + 60))
 mkdir -p "$F/bare/run"
 cp -r "$F/run/tsx/." "$F/bare/run/"
 rm -f "$F/bare/run/emmc.state"
+printf 'leds no\nled 0 unknown\n' > "$F/bare/run/buttons.state"
 date +%s > "$F/bare/run/last-input"
 start_server standalone "$T/server-bare.log" "$BARE_PORT" Bare-Panel TSX_HA_API_KEY= \
-	TSX_RUN_DIR="$F/bare/run" TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf.missing" TSX_LEDBAR=tsx-ledbar-not-installed
+	TSX_RUN_DIR="$F/bare/run" TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf.missing" TSX_BUTTONS_BOARD_CONF="$F/etc/tsx/buttons-board.conf.missing" TSX_LEDBAR=tsx-ledbar-not-installed
 wait_listening "$T/server-bare.log"
 echo "== tsx-esphome, no front keys, no LED bar, no eMMC health =="
 "$T/venv/bin/python3" "$HERE/esphome-check.py" "$BARE_PORT" --name bare-panel --friendly Bare-Panel --bare || rc=1

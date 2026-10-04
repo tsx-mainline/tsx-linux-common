@@ -56,7 +56,7 @@ exec sh "$HERE/../base/usr/local/sbin/tsx-panelctl" "\$@"
 EOF
 chmod +x "$F"/bin/*
 env PATH="$F/bin:$PATH" TSX_RUN_DIR="$F/run/tsx" TSX_IDLED_STATE="$F/run/tsx-idled.state" \
-	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf.missing" TSX_ALS_CONF="$F/etc/tsx/als.conf.missing" TSX_ASOUND_DIR="$F/proc/asound" \
+	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf.missing" TSX_BUTTONS_BOARD_CONF="$F/etc/tsx/buttons-board.conf.missing" TSX_ALS_CONF="$F/etc/tsx/als.conf.missing" TSX_ASOUND_DIR="$F/proc/asound" \
 	sh "$HERE/../base/usr/local/sbin/tsx-panelctl" > "$T/panelctl.log" 2>&1 &
 PIDS="$PIDS $!"
 for _ in $(seq 1 30); do grep -q "listening on" "$T/panelctl.log" 2>/dev/null && break; sleep 0.1; done
@@ -72,7 +72,7 @@ start_server() {
 	esac
 	env PATH="$F/bin:$PATH" PYTHONPATH="$SHIM:$LVA_SRC" \
 	TSX_RUN_DIR="$F/run/tsx" TSX_IDLED_STATE="$F/run/tsx-idled.state" \
-	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf.missing" TSX_KIOSK_CONF="$F/etc/kiosk.conf" \
+	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf.missing" TSX_BUTTONS_BOARD_CONF="$F/etc/tsx/buttons-board.conf.missing" TSX_KIOSK_CONF="$F/etc/kiosk.conf" \
 	TSX_ALS_CONF="$F/etc/tsx/als.conf.missing" TSX_ASOUND_DIR="$F/proc/asound" \
 	TSX_THERMAL_ZONE="$F/sys/thermal/temp" TSX_DEVTOOLS="127.0.0.1:1" \
 	TSX_BOOT_VERBOSE_FLAG="$F/etc/tsx/boot-verbose" TSX_HA_TRANSPORT=esphome TSX_TFLITE_SO="$T/libtflite.so" \

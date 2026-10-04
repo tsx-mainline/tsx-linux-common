@@ -1,17 +1,31 @@
 /*
- * tsx-buttons: front-panel keys and key LEDs of the xx60.
+ * tsx-buttons: front keys and key LEDs of a panel.
  *
- * The five capacitive keys right of the LCD are touch-overlay buttons of the
- * FocalTech touch controller (edt-ft5x06 and touch-overlay, board DTS). They
- * arrive as KEY_F13..KEY_F17 on the event device of the touchscreen. Their
- * LEDs have one common PWM brightness (/sys/class/leds/tsx:keypad, 0..255)
- * and one enable per key (/sys/class/leds/tsx:key1..5).
+ * A panel can have keys on its front, for example capacitive keys beside the
+ * screen. The kernel reports each key as a key code on an input device. A key
+ * can have an LED. The LEDs are LED class devices. All key LEDs share one PWM
+ * LED for the brightness (LED_PWM). Each key LED also has an enable LED
+ * (LED_KEY_PREFIX plus the number).
  *
- *  - Key events trigger actions from /etc/tsx/buttons.conf. A short press
- *    fires on release, a long press fires at LONG_PRESS_MS, and a hold is a
- *    long press plus repeat.
+ * What the keys are comes from the board. The board layer
+ * /etc/tsx/buttons-board.conf holds the `button` lines, the LED names and the
+ * settings that depend on the hardware. The file /etc/tsx/buttons.conf comes
+ * after it. It holds the settings of the user, and it can add or replace keys
+ * and bind actions. docs/buttons.md describes both files.
+ *
+ *  - Config order: the board layer, then buttons.conf, then rundir/buttons.conf
+ *    (tsx-config apply writes it from panel.conf, for example LED_BLANK from
+ *    KEY_LED_BLANK). A later file replaces a setting of an earlier file. A
+ *    `button` line with a known name replaces the earlier key of that name.
+ *    The file in rundir has settings only.
+ *  - Every press fires the Home Assistant event (HA_EVENT) and writes the
+ *    "last" line of buttons.state. Without actions, a press does nothing else.
+ *    The ESPHome event entities read the "last" line.
+ *  - Key events trigger actions from the config. A short press fires on
+ *    release, a long press fires at LONG_PRESS_MS, and a hold is a long press
+ *    plus repeat.
  *    Actions: exec, ha, ha-post, navigate, home, reload, blank, brightness,
- *    led, none. An optional HA event fires per press (HA_EVENT).
+ *    led, overlay, none.
  *  - The LED level follows the screen. It is LED_BLANK (the screen-off level)
  *    while tsx-idled has the screen blanked (/run/tsx-idled.state), and
  *    LED_DAY or LED_NIGHT when the screen is awake. An override (control FIFO
@@ -20,26 +34,26 @@
  *    the day/night change. The override 0 ("led off") keeps the keys dark in
  *    every screen state. Any other override is the awake level only. While
  *    the screen is blank, the keys show LED_BLANK.
- *  - Settings in rundir/buttons.conf (tsx-config apply writes it from
- *    panel.conf, for example LED_BLANK from KEY_LED_BLANK) replace the same
- *    settings of the config file. That file has no button or "on" lines.
+ *  - buttons.state has the line "leds yes" when the panel has key LEDs: a key
+ *    with led=N, and the LED_PWM device. Else it has "leds no".
  *  - Brightness: "brightness N" writes /run/tsx/brightness, an absolute level.
  *    tsx-idled uses it in place of ALS or its day/night level until the next
  *    day/night change. "brightness +N|-N" and the key-strip slide are the
  *    local manual setting: an offset on top of ALS or the schedule
  *    (/run/tsx/brightness-offset). tsx-idled applies it at once, through
- *    inotify.
- *  - Key-strip slide (SLIDE_STEP > 0): the keys with led=1..5 form one strip,
- *    top to bottom. The touch overlay reports them as separate keys only (no
- *    coordinates). So a finger that slides along the strip looks like this:
- *    key N is released, and the next key is pressed within SLIDE_GAP_MS.
- *    Each such step changes the brightness offset by SLIDE_STEP (up = brighter)
- *    and shows the slider of the overlay. The keys are raw touch-controller
- *    zones and do not turn with the screen. When the panel hangs
- *    landscape-flipped or portrait-flipped (/etc/tsx/orientation,
- *    docs/rootfs.md "Orientation"), the daemon turns the direction around.
- *    Up (landscape) or right (portrait) is then brighter in every orientation.
- *    To tell a tap from the start of a slide, a short press of a strip key
+ *    inotify. The top level is the "max" line of brightness.state, else
+ *    BACKLIGHT_MAX (board layer or kiosk.conf), else max_brightness of the
+ *    backlight device.
+ *  - Key-strip slide (SLIDE_STEP > 0, default 0): the keys with led=N form one
+ *    strip, in the order of N. The touch controller of such a panel reports
+ *    the keys as separate keys only (no coordinates). So a finger that slides
+ *    along the strip looks like this: key N is released, and the next key is
+ *    pressed within SLIDE_GAP_MS. Each such step changes the brightness offset
+ *    by SLIDE_STEP and shows the slider of the overlay. A slide toward the key
+ *    with the lowest N is brighter. The keys do not turn with the screen. When
+ *    the panel hangs
+ *    landscape-flipped or portrait-flipped (/etc/tsx/orientation), the daemon
+ *    turns the direction around. To tell a tap from the start of a slide, a short press of a strip key
  *    fires SLIDE_GAP_MS after its release (unless the next key follows).
  *    Keys that a slide touches fire nothing (no short, long or HA event).
  *  - Quick-settings overlay (tsx-overlay, sway only): FIFO /run/tsx/overlay.ctl
@@ -50,10 +64,12 @@
  *    "overlay full|slider|hide|toggle", "reload", "status".
  *    State: /run/tsx/buttons.state.
  *  - While tsx-idled has the screen blanked, it grabs all input devices. A
- *    key press on a dark screen then only wakes the screen (no action).
+ *    key press on a dark screen then only wakes the screen (no action, no
+ *    event).
  *
  * Env overrides for tests: TSX_INPUT_DIR, TSX_LED_DIR, TSX_BACKLIGHT_DIR,
- * TSX_RUN_DIR, TSX_IDLED_STATE, TSX_HOSTNAME, TSX_ORIENTATION_FILE.
+ * TSX_RUN_DIR, TSX_IDLED_STATE, TSX_HOSTNAME, TSX_ORIENTATION_FILE,
+ * TSX_BUTTONS_BOARD_CONF, TSX_PANEL_BOARD_CONF.
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -82,7 +98,7 @@
 #define MAXDEV 16
 #define MAXBTN 16
 #define MAXBIND 64
-#define NLED 5
+#define MAXLED 16
 enum { EV_SHORT, EV_LONG, EV_HOLD, NEVT };
 static const char *evname[NEVT] = { "short", "long", "hold" };
 
@@ -93,6 +109,7 @@ struct cfg {
 	int long_ms, hold_ms, feedback_ms, ha_timeout;
 	int led_day, led_night, led_blank, night_start, night_end;
 	int bl_max;
+	int nleds;                      /* the highest led=N of any key */
 	int slide_step, slide_gap_ms;
 	char overlay_fallback[128];
 	char ha_url[256], ha_token_file[PATH_MAX], ha_event[64], kiosk_url[512];
@@ -104,6 +121,7 @@ struct cfg {
 
 static struct cfg C;
 static const char *cfgfile = "/etc/tsx/buttons.conf";
+static const char *boardfile = "/etc/tsx/buttons-board.conf", *panel_board = "/etc/tsx/panel-board.conf";
 static const char *indir = "/dev/input", *leddir = "/sys/class/leds", *bldir_base = "/sys/class/backlight";
 static const char *rundir = "/run/tsx", *idled_state = "/run/tsx-idled.state";
 static const char *orient_file = "/etc/tsx/orientation";
@@ -116,9 +134,9 @@ static struct dev devs[MAXDEV];
 static int ndev;
 
 /* runtime state */
-static int blanked = -1, led_override = -1, key_override[NLED] = { -1, -1, -1, -1, -1 };
-static int led_written = -2, key_written[NLED] = { -2, -2, -2, -2, -2 };
-static long long feedback_until[NLED];
+static int blanked = -1, led_override = -1, key_override[MAXLED];
+static int led_written = -2, key_written[MAXLED];
+static long long feedback_until[MAXLED];
 static int night_now = -1;
 static char last_press[96] = "none";
 /* key-strip slide: a strip key's short press waits pend_until for a slide */
@@ -204,14 +222,13 @@ static void cfg_defaults(struct cfg *c)
 	memset(c, 0, sizeof *c);
 	c->long_ms = 700; c->hold_ms = 300; c->feedback_ms = 120; c->ha_timeout = 10;
 	c->led_day = 128; c->led_night = 24; c->led_blank = 0;
-	c->night_start = -1; c->night_end = -1; c->bl_max = 23;
+	c->night_start = -1; c->night_end = -1; c->bl_max = 0;
 	strcpy(c->ha_token_file, "/etc/tsx/ha-token");
 	strcpy(c->kiosk_conf, "/etc/kiosk.conf");
 	strcpy(c->devtools, "127.0.0.1:9222");
 	strcpy(c->nav_fallback, "restart");
-	strcpy(c->led_pwm, "tsx:keypad"); strcpy(c->led_key, "tsx:key");
 	strcpy(c->backlight, "auto");
-	c->slide_step = 2; c->slide_gap_ms = 250;
+	c->slide_step = 0; c->slide_gap_ms = 250;
 	strcpy(c->overlay_fallback, "blank toggle");
 }
 
@@ -236,17 +253,19 @@ static void kiosk_conf_load_file(struct cfg *c, const char *path, int *ns, int *
 }
 
 /* The few kiosk.conf settings that this daemon shares with the kiosk and
- * tsx-idled. Load c->kiosk_conf (default /etc/kiosk.conf) first. If
- * rundir/kiosk.conf exists, layer it on top. `tsx-config apply` writes it
- * from the KIOSK_URL and TZ_NAME overrides of panel.conf. The precedence is
- * the same as in kiosk-session and in backend.py of the voice satellite
- * (_configured_kiosk_url), see docs/rootfs.md "Panel configuration". */
+ * tsx-idled. Load c->kiosk_conf (default /etc/kiosk.conf) first. Then load
+ * the board layer panel-board.conf, as tsx-idled does. If rundir/kiosk.conf
+ * exists, layer it on top. `tsx-config apply` writes it from the KIOSK_URL
+ * and TZ_NAME overrides of panel.conf. The precedence is the same as in
+ * kiosk-session and in backend.py of the voice satellite
+ * (_configured_kiosk_url). */
 static void kiosk_conf_load(struct cfg *c, int *ns, int *ne)
 {
 	char override[PATH_MAX];
 	strcpy(c->kiosk_url, "https://ha.example.org");
 	*ns = 22; *ne = 7;
 	kiosk_conf_load_file(c, c->kiosk_conf, ns, ne);
+	if (strcmp(panel_board, c->kiosk_conf)) kiosk_conf_load_file(c, panel_board, ns, ne);
 	snprintf(override, sizeof override, "%s/kiosk.conf", rundir);
 	if (strcmp(override, c->kiosk_conf)) kiosk_conf_load_file(c, override, ns, ne);
 }
@@ -275,15 +294,18 @@ static void cfg_line(struct cfg *c, char *line, const char *path, int lineno, in
 	if (!*p || *p == '#') return;
 	if (settings_only && (is_button || is_on)) { logm("%s:%d: only KEY=VALUE settings here, line ignored", path, lineno); return; }
 	if (is_button) {
-		/* button NAME KEYCODE [led=N] */
+		/* button NAME KEYCODE [led=N]. A known NAME replaces that key in
+		 * place, so the bindings of the key stay. */
 		char nm[32] = "", kc[32] = "", opt[32] = "";
-		int n = sscanf(p + 6, "%31s %31s %31s", nm, kc, opt), code = keycode(kc);
-		if (n < 2 || code < 0 || c->nbtn >= MAXBTN) { logm("%s:%d: bad button line", path, lineno); return; }
-		struct button *b = &c->btn[c->nbtn++];
+		int n = sscanf(p + 6, "%31s %31s %31s", nm, kc, opt), code = keycode(kc), bi = -1;
+		for (int i = 0; n >= 1 && i < c->nbtn; i++) if (!strcmp(c->btn[i].name, nm)) bi = i;
+		if (n < 2 || code < 0 || (bi < 0 && c->nbtn >= MAXBTN)) { logm("%s:%d: bad button line", path, lineno); return; }
+		if (bi < 0) bi = c->nbtn++;
+		struct button *b = &c->btn[bi];
 		memset(b, 0, sizeof *b);
 		snprintf(b->name, sizeof b->name, "%s", nm); b->code = code; b->led = 0;
 		if (n == 3 && !strncmp(opt, "led=", 4)) b->led = atoi(opt + 4);
-		if (b->led < 0 || b->led > NLED) b->led = 0;
+		if (b->led < 0 || b->led > MAXLED) { logm("%s:%d: led=%d is out of range (1 to %d)", path, lineno, b->led, MAXLED); b->led = 0; }
 		return;
 	}
 	if (is_on) {
@@ -330,7 +352,13 @@ static void cfg_load(void)
 {
 	struct cfg c; FILE *f; char line[1024], override[PATH_MAX]; int lineno = 0, ns, ne;
 	cfg_defaults(&c);
-	if (!(f = fopen(cfgfile, "r"))) logm("no %s, using defaults (no buttons bound)", cfgfile);
+	/* the board layer first: the keys and the LED names of the hardware */
+	if ((f = fopen(boardfile, "r"))) {
+		while (fgets(line, sizeof line, f)) cfg_line(&c, line, boardfile, ++lineno, 0);
+		fclose(f);
+		lineno = 0;
+	}
+	if (!(f = fopen(cfgfile, "r"))) logm("no %s, using the board layer and the defaults", cfgfile);
 	while (f && fgets(line, sizeof line, f)) cfg_line(&c, line, cfgfile, ++lineno, 0);
 	if (f) fclose(f);
 	/* the panel.conf override (tsx-config apply): its settings win */
@@ -351,6 +379,7 @@ static void cfg_load(void)
 	if (c.slide_gap_ms < 50) c.slide_gap_ms = 50;
 	if (c.slide_gap_ms > 1000) c.slide_gap_ms = 1000;
 	if (!strncmp(c.overlay_fallback, "overlay", 7)) strcpy(c.overlay_fallback, "none");
+	for (int i = 0; i < c.nbtn; i++) if (c.btn[i].led > c.nleds) c.nleds = c.btn[i].led;
 	c.led_day = clamp_led(c.led_day); c.led_night = clamp_led(c.led_night); c.led_blank = clamp_led(c.led_blank);
 	C = c;
 
@@ -367,8 +396,8 @@ static void cfg_load(void)
 	if (t) fclose(t);
 	memset(tok, 0, sizeof tok);
 	if (!have_token) unlink(hdrfile);
-	logm("%d buttons, %d bindings, long %d ms, LED day %d night %d blank %d (%02d-%02d h), HA %s (%s), event %s, slide %s",
-	     C.nbtn, C.nbind, C.long_ms, C.led_day, C.led_night, C.led_blank, C.night_start, C.night_end,
+	logm("%d buttons, %d bindings, %d key LEDs, long %d ms, LED day %d night %d blank %d (%02d-%02d h), HA %s (%s), event %s, slide %s",
+	     C.nbtn, C.nbind, C.nleds, C.long_ms, C.led_day, C.led_night, C.led_blank, C.night_start, C.night_end,
 	     C.ha_url, have_token ? "token" : "no token", C.ha_event[0] ? C.ha_event : "off",
 	     C.slide_step > 0 ? "on" : "off");
 }
@@ -415,6 +444,15 @@ static const char *led_source(void)
 
 static void write_state(void);
 
+/* Whether the panel has key LEDs: a key with led=N, and the LED_PWM device. */
+static int leds_present(void)
+{
+	char p[PATH_MAX];
+	if (C.nleds <= 0 || !C.led_pwm[0]) return 0;
+	led_path(p, sizeof p, C.led_pwm);
+	return access(p, F_OK) == 0;
+}
+
 /* force: write again even if the value seems to be there already (someone
  * else may have written it) */
 static void leds_apply(int force)
@@ -422,17 +460,18 @@ static void leds_apply(int force)
 	char p[PATH_MAX]; int lvl = led_target(); long long t = now_ms();
 	if (lvl < 0) lvl = 0;
 	if (lvl > 255) lvl = 255;
+	if (!leds_present()) { write_state(); return; }
 	led_path(p, sizeof p, C.led_pwm);
 	if (force || lvl != led_written) {
 		if (read_int_path(p) != lvl && write_int_path(p, lvl)) {
 			if (led_written != -3) logm("cannot write %s: %s", p, strerror(errno));
 			led_written = -3;
 		} else {
-			if (verbose && lvl != led_written) logm("keypad LED %d", lvl);
+			if (verbose && lvl != led_written) logm("key LED %d", lvl);
 			led_written = lvl;
 		}
 	}
-	for (int i = 0; i < NLED; i++) {
+	for (int i = 0; i < C.nleds && C.led_key[0]; i++) {
 		char nm[80]; int on;
 		snprintf(nm, sizeof nm, "%s%d", C.led_key, i + 1);
 		on = lvl > 0 && key_override[i] != 0 && t >= feedback_until[i];
@@ -483,6 +522,21 @@ static int bstate_field(const char *key)
 	return v;
 }
 
+/* The top backlight level. The "max" line of brightness.state comes first
+ * (tsx-idled has applied BACKLIGHT_MAX and the device limit). Without it,
+ * BACKLIGHT_MAX of the board layer and kiosk.conf, but not above the
+ * max_brightness of the device. Without a setting, max_brightness. Return
+ * 0 or less when none is known. */
+static int bl_ceiling(void)
+{
+	char p[PATH_MAX + 32]; int max = bstate_field("max");
+	if (max > 0) return max;
+	if (!bldir[0]) find_backlight();
+	if (bldir[0]) { snprintf(p, sizeof p, "%s/max_brightness", bldir); max = read_int_path(p); }
+	if (C.bl_max > 0 && (max <= 0 || max > C.bl_max)) max = C.bl_max;
+	return max;
+}
+
 /* Relative change (+N/-N, key-strip slide). This is the local manual setting,
  * an offset on top of the base level of tsx-idled (ALS or schedule), so the
  * ambient light still moves the backlight. The change starts from the level
@@ -494,16 +548,13 @@ static int brightness_rel(int delta)
 	char p[PATH_MAX + 32]; int cur, max, base, lvl;
 	if (blanked == 1) return -1;
 	if (!bldir[0]) find_backlight();
-	max = bstate_field("max"); base = bstate_field("base");
+	max = bl_ceiling(); base = bstate_field("base");
 	cur = slide_on && slide_want > 0 ? slide_want : bstate_field("level");
 	if (bldir[0]) {
-		snprintf(p, sizeof p, "%s/max_brightness", bldir);
-		if (max <= 0) max = read_int_path(p);
 		snprintf(p, sizeof p, "%s/brightness", bldir);
 		if (cur <= 0) cur = read_int_path(p);
 	}
 	if (max <= 0 || cur < 0) { logm("brightness: no backlight / tsx-idled state"); return -1; }
-	if (C.bl_max > 0 && max > C.bl_max) max = C.bl_max;
 	lvl = cur + delta;
 	if (lvl < 1) lvl = 1;
 	if (lvl > max) lvl = max;
@@ -528,10 +579,9 @@ static void do_brightness(const char *arg)
 	if (arg[0] == '+' || arg[0] == '-') { brightness_rel(atoi(arg)); return; }
 	if (!bldir[0]) find_backlight();
 	if (!bldir[0]) { logm("brightness: no backlight"); return; }
-	snprintf(p, sizeof p, "%s/max_brightness", bldir); max = read_int_path(p);
+	max = bl_ceiling();
 	snprintf(p, sizeof p, "%s/brightness", bldir); cur = read_int_path(p);
 	if (max <= 0 || cur < 0) { logm("brightness: cannot read %s", bldir); return; }
-	if (C.bl_max > 0 && max > C.bl_max) max = C.bl_max;
 	lvl = (arg[0] == '+' || arg[0] == '-') ? cur + atoi(arg) : atoi(arg);
 	if (lvl < 1) lvl = 1;
 	if (lvl > max) lvl = max;
@@ -556,7 +606,7 @@ static void do_led(const char *arg)
 	else if (isdigit((unsigned char)arg[0])) v = clamp_led(atoi(arg));
 	else { logm("led: bad argument '%s'", arg); return; }
 	led_override = v;
-	logm("keypad LED override %s", led_override < 0 ? "auto" : arg);
+	logm("key LED override %s", led_override < 0 ? "auto" : arg);
 	leds_apply(0);
 }
 
@@ -1084,7 +1134,7 @@ static void timers(long long t)
 		b->t_next = t + C.hold_ms;
 		if (!has_binding(i, EV_HOLD)) b->t_next = LLONG_MAX;
 	}
-	for (int i = 0; i < NLED; i++)
+	for (int i = 0; i < MAXLED; i++)
 		if (feedback_until[i] && t >= feedback_until[i]) { feedback_until[i] = 0; leds_apply(0); }
 }
 
@@ -1128,19 +1178,21 @@ static void scan_devices(void)
 /* ---- state / control ---------------------------------------------------- */
 static void write_state(void)
 {
-	char tmp[PATH_MAX + 8], keys[32] = ""; FILE *f;
+	char tmp[PATH_MAX + 8], keys[4 * MAXLED + 4] = ""; FILE *f;
 	snprintf(tmp, sizeof tmp, "%s.tmp", statepath);
 	if (!(f = fopen(tmp, "w"))) return;
-	for (int i = 0; i < NLED; i++)
+	for (int i = 0; i < C.nleds; i++)
 		snprintf(keys + strlen(keys), sizeof keys - strlen(keys), "%s%d", i ? " " : "",
 			 key_written[i] < 0 ? -1 : key_written[i]);
-	/* led: the level on the LEDs and its source. led_awake: the level while
+	/* leds: yes when the panel has key LEDs (leds_present). led: the level on
+	 * the LEDs and its source. led_awake: the level while
 	 * the screen is awake (the Home Assistant light shows it). led_blank: the
 	 * screen-off level (LED_BLANK). */
-	fprintf(f, "screen %s\nled %d %s\nled_awake %d %s\nled_blank %d\nkey_leds %s\nkey_override",
-		blanked == 1 ? "blank" : "awake", led_written, led_source(), clamp_led(led_awake()),
-		led_override >= 0 ? "override" : is_night() ? "night" : "day", C.led_blank, keys);
-	for (int i = 0; i < NLED; i++)
+	fprintf(f, "screen %s\nleds %s\nled %d %s\nled_awake %d %s\nled_blank %d\nkey_leds %s\nkey_override",
+		blanked == 1 ? "blank" : "awake", leds_present() ? "yes" : "no", led_written, led_source(),
+		clamp_led(led_awake()), led_override >= 0 ? "override" : is_night() ? "night" : "day",
+		C.led_blank, keys);
+	for (int i = 0; i < C.nleds; i++)
 		fprintf(f, " %s", key_override[i] < 0 ? "auto" : key_override[i] ? "on" : "off");
 	char bo[PATH_MAX + 32]; int off = 0; FILE *of;
 	snprintf(bo, sizeof bo, "%s/brightness-offset", rundir);
@@ -1154,7 +1206,7 @@ static void write_state(void)
 
 static int key_index(const char *s)
 {
-	if (isdigit((unsigned char)s[0])) { int n = atoi(s); return n >= 1 && n <= NLED ? n - 1 : -1; }
+	if (isdigit((unsigned char)s[0])) { int n = atoi(s); return n >= 1 && n <= C.nleds ? n - 1 : -1; }
 	int b = find_button(s);
 	return b >= 0 && C.btn[b].led ? C.btn[b].led - 1 : -1;
 }
@@ -1202,6 +1254,7 @@ int main(int argc, char **argv)
 #define ENV(v, n) if (getenv(n)) v = getenv(n)
 	ENV(indir, "TSX_INPUT_DIR"); ENV(leddir, "TSX_LED_DIR"); ENV(bldir_base, "TSX_BACKLIGHT_DIR");
 	ENV(rundir, "TSX_RUN_DIR"); ENV(idled_state, "TSX_IDLED_STATE"); ENV(orient_file, "TSX_ORIENTATION_FILE");
+	ENV(boardfile, "TSX_BUTTONS_BOARD_CONF"); ENV(panel_board, "TSX_PANEL_BOARD_CONF");
 #undef ENV
 	if (getenv("TSX_HOSTNAME")) snprintf(hostname_s, sizeof hostname_s, "%s", getenv("TSX_HOSTNAME"));
 	else if (gethostname(hostname_s, sizeof hostname_s)) strcpy(hostname_s, "tsx");
@@ -1219,6 +1272,7 @@ int main(int argc, char **argv)
 	signal(SIGCHLD, SIG_IGN);   /* action children clean up after themselves */
 	signal(SIGPIPE, SIG_IGN);
 
+	for (int i = 0; i < MAXLED; i++) { key_override[i] = -1; key_written[i] = -2; }
 	cfg_load(); find_backlight();
 	scan_devices();
 	blanked = idled_blanked(); night_now = is_night();
@@ -1254,7 +1308,7 @@ int main(int argc, char **argv)
 		/* The poll timeout runs to the next button deadline, the end of the feedback or housekeeping. */
 		long long next = t + 500;
 		for (int i = 0; i < C.nbtn; i++) if (C.btn[i].down && C.btn[i].t_next < next) next = C.btn[i].t_next;
-		for (int i = 0; i < NLED; i++) if (feedback_until[i] && feedback_until[i] < next) next = feedback_until[i];
+		for (int i = 0; i < MAXLED; i++) if (feedback_until[i] && feedback_until[i] < next) next = feedback_until[i];
 		if (pend_bi >= 0 && pend_until + 1 < next) next = pend_until + 1;
 		if (slide_on && slide_until + 1 < next) next = slide_until + 1;
 		int to = next > t ? (int)(next - t) : 0;

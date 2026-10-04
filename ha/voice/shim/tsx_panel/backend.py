@@ -1,7 +1,7 @@
 """PanelBackend: reads and controls the panel's local state for the ESPHome
 device (tsx-esphome, and the voice satellite's plugin). Mirrors
 rootfs/overlay/usr/local/sbin/tsx-mqtt's shell functions/paths (ledbar_state,
-keypad_state, screen_state, als_state, volume_state, the R/IDLED/BCONF/KCONF/
+key_leds_state, screen_state, als_state, volume_state, the R/IDLED/BCONF/KCONF/
 ACONF/CARD/ASOUND env names) so both transports read the exact same state
 files -- this is the "one backend"; tsx-mqtt
 stays POSIX sh (busybox-only panel shell) while this is Python (the voice
@@ -28,7 +28,8 @@ use the same path.
 
 Env overrides (all also read by tsx-mqtt; new ones only for this module):
   TSX_RUN_DIR (/run/tsx), TSX_IDLED_STATE (/run/tsx-idled.state),
-  TSX_BUTTONS_CONF (/etc/tsx/buttons.conf), TSX_KIOSK_CONF (/etc/kiosk.conf),
+  TSX_BUTTONS_CONF (/etc/tsx/buttons.conf), TSX_BUTTONS_BOARD_CONF
+  (/etc/tsx/buttons-board.conf, the board layer of the keys), TSX_KIOSK_CONF (/etc/kiosk.conf),
   TSX_ALS_CONF (/etc/tsx/als.conf),
   TSX_BOARD_BIN (tsx-board),
   TSX_ASOUND_DIR (/proc/asound), TSX_BACKLIGHT_DIR (/sys/class/backlight),
@@ -155,6 +156,8 @@ class PanelBackend:
         self.run_dir = Path(_env("TSX_RUN_DIR", "/run/tsx"))
         self.idled_state = Path(_env("TSX_IDLED_STATE", "/run/tsx-idled.state"))
         self.buttons_conf = Path(_env("TSX_BUTTONS_CONF", "/etc/tsx/buttons.conf"))
+        # the board layer of the keys (it comes before buttons.conf)
+        self.buttons_board_conf = Path(_env("TSX_BUTTONS_BOARD_CONF", "/etc/tsx/buttons-board.conf"))
         self.kiosk_conf = Path(_env("TSX_KIOSK_CONF", "/etc/kiosk.conf"))
         # the board layer of kiosk.conf (it wins over kiosk.conf)
         self.panel_board_conf = Path(_env("TSX_PANEL_BOARD_CONF", "/etc/tsx/panel-board.conf"))
@@ -366,9 +369,9 @@ class PanelBackend:
         self._send("ledbar", "clear")
 
     # ---- key LEDs --------------------------------------------------------------
-    def keypad_present(self) -> bool:
-        """Front keys with LEDs (buttons.conf)."""
-        return self.buttons_conf.is_file()
+    def key_leds_present(self) -> bool:
+        """The keys have LEDs (tsx-buttons writes "leds yes" to buttons.state)."""
+        return self._panelctl("has", "keyleds")[0]
 
     def get_keypad(self):
         """(on, level) of the Key LEDs light: the level while the screen is
@@ -760,16 +763,18 @@ class PanelBackend:
 
     # ---- front keys --------------------------------------------------------
     def key_names(self):
+        """The names of the keys: the `button` lines of the board layer and of
+        buttons.conf. A name in both files counts once."""
         names = []
-        try:
-            for line in self.buttons_conf.read_text(encoding="utf-8", errors="replace").splitlines():
-                line = line.strip()
-                if line.startswith("button "):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        names.append(parts[1])
-        except OSError:
-            pass
+        for path in (self.buttons_board_conf, self.buttons_conf):
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 3 and parts[0] == "button" and parts[1] not in names:
+                    names.append(parts[1])
         return names
 
     def poll_key_event(self) -> Optional[Tuple[str, str]]:
