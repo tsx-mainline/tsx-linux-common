@@ -74,7 +74,7 @@ messages for the Home Assistant connection that owns the link.
 The proxy is on when $TSX_RUN_DIR/bt.conf (written by tsx-config apply from
 panel.conf BT_PROXY and BT_ACTIVE) says PROXY="on". The active part also
 needs ACTIVE="on". On a panel without a Bluetooth module (BT=no in
-hw.conf, government=1: hw.py) the proxy is always off. Both front ends use one module-level instance (PROXY):
+hw.conf: hw.py) the proxy is always off. Both front ends use one module-level instance (PROXY):
 tsx-esphome (esphome_server.py) and the voice satellite (tsx_lva). The voice
 satellite runs as the kiosk user. It can read bt.conf and bt.mac (mode 644)
 and connect to both sockets (group kiosk).

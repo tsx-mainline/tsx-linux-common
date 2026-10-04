@@ -1,11 +1,13 @@
 #!/sbin/openrc-run
 # Apply /data/tsx/panel.conf (tsx-config, docs/rootfs.md "Panel
-# configuration"). This service does two things.
+# configuration"). This service does three things.
 # 1. It writes the small /run/tsx/*.conf overrides. kiosk-session, kiosk,
 #    tsx-setup, tsx-hostname, tsx-sendspin, tsx-voice and tsx-mqtt read them
 #    after their own /etc defaults.
 # 2. It applies the settings that are not only a file: the root password
 #    hash, an authorized_keys entry, and voice enable or disable.
+# 3. It adds the serial console of the board (TSX_SERIAL_CONSOLE of board.sh)
+#    to /etc/securetty, so root can log in there.
 # It must run before any service that reads those defaults. A board can add
 # services that it must wait for in /etc/conf.d/tsx-config (rc_after="...").
 # First it writes /run/tsx/hw.conf (tsx-hw detect): the parts that this
@@ -21,6 +23,11 @@ depend() {
 start() {
 	checkpath -d -m 0755 /run/tsx
 	/usr/local/sbin/tsx-hw detect || ewarn "tsx-hw detect failed. The services act as on a panel with all parts"
+	# Root can log in on the serial console of the board only when
+	# /etc/securetty lists it. The package ships the list with no board
+	# console, so add the one that board.sh names (once, no duplicate).
+	( . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}" && . /usr/local/lib/tsx/serial.sh && tsx_serial_allow_root ) \
+		|| ewarn "Could not add the serial console to /etc/securetty. Root cannot log in there"
 	# Only a board that has this tool writes the eMMC state. The tool is board glue.
 	if [ -x /usr/local/sbin/tsx-emmc-state ]; then
 		/usr/local/sbin/tsx-emmc-state || ewarn "tsx-emmc-state failed. The eMMC health entities stay off"

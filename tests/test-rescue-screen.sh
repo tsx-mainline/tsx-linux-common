@@ -13,12 +13,13 @@
 #     Enter does not. The shell banner warns while an operation runs.
 #   - the state files that the tools write (tsx-install-state, tsx-op).
 #   - the network line before rcS has set the MAC: "starting" and the MAC from
-#     the U-Boot env, never the random kernel MAC or "no address yet".
-# The test runs under busybox or dash sh and needs no compiler.
+#     the board, never the random kernel MAC or "no address yet".
+#   - the screen gets every board fact (model, firmware, unit id, MAC, extra
+#     line) from the board file. It sources no other helper file.
+# The test runs under busybox or dash sh and needs no compiler. The board is
+# the made-up board of tests/boards/fake. Its MAC comes from a plain file.
 set -eu
-# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
+. "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 RS=$HERE/rescue/usr/sbin/tsx-rescue-status
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -30,28 +31,18 @@ mkdir -p "$T/run" "$T/sbin"
 printf '#!/bin/sh\n[ -e "%s/noip" ] || echo "2: eth0    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0"\n' "$T" > "$T/sbin/ip"
 printf '#!/bin/sh\necho 7.2.8-00116-gb5862166389d\n' > "$T/sbin/uname"
 chmod 755 "$T/sbin/ip" "$T/sbin/uname"
-echo "00:10:7f:00:00:01" > "$T/mac"
+echo "02:fa:ce:00:00:01" > "$T/mac"
+export TSX_MAC_DEV=$T/board-mac
+echo "02:fa:ce:00:00:01" > "$TSX_MAC_DEV"
 echo "built 2026-09-29, kernel flavor stable" > "$T/rver"
 echo "quiet console=tty0" > "$T/cmdline"
-cat > "$T/lib.sh" <<EOF
-tsx_find_disk() { WHOLE=/dev/null; }
-tsx_pick_fwenv() { :; }
-tsx_env() {
-	case \$1 in
-	product_name) echo "TSS-10_[v3.002.1061,_#0A1B2C3D]";;
-	ethaddr) [ -e "$T/noenvmac" ] && return 1; echo "00:10:7f:00:00:01";;
-	*) return 1;;
-	esac
-}
-tsx_unit_id() { echo 00107f000001; }
-EOF
 echo "rescue image active" > "$T/run/rescue-reason"
-echo uboot > "$T/run/tsx-eth0-mac-src"
+echo fakefile > "$T/run/tsx-eth0-mac-src"
 touch "$T/rescue-image"
 sed -e "s|/proc/cmdline|$T/cmdline|g; s|/etc/tsx/rescue-image|$T/rescue-image|g" \
     -e "s|ip -4 -o addr show eth0|$T/sbin/ip|g; s|uname -r|$T/sbin/uname|; s|/sys/class/net/eth0/address|$T/mac|" \
     -e 's|> /dev/kmsg|> /dev/null|; s|> "\$TTY"|>> "$TTY"|' "$RS" > "$T/rs.sh"
-export TSX_RUN=$T/run TSX_STATUS_TTY=$T/frame.raw TSX_LIB=$T/lib.sh TSX_VERFILE=$T/rver TSX_STATUS_IN=$T/keys TSX_STATUS_WAIT=1
+export TSX_RUN=$T/run TSX_STATUS_TTY=$T/frame.raw TSX_VERFILE=$T/rver TSX_STATUS_IN=$T/keys TSX_STATUS_WAIT=1
 
 # render [COLS]: one frame, escape codes stripped
 render() {
@@ -77,11 +68,11 @@ wantnot 'mainline rescue' "no \"mainline rescue -- TSW ...\" line"
 wantnot 'reason for rescue' "no reason row"
 wantnot '^status' "no status row"
 wantnot 'idle: waiting' "no idle status text"
-want '^model        : TSS-10   stock fw v3.002.1061   unit 00107f000001$' "model cleaned, unit shown"
-wantnot '0A1B2C3D' "no tsid on the screen"
+want '^model        : FAKE-100   stock fw v7.3.1   unit fake-0001$' "model, firmware and unit id come from the board file"
+want '^board line   : fake$' "the extra line of the board is on the screen"
 want '^rescue       : built 2026-09-29, kernel flavor stable$' "rescue version + flavor"
 want '^kernel       : 7.2.8-00116-gb5862166389d$' "kernel"
-want '^network      : eth0 192.0.2.10 (dhcp, MAC 00:10:7f:00:00:01, uboot)$' "network"
+want '^network      : eth0 192.0.2.10 (dhcp, MAC 02:fa:ce:00:00:01, fakefile)$' "network"
 want '^repair shell : ssh root@192.0.2.10$' "repair shell"
 wantnot 'password: tsx' "no fixed password on the screen"
 want '^login        : starting$' "login line before tsx-rescue-login has run"
@@ -104,17 +95,17 @@ render 85; fit 85
 echo "== network before rcS has set the MAC =="
 # rcS has not written tsx-eth0-mac-src yet: eth0 has the random kernel MAC and no address.
 rm -f "$T/run/tsx-eth0-mac-src"; touch "$T/noip"; echo "02:5a:11:22:33:44" > "$T/mac"; render
-want '^network      : eth0 (starting) (dhcp, MAC 00:10:7f:00:00:01, uboot)$' "starting: the MAC from the U-Boot env"
+want '^network      : eth0 (starting) (dhcp, MAC 02:fa:ce:00:00:01, fakefile)$' "starting: the MAC from the board"
 wantnot '02:5a:11:22:33:44' "starting: no random kernel MAC"
 wantnot 'no address yet' "starting: no \"no address yet\""
-touch "$T/noenvmac"; render
-want '^network      : eth0 (starting) (dhcp)$' "starting, no env ethaddr: no MAC"
-wantnot '02:5a:11:22:33:44' "starting, no env ethaddr: no random kernel MAC"
-rm -f "$T/noenvmac"
+export TSX_FAKE_NO_MAC=1; render
+want '^network      : eth0 (starting) (dhcp)$' "starting, the board has no MAC: no MAC"
+wantnot '02:5a:11:22:33:44' "starting, the board has no MAC: no random kernel MAC"
+unset TSX_FAKE_NO_MAC
 echo random > "$T/run/tsx-eth0-mac-src"; render
 want '^network      : eth0 (no address yet) (dhcp, MAC 02:5a:11:22:33:44, random)$' "rcS done, DHCP runs: the MAC that eth0 has"
-echo uboot > "$T/run/tsx-eth0-mac-src"; rm -f "$T/noip"; echo "00:10:7f:00:00:01" > "$T/mac"; render
-want '^network      : eth0 192.0.2.10 (dhcp, MAC 00:10:7f:00:00:01, uboot)$' "address assigned"
+echo fakefile > "$T/run/tsx-eth0-mac-src"; rm -f "$T/noip"; echo "02:fa:ce:00:00:01" > "$T/mac"; render
+want '^network      : eth0 192.0.2.10 (dhcp, MAC 02:fa:ce:00:00:01, fakefile)$' "address assigned"
 
 echo "== install running =="
 running "writing eMMC root (p8)"
@@ -189,10 +180,10 @@ want '^WARNING: install is running (writing eMMC root (p8)). DO NOT power off th
 : > "$T/keys"; : > "$T/frame.raw"; rm -f "$T/shell.calls"
 sh "$T/rs.sh" loop && ok "loop exits with its round limit" || bad "loop"
 
-echo "== no tsx-lib.sh (a board file that needs none) =="
-# busybox ash stops a script when "." cannot read its file. A board file can
-# need no tsx-lib.sh, so the screen must work without it.
-NOLIB_BOARD=$T/board-nolib.sh
+echo "== a board file with only some functions =="
+# A board can leave out the functions that it does not need. The screen must
+# draw the frame and exit 0 then.
+NOLIB_BOARD=$T/board-small.sh
 cat > "$NOLIB_BOARD" <<'EOB'
 tsx_board_probe() { return 0; }
 tsx_board_model() { echo FAKE-100; }
@@ -204,11 +195,24 @@ tsx_board_rescue_extra() { :; }
 EOB
 SH=sh; command -v busybox >/dev/null 2>&1 && SH="busybox sh"
 : > "$T/frame.raw"
-rc=0; TSX_LIB=$T/no-such-lib.sh TSX_BOARD_CONF=$NOLIB_BOARD $SH "$T/rs.sh" once || rc=$?
+rc=0; TSX_BOARD_CONF=$NOLIB_BOARD $SH "$T/rs.sh" once || rc=$?
 sed 's/\x1b\[[0-9?;]*[A-Za-z]//g' "$T/frame.raw" > "$T/frame"
-[ "$rc" -eq 0 ] && ok "no tsx-lib.sh: exit 0 ($SH)" || bad "no tsx-lib.sh: exit $rc ($SH)"
-want '^Press Enter for a rescue shell$' "no tsx-lib.sh: the frame is drawn"
-want '^model        : ' "no tsx-lib.sh: the model line"
+[ "$rc" -eq 0 ] && ok "a small board file: exit 0 ($SH)" || bad "a small board file: exit $rc ($SH)"
+want '^Press Enter for a rescue shell$' "a small board file: the frame is drawn"
+want '^model        : FAKE-100$' "a small board file: the model line"
+
+echo "== the screen sources only the board file =="
+# A board that needs a helper file sources it from its own board file.
+grep -n 'tsx-lib\|TSX_LIB' "$RS" > "$T/helper-refs" || true
+[ ! -s "$T/helper-refs" ] && ok "tsx-rescue-status names no helper file of a board" || { bad "tsx-rescue-status names a helper file:"; cat "$T/helper-refs"; }
+[ "$(grep -c '^\. ' "$RS")" = 1 ] && grep -q '^\. "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"$' "$RS" && ok "the only file it sources is the board file" || bad "tsx-rescue-status sources other files"
+# The board file sets the helper functions before the screen calls the board.
+HELPER_BOARD=$T/board-helper.sh
+printf 'echo helper-loaded > "%s/helper.seen"\n' "$T" > "$T/helper.sh"
+printf '. "%s/helper.sh"\ntsx_board_probe() { return 0; }\ntsx_board_model() { echo FAKE-100; }\ntsx_board_stock_fw() { :; }\ntsx_board_unit_id() { :; }\ntsx_board_mac() { :; }\ntsx_board_mac_source() { :; }\ntsx_board_rescue_extra() { :; }\n' "$T" > "$HELPER_BOARD"
+rm -f "$T/helper.seen"; : > "$T/frame.raw"
+TSX_BOARD_CONF=$HELPER_BOARD $SH "$T/rs.sh" once
+[ "$(cat "$T/helper.seen" 2>/dev/null)" = helper-loaded ] && ok "a helper file that the board file sources is loaded once" || bad "the helper file was not loaded"
 
 echo "== wiring =="
 [ -x "$RS" ] && ok "screen script executable" || bad "not executable"

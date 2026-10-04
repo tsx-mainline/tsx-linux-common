@@ -11,6 +11,8 @@ error_log=/var/log/tsx-mqtt.log
 # If that ever fails, `rc-service tsx-mqtt stop` cannot hang: TERM, wait 5s,
 # KILL, wait 5s.
 retry="TERM/5/KILL/5"
+# A board can add services that must start first in /etc/conf.d/tsx-mqtt
+# (rc_after="..."), for example its light daemon.
 depend() { need net; after tsx-idled tsx-buttons tsx-ledbar; }
 start() {
 	# not configured: nothing to run, but do not fail the runlevel

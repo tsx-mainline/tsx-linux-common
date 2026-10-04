@@ -6,7 +6,7 @@
 # own rescue (force-rescue, tsx.rescue, no usable root). The script draws on
 # /dev/tty0 (the panel LCD, through fbcon: docs/recovery.md "The rescue
 # screen"). It also mirrors the screen as one line to /dev/kmsg (with a
-# kernel timestamp, so it reaches ttyAML0). busybox ash only.
+# kernel timestamp, so it reaches the serial console). busybox ash only.
 #
 #   tsx-rescue-status loop    The inittab entry "tty1::respawn:" runs this mode
 #                             and gives it tty1 as stdin and controlling tty.
@@ -33,10 +33,14 @@
 #                             accepts (tsx-rescue-login, run by rcS).
 #   /run/tsx-rescue-otp       the one-time password. Only this screen shows it.
 #                             It never goes to /dev/kmsg, the network or a log.
-#   /run/tsx-eth0-mac-src     uboot|random (rootfs/initramfs/overlay/etc/init.d/rcS).
-#                             Absent: rcS has not set the MAC yet ("starting").
+#   /run/tsx-eth0-mac-src     the MAC source (tsx_board_mac_source of the board) or
+#                             random. The rescue init script writes it.
+#                             Absent: it has not set the MAC yet ("starting").
 #   /etc/tsx/rescue-version   the version line of the rescue image (absent in the initramfs rescue)
-#   the board data (model, stock firmware, unit id, MAC) through board.sh
+#   the board data (model, stock firmware, unit id, MAC) through board.sh.
+#   The script sources only board.sh. A board that needs a helper file (for
+#   example to read its data in the rescue system) sources it in its own
+#   board.sh.
 # Test hooks: TSX_BOARD_CONF (the board file) TSX_RUN TSX_STATUS_TTY (output) TSX_STATUS_IN (keyboard tty)
 # TSX_STATUS_SHELL TSX_STATUS_COLS (default 80) TSX_STATUS_LOOPS (rounds, default endless) TSX_STATUS_WAIT (default 2 s)
 set -u
@@ -47,11 +51,6 @@ SHELLCMD=${TSX_STATUS_SHELL:-/bin/sh -l}
 COLS=${TSX_STATUS_COLS:-80}
 WAIT=${TSX_STATUS_WAIT:-2}
 VERFILE=${TSX_VERFILE:-/etc/tsx/rescue-version}
-# The xx60 board file needs tsx-lib.sh. A rescue image can come without it.
-# Test the file first: busybox ash stops the whole script when "." cannot
-# read its file, also with "|| true".
-LIB=${TSX_LIB:-/usr/share/tsx/tsx-lib.sh}
-if [ -r "$LIB" ]; then . "$LIB"; fi
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 
 # ---- banner: small enough for an 80x25 console (63 columns). On the LCD the
@@ -152,7 +151,7 @@ frame_text() {
 	fi
 	# rcS writes tsx-eth0-mac-src when it has set the MAC. Before that, eth0
 	# still has the random MAC of the kernel and has no address yet. The
-	# screen then shows the MAC from the U-Boot env (or no MAC) and "starting".
+	# screen then shows the MAC from the board (or no MAC) and "starting".
 	noaddr="(no address yet)"
 	if [ -z "$macsrc" ]; then
 		noaddr="(starting)"
@@ -190,9 +189,9 @@ frame_text() {
 	done) echo "$OP_NAME: $OP_STATE"
 		echo "----------------------------------------------------------------";;
 	esac
-	# No power-cycle advice. The result of a power cycle depends on the U-Boot
-	# env (one-shot armed or not, eMMC layout or not), and the screen cannot
-	# promise it.
+	# No power-cycle advice. The result of a power cycle depends on the boot
+	# settings of the board (for example a one-shot boot flag), and the screen
+	# cannot promise it.
 	echo "Press Enter for a rescue shell"
 }
 

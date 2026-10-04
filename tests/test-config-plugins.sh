@@ -66,6 +66,12 @@ out=$(run set FAKEOPT high 2>&1) && ok "set still saves the key" || bad "set fai
 case "$out" in *"FAKEOPT=high is saved, but this panel has no fake option (the fake board has none)"*) ok "set warns with the reason of hw.conf";; *) bad "set warning: $out";; esac
 out=$(run show 2>&1 >/dev/null)
 case "$out" in *"# WARNING: FAKEOPT=high is set, but this panel has no fake option (the fake board has none)"*) ok "show warns with the reason";; *) bad "show warning: $out";; esac
+printf 'FAKEOPT=no\nREASON=\n' > "$HW"
+out=$(run set FAKEOPT high 2>&1)
+case "$out" in *"FAKEOPT=high is saved, but this panel has no fake option. apply leaves it out"*) ok "an empty REASON: the short text, no brackets";; *) bad "empty REASON warning: $out";; esac
+printf 'FAKEOPT=no\n' > "$HW"
+out=$(run set FAKEOPT high 2>&1)
+case "$out" in *"FAKEOPT=high is saved, but this panel has no fake option. apply leaves it out"*) ok "no REASON line: the short text, no brackets";; *) bad "no REASON warning: $out";; esac
 : > "$HW"
 out=$(run set FAKEOPT high 2>&1); [ -z "$out" ] && ok "no warning when the part is there" || bad "unexpected output: $out"
 

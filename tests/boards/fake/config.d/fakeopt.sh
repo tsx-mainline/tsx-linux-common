@@ -19,7 +19,7 @@ cfg_fakeopt_valid() {
 
 cfg_fakeopt_missing() {
 	[ "$(hw_get FAKEOPT)" = no ] || return 1
-	echo "this panel has no fake option ($(hw_get REASON))"
+	echo "this panel has no fake option$(hw_why)"
 }
 
 cfg_fakeopt_apply() {

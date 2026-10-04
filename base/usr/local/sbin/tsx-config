@@ -116,11 +116,12 @@
 # A board can add keys with the plugins of the folder config.d (see "Plugins"
 # below). get, set, validate, unset, show and apply treat these keys like the
 # keys above.
-# A panel without a microphone, a Bluetooth module or a camera (government=1,
-# the TSW-760-NC: /run/tsx/hw.conf, written by tsx-hw at boot) accepts
-# VOICE=on, BT_PROXY=on, BT_ACTIVE=on and a CAMERA mode other than off, so
-# that a panel.conf from another panel still loads. set and show print a
-# warning, and apply treats them as off.
+# A panel without a microphone, a Bluetooth module or a camera (MIC=no, BT=no
+# or CAMERA=no in /run/tsx/hw.conf, written by tsx-hw of the board at boot)
+# accepts VOICE=on, BT_PROXY=on, BT_ACTIVE=on and a CAMERA mode other than
+# off, so that a panel.conf from another panel still loads. set and show
+# print a warning with the REASON text of hw.conf, and apply treats them as
+# off.
 # ROOT_PASSWORD_HASH, SSH_AUTHORIZED_KEY.
 # See installer/panel.conf.example and docs/rootfs.md "Panel configuration"
 # for what each key does.
@@ -164,18 +165,26 @@ is_secret() {
 
 hw_get() { sed -n "s/^$1=//p" "$HW_CONF" 2>/dev/null | tail -n 1; }
 
+# hw_why: " (TEXT)" with the REASON of hw.conf (the tsx-hw of the board writes
+# it). A panel with no REASON gets nothing.
+hw_why() {
+	_hw_r=$(hw_get REASON)
+	[ -z "$_hw_r" ] || printf ' (%s)' "$_hw_r"
+	return 0
+}
+
 # hw_missing KEY: if KEY=on cannot work on this panel, print why and
 # succeed. Else fail and print nothing.
 hw_missing() {
 	case "$1" in
 	VOICE) [ "$(hw_get MIC)" = no ] || return 1
-		echo "this panel has no microphone (government=$(hw_get GOVERNMENT))";;
+		echo "this panel has no microphone$(hw_why)";;
 	BT_PROXY|BT_ACTIVE) [ "$(hw_get BT)" = no ] || return 1
-		echo "this panel has no Bluetooth module (government=$(hw_get GOVERNMENT))";;
+		echo "this panel has no Bluetooth module$(hw_why)";;
 	BT_MAC) [ "$TSX_BT_MAC_SETTABLE" = no ] || return 1
 		echo "this board takes the Bluetooth address from the controller";;
 	CAMERA) [ "$(hw_get CAMERA)" = no ] || return 1
-		echo "this panel has no camera (government=$(hw_get GOVERNMENT))";;
+		echo "this panel has no camera$(hw_why)";;
 	# The distance sensor is not on every board. tsx-hw of the board writes
 	# PRESENCE=no for a panel without one.
 	PRESENCE_WAKE|PRESENCE_DISTANCE_MM|PRESENCE_MIN_MM|PRESENCE_HOLD_S)

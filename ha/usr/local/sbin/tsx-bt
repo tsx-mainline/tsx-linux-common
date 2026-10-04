@@ -40,7 +40,8 @@
 # tsx-hw of the board) never touches the chip: no reset, no UART. "up",
 # "down" and "status" then report state=absent with the reason, and exit 0.
 # The reason is chip_absent_reason of the chip file. Without that function,
-# or without a chip file, it is the REASON= text of hw.conf.
+# or without a chip file, it is a short text with the REASON= text of hw.conf
+# in brackets. Without a REASON, it is the short text only.
 #
 # A chip file that TSX_BT_CHIP names but that is missing gets a warning. "up"
 # then runs with no chip steps. It ends with state=failed if hciN does not
@@ -87,9 +88,17 @@ if [ "$CHIP" != none ]; then
 	fi
 fi
 
+# hw_why: " (TEXT)" with the REASON of hw.conf, or nothing when hw.conf has no
+# REASON. The short text then has no empty brackets.
+hw_why() {
+	_why=$(hw_get REASON)
+	[ -z "$_why" ] || printf ' (%s)' "$_why"
+	return 0
+}
+
 absent_reason() {
 	if [ "$HAVE_CHIP" = yes ] && type chip_absent_reason >/dev/null 2>&1; then chip_absent_reason
-	else echo "no Bluetooth module on this board ($(hw_get REASON))"
+	else echo "no Bluetooth module on this board$(hw_why)"
 	fi
 }
 

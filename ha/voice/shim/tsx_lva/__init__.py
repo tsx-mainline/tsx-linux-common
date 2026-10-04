@@ -441,7 +441,7 @@ def _patch():
     from tsx_panel import hw  # noqa: WPS433
 
     if not hw.present("MIC"):
-        print(f"tsx_lva: no microphone on this panel ({hw.reason()}). The voice satellite does not start",
+        print(f"tsx_lva: no microphone on this panel{hw.reason_tail()}. The voice satellite does not start",
               file=sys.stderr, flush=True)
         sys.exit(1)
     # HA_API_KEY + HA_ALLOW_FROM (panel.conf): enforced unconditionally,

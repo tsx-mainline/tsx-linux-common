@@ -6,7 +6,9 @@ respawn_delay=5
 respawn_max=0
 output_log=/var/log/tsx-esphome.log
 error_log=/var/log/tsx-esphome.log
-depend() { need net; after tsx-idled tsx-buttons tsx-ledbar tsx-als tsx-config avahi-daemon; }
+# A board can add services that must start first in /etc/conf.d/tsx-esphome
+# (rc_after="..."), for example its light daemon.
+depend() { need net; after tsx-idled tsx-buttons tsx-ledbar tsx-config avahi-daemon; }
 start() {
 	# HA_TRANSPORT=mqtt means the panel config opted out of ESPHome entirely.
 	# Like tsx-mqtt when unconfigured: exit quietly and do not fail the
@@ -20,7 +22,7 @@ start() {
 	# ("tsx-audio enable voice", which tsx-config apply runs for VOICE=on).
 	# The runlevel is the one source, so a hand "tsx-audio disable voice"
 	# gives the port back to this device. If the satellite cannot start,
-	# this device serves the entities: no microphone (MIC=no, government=1),
+	# this device serves the entities: no microphone (MIC=no in hw.conf),
 	# or the wake word library is missing (package tensorflow-lite-c).
 	voice=off
 	if [ -e "${TSX_RUNLEVEL_DIR:-/etc/runlevels/default}/tsx-voice" ] && [ -e /etc/init.d/tsx-voice ]; then

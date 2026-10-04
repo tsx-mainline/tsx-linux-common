@@ -33,3 +33,10 @@ def present(part, path=None):
 
 def reason(path=None):
     return get("REASON", path) or "unknown reason"
+
+
+def reason_tail(path=None):
+    """The REASON text of hw.conf as " (TEXT)" for the end of a message about
+    a missing part. A panel with no REASON gets "" (a short message)."""
+    text = get("REASON", path)
+    return " (%s)" % text if text else ""

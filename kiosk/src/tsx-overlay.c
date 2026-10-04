@@ -45,6 +45,7 @@
  * OVERLAY_FULL_MS (8000), TSX_OVERLAY_VERBOSE=1.
  */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -92,7 +93,7 @@ static int cur_mv, out_h;                /* the top and bottom margin of the sur
 static long long hide_at;
 
 /* the state on show */
-static int level = -1, base = -1, offset, override, maxlvl = 23, minlvl = 1, als_auto = -1;
+static int level = -1, base = -1, offset, override, maxlvl = 31, minlvl = 1, als_auto = -1;
 static int drag_level = -1;              /* level under the finger while dragging */
 static long long drag_hold;              /* ...shown until tsx-idled reports it (or until this time) */
 static int pressed = B_NONE, press_inside, touch_id = -1, ptr_down;
@@ -144,14 +145,39 @@ static int ifield(const char *path, const char *key, int def)
 	return field(path, key, b, sizeof b) ? def : atoi(b);
 }
 
+/* The top level before tsx-idled has written the "max" line of
+ * brightness.state: max_brightness of the first backlight device (the lowest
+ * name), else 31. This is the rule of bl_max in tsx-panelctl. The board sets
+ * no number here. Test hook: TSX_BACKLIGHT_DIR. */
+static int fallback_max(void)
+{
+	const char *dir = getenv("TSX_BACKLIGHT_DIR");
+	char best[NAME_MAX + 1] = "", p[PATH_MAX + NAME_MAX + 32];
+	struct dirent *e;
+	int max = 0;
+	DIR *d;
+	if (!dir) dir = "/sys/class/backlight";
+	if (!(d = opendir(dir))) return 31;
+	while ((e = readdir(d))) {
+		FILE *f; int v = 0;
+		if (e->d_name[0] == '.' || (best[0] && strcmp(e->d_name, best) >= 0)) continue;
+		snprintf(p, sizeof p, "%s/%s/max_brightness", dir, e->d_name);
+		if (!(f = fopen(p, "r"))) continue;
+		if (fscanf(f, "%d", &v) == 1 && v >= 2) { snprintf(best, sizeof best, "%s", e->d_name); max = v; }
+		fclose(f);
+	}
+	closedir(d);
+	return max >= 2 ? max : 31;
+}
+
 /* Return 1 if anything shown changed. */
 static int read_state(void)
 {
 	char b[32];
 	int l = ifield(bstate, "level", -1), ba = ifield(bstate, "base", -1), of = ifield(bstate, "offset", 0);
-	int ov = ifield(bstate, "override", 0), mx = ifield(bstate, "max", 23), mn = ifield(bstate, "min", 1), a = -1;
+	int ov = ifield(bstate, "override", 0), mx = ifield(bstate, "max", 0), mn = ifield(bstate, "min", 1), a = -1;
 	if (!field(astate, "auto", b, sizeof b)) a = !strcmp(b, "on");
-	if (mx < 2) mx = 23;
+	if (mx < 2) mx = fallback_max();
 	if (mn < 1 || mn >= mx) mn = 1;
 	int ch = l != level || ba != base || of != offset || ov != override || mx != maxlvl || mn != minlvl || a != als_auto;
 	level = l; base = ba; offset = of; override = ov; maxlvl = mx; minlvl = mn; als_auto = a;

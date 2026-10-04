@@ -95,9 +95,10 @@ TEXT = {
 def unavailable(hw):
     """The settings that this panel cannot use, with the reason (hw is the
     content of hw.conf from tsx-hw)."""
-    # Only a board with a government value (the xx60 family) names it.
-    gov = hw.get("GOVERNMENT")
-    tail = " (government=%s)" % gov if gov else ""
+    # The REASON of hw.conf (tsx-hw of the board) says why a part is missing.
+    # A panel with no REASON gets the short text only.
+    why = hw.get("REASON")
+    tail = " (%s)" % why if why else ""
     out = {}
     if not os.path.exists(os.environ.get("TSX_VOICE_SERVICE", "/etc/init.d/tsx-voice")):
         out["VOICE"] = "the voice service is not installed"

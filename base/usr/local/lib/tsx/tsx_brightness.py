@@ -428,15 +428,25 @@ class Learner:
             pass
 
 
-# ---- the xx60 daemon -----------------------------------------------------------
-# tsx-als (a shell script) owns the xx60 light curve. This part learns for it:
+# ---- the daemon for a board with a shell light service --------------------------
+# A board can run its own light service in shell (for example tsx-als on the
+# xx60). This part learns for it:
 #   python3 tsx_brightness.py als-daemon
 # It reads the curve ALS_CURVE of als.conf, learns user points, and writes the
-# whole curve to /run/tsx/als-curve ("lux:level" pairs, whole numbers). tsx-als
-# uses that file in place of ALS_CURVE while it exists. tsx-als applies the
-# response model of LightResponse in shell: "lux" of als.state is the held
-# value and "raw" is the newest reading. The learner uses "raw" to see that
-# the light moved during the hold.
+# whole curve to /run/tsx/als-curve ("lux:level" pairs, whole numbers). The
+# light service uses that file in place of ALS_CURVE while it exists. It
+# applies the response model of LightResponse in shell: "lux" of als.state is
+# the held value and "raw" is the newest reading. The learner uses "raw" to see
+# that the light moved during the hold.
+# The board gives the numbers. The top level is BACKLIGHT_MAX of
+# panel-board.conf (or kiosk.conf), else "max" of brightness.state, else
+# max_brightness of the backlight device. The start curve is ALS_CURVE of
+# als.conf. A board with no ALS_CURVE gets the log curve of log_ramp, from
+# BACKLIGHT_MIN to the top level at AUTO_BRIGHTNESS_LUX (default 500 lux).
+
+LAST_RESORT_MAX = 31      # the top level when no file and no device gives one
+DEFAULT_FULL_LUX = 500    # AUTO_BRIGHTNESS_LUX when no file sets it
+
 
 def shell_value(path, key):
     """The value of KEY="value" in a shell-style file, or None."""
@@ -451,12 +461,25 @@ def shell_value(path, key):
 
 
 def curve_text(curve):
-    """The curve as the whole-number pairs that tsx-als reads."""
+    """The curve as the whole-number pairs that the light service reads."""
     out = {}
     for lux, lvl in curve.control_points():
         key = int(round(lux))
         out[key] = max(out.get(key, 0), int(round(lvl)))
     return " ".join("%d:%d" % (k, out[k]) for k in sorted(out))
+
+
+def device_max(bl_dir):
+    """max_brightness of the first backlight device under bl_dir, or None."""
+    try:
+        names = sorted(os.listdir(bl_dir))
+    except OSError:
+        return None
+    for name in names:
+        val = read_int(os.path.join(bl_dir, name, "max_brightness"))
+        if val is not None and val > 0:
+            return val
+    return None
 
 
 def als_daemon():
@@ -465,26 +488,42 @@ def als_daemon():
     als_conf = env("TSX_ALS_CONF", "/etc/tsx/als.conf")
     kiosk_conf = env("TSX_KIOSK_CONF", "/etc/kiosk.conf")
     board_conf = env("TSX_PANEL_BOARD_CONF", "/etc/tsx/panel-board.conf")
+    bl_dir = env("TSX_BACKLIGHT_DIR", "/sys/class/backlight")
     idled = env("TSX_IDLED_STATE", "/run/tsx-idled.state")
     tick = float(env("TSX_LEARN_TICK", "0.5"))
     release_s = float(env("TSX_LEARN_RELEASE_S", "3.0"))
 
-    def kiosk(key, default):
+    def kiosk(key):
+        """A number from the board file, else from kiosk.conf, else None."""
         for path in (board_conf, kiosk_conf):
             val = shell_value(path, key)
             if val and val.isdigit():
                 return int(val)
-        return default
+        return None
 
-    lmax = kiosk("BACKLIGHT_MAX", 23)
-    lmin = kiosk("BACKLIGHT_MIN", 1)
+    state = state_fields(os.path.join(run, "brightness.state"))
+    dev = device_max(bl_dir)
+    lmax = kiosk("BACKLIGHT_MAX")
+    if lmax is not None and dev is not None:
+        lmax = min(lmax, dev)           # the device limit wins over the board value
+    if not lmax:
+        lmax = state.get("max") or dev or LAST_RESORT_MAX
+    lmin = kiosk("BACKLIGHT_MIN") or state.get("min")
+    if not lmin:
+        lmin = max(1, int((lmax * 3 + 50) // 100))     # 3 percent of the top level, as tsx-idled
+    lmin = min(lmin, lmax)
     base = []
-    for pair in (shell_value(als_conf, "ALS_CURVE") or "0:3 5:5 20:8 80:12 300:17 1000:21 3000:23").split():
+    for pair in (shell_value(als_conf, "ALS_CURVE") or "").split():
         try:
             lux, lvl = pair.split(":")
             base.append((float(lux), float(lvl)))
         except ValueError:
             pass
+    if not base:
+        full = kiosk("AUTO_BRIGHTNESS_LUX") or DEFAULT_FULL_LUX
+        base = log_ramp(lmin, lmax, min(max(full, 10), 100000))
+        print("tsx-brightness: no ALS_CURVE in %s. Start curve: log ramp %d..%d at %d lux" % (als_conf, lmin, lmax, full),
+              file=sys.stderr, flush=True)
     curve = Curve(base, lmin, lmax)
     learner = Learner(curve, env("TSX_LEARN_FILE", "/data/tsx/brightness-learn.json"), run,
                       float(env("TSX_LEARN_HOLD_S", str(HOLD_S))))

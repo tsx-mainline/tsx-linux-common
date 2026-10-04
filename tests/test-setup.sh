@@ -710,16 +710,16 @@ if [ -n "$LANIP" ]; then
 	[ "$(status_of "$out")" = 0 ] && ok "LAN cannot connect again once the reopened window expired" || bad "LAN still reachable after the window expired: $(status_of "$out")"
 fi
 
-# ---- 5b. a panel without a microphone or a Bluetooth module (hw.conf, government=1)
-echo "== government=1 (hw.conf): voice and the Bluetooth proxy are not available =="
+# ---- 5b. a panel without a microphone or a Bluetooth module (hw.conf, REASON)
+echo "== no microphone, no Bluetooth module, no camera (hw.conf): the page says why =="
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable <<<"$body")" = "{}" ] && ok "no hw.conf: nothing is marked not available" || bad "no hw.conf: unavailable = $(jget unavailable <<<"$body")"
-printf 'GOVERNMENT=1\nMIC=no\nBT=no\nCAMERA=no\nREASON=government=1 (TSW-760-NC): no microphone, no camera, no Bluetooth module\n' > "$RUNDIR/hw.conf"
+printf 'MIC=no\nBT=no\nCAMERA=no\nREASON=FAKE-100 NC variant\n' > "$RUNDIR/hw.conf"
 out=$(call GET /setup/api/state); body=$(body_of "$out")
-[ "$(jget unavailable.VOICE <<<"$body")" = "no microphone on this panel (government=1)" ] \
-	&& [ "$(jget unavailable.BT_PROXY <<<"$body")" = "no Bluetooth module on this panel (government=1)" ] \
-	&& [ "$(jget unavailable.CAMERA <<<"$body")" = "no camera on this panel (government=1)" ] \
-	&& ok "state: VOICE, BT_PROXY and CAMERA not available, with the reason" || bad "state unavailable: $(jget unavailable <<<"$body")"
+[ "$(jget unavailable.VOICE <<<"$body")" = "no microphone on this panel (FAKE-100 NC variant)" ] \
+	&& [ "$(jget unavailable.BT_PROXY <<<"$body")" = "no Bluetooth module on this panel (FAKE-100 NC variant)" ] \
+	&& [ "$(jget unavailable.CAMERA <<<"$body")" = "no camera on this panel (FAKE-100 NC variant)" ] \
+	&& ok "state: VOICE, BT_PROXY and CAMERA not available, with the REASON text of hw.conf" || bad "state unavailable: $(jget unavailable <<<"$body")"
 out=$(call GET /setup); page=$(body_of "$out")
 case "$page" in *'id="hw-hint"'*"function applyUnavailable"*) ok "the page has the not-available hint and disables the voice switch";; *) bad "the page has no not-available hint";; esac
 GSUBMIT='{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","VOICE":"off","WAKE_WORD":"hey_jarvis","BT_PROXY":"on","CAMERA":"live"}'
@@ -727,19 +727,19 @@ out=$(submit "$GSUBMIT")
 [ "$(status_of "$out")" = 200 ] && grep -q '^VOICE="on"$' "$CONF" && grep -q '^WAKE_WORD="okay_nabu"$' "$CONF" \
 	&& grep -q '^BT_PROXY="off"$' "$CONF" && grep -q '^CAMERA="snapshot"$' "$CONF" \
 	&& ok "a submit leaves VOICE, WAKE_WORD, BT_PROXY and CAMERA as they are (a panel.conf from another panel keeps them)" \
-	|| bad "government=1 submit: $(status_of "$out"), $(grep -E '^(VOICE|WAKE_WORD|BT_PROXY|CAMERA)=' "$CONF" | tr '\n' ' ')"
+	|| bad "submit on a panel without the parts: $(status_of "$out"), $(grep -E '^(VOICE|WAKE_WORD|BT_PROXY|CAMERA)=' "$CONF" | tr '\n' ' ')"
 case "$page" in *'name="BT_PROXY"'*'id="bt-wrap"'*|*'id="bt-wrap"'*'name="BT_PROXY"'*) ok "the page has the Bluetooth proxy field and hides it when unavailable";; *) bad "the page has no Bluetooth proxy field";; esac
 case "$page" in *'(default: off)'*) ok "the Bluetooth proxy field names the default of the board (off)";; *) bad "the Bluetooth proxy field does not name the board default";; esac
 case "$page" in *'id="camera-wrap"'*'name="CAMERA"'*'value="off"'*'value="snapshot"'*'value="live"'*) ok "the page has the camera field with the three modes, and hides it when unavailable";; *) bad "the page has no camera field with off, snapshot and live";; esac
 case "$page" in *'if (el.disabled) return;'*) case "$page" in *'u.CAMERA'*'$("f-camera").disabled = true'*) ok "the page sends no CAMERA when the panel has no camera (a disabled field is not sent)";; *) bad "the page does not disable CAMERA on a panel without a camera";; esac;; *) bad "the page sends disabled fields";; esac
 rm -f "$RUNDIR/hw.conf"
 
-echo "== a panel with no GOVERNMENT in hw.conf, and a missing voice service =="
+echo "== a panel with no REASON in hw.conf, and a missing voice service =="
 printf 'MIC=no\nBT=no\nPRESENCE=yes\nLIGHT=yes\n' > "$RUNDIR/hw.conf"
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.VOICE <<<"$body")" = "no microphone on this panel" ] \
 	&& [ "$(jget unavailable.BT_PROXY <<<"$body")" = "no Bluetooth module on this panel" ] \
-	&& ok "no government value: the reasons do not name it" || bad "no government value: $(jget unavailable <<<"$body")"
+	&& ok "no REASON: the reasons are the short texts" || bad "no REASON: $(jget unavailable <<<"$body")"
 printf 'MIC=yes\nBT=yes\n' > "$RUNDIR/hw.conf"
 rm -f "$T/voice-service"
 out=$(call GET /setup/api/state); body=$(body_of "$out")
@@ -758,7 +758,7 @@ out=$(submit '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD"
 out=$(submit '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","AUTO_BRIGHTNESS":"","ALS_SCALE":""}')
 ! grep -Eq '^(AUTO_BRIGHTNESS|ALS_SCALE)=' "$CONF" && ok "empty fields remove both keys (back to the defaults)" || bad "empty fields left keys: $(grep -E '^(AUTO_BRIGHTNESS|ALS_SCALE)=' "$CONF")"
 echo "== ALS=no (hw.conf): the light sensor settings are not available =="
-printf 'GOVERNMENT=0\nMIC=yes\nBT=yes\nALS=no\n' > "$RUNDIR/hw.conf"
+printf 'MIC=yes\nBT=yes\nALS=no\n' > "$RUNDIR/hw.conf"
 TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set AUTO_BRIGHTNESS on >/dev/null 2>&1; TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set ALS_SCALE 3 >/dev/null 2>&1
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.AUTO_BRIGHTNESS <<<"$body")" = "no ambient light sensor on this panel" ] && ok "state: AUTO_BRIGHTNESS not available, with the reason" || bad "ALS=no state: $(jget unavailable <<<"$body")"
@@ -771,10 +771,10 @@ rm -f "$RUNDIR/hw.conf"
 echo "== PRESENCE (hw.conf): the presence fields show with yes and hide with no =="
 out=$(call GET /setup); page=$(body_of "$out")
 case "$page" in *'id="presence-wrap"'*'name="PRESENCE_WAKE"'*'name="PRESENCE_DISTANCE_MM"'*'name="PRESENCE_HOLD_S"'*'$("presence-wrap").style.display = "none"'*) ok "the page has the three presence fields in one block that the page script can hide";; *) bad "no presence block in the page";; esac
-printf 'GOVERNMENT=0\nMIC=yes\nBT=yes\nPRESENCE=yes\n' > "$RUNDIR/hw.conf"
+printf 'MIC=yes\nBT=yes\nPRESENCE=yes\n' > "$RUNDIR/hw.conf"
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.PRESENCE_WAKE <<<"$body")" = "" ] && ok "PRESENCE=yes: the presence fields are available" || bad "PRESENCE=yes: unavailable = $(jget unavailable <<<"$body")"
-printf 'GOVERNMENT=0\nMIC=yes\nBT=yes\nCAMERA=yes\nPRESENCE=no\nREASON=\n' > "$RUNDIR/hw.conf"
+printf 'MIC=yes\nBT=yes\nCAMERA=yes\nPRESENCE=no\nREASON=\n' > "$RUNDIR/hw.conf"
 TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set PRESENCE_WAKE on >/dev/null 2>&1; TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set PRESENCE_HOLD_S 45 >/dev/null 2>&1
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.PRESENCE_WAKE <<<"$body")" = "no distance sensor on this panel" ] && ok "PRESENCE=no: the presence fields are not available, with the reason" || bad "PRESENCE=no: unavailable = $(jget unavailable <<<"$body")"

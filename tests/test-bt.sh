@@ -211,6 +211,13 @@ absent_check() {
 absent_check "no chip file" none "no Bluetooth module on this board (no radio is fitted on this made-up board)"
 absent_check "chip file with chip_absent_reason" "$W/lib/bt-chip-fake.sh" "the made-up radio is not fitted"
 absent_check "chip file with no chip_absent_reason" "$W/lib/bt-chip-bare.sh" "no Bluetooth module on this board (no radio is fitted on this made-up board)"
+# A hw.conf with an empty REASON, or with no REASON line: the short text, no brackets
+printf 'MIC=no\nBT=no\nREASON=\n' > "$R/hw.conf"
+absent_check "no chip file, empty REASON" none "no Bluetooth module on this board"
+absent_check "bare chip file, empty REASON" "$W/lib/bt-chip-bare.sh" "no Bluetooth module on this board"
+printf 'MIC=no\nBT=no\n' > "$R/hw.conf"
+absent_check "no chip file, no REASON line" none "no Bluetooth module on this board"
+absent_check "chip file with chip_absent_reason, no REASON line" "$W/lib/bt-chip-fake.sh" "the made-up radio is not fitted"
 # The script reads hw.conf, not the command line
 rm -f "$R/hw.conf" "$R/bt.state"; echo 'console=ttyFAKE0 bluetooth=off' > "$W/proc/cmdline"
 btsh up > "$W/abs3.log" 2>&1

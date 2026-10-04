@@ -1,11 +1,12 @@
 #!/bin/sh
 # Host test for rescue/usr/sbin/tsx-rescue-backlight, no panel and no compiler:
 #   - the level is TSX_RESCUE_BACKLIGHT percent of max_brightness
-#   - the board file of each family gives a level that is not full
+#   - the board file gives the level (the made-up board of tests/boards/fake)
 #   - a value above 80, a value that is not a number and a value of 0 are
 #     clamped, and a missing backlight is no error
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
+. "$HERE/tests/lib/board.sh"
 RB=$HERE/rescue/usr/sbin/tsx-rescue-backlight
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 N=0 F=0
@@ -34,15 +35,25 @@ eq "$(run 4095 0)" 41 "0 becomes 1 percent"
 eq "$(run 3 1)" 1 "the level is never below 1"
 eq "$(cat "$T/out")" "tsx-rescue-backlight: bl 1 of 3" "the output names the level"
 
-echo "== board files =="
-for fam in xx60; do
-	b=$HERE/tests/boards/$fam/board.sh
-	pct=$(sh -c ". $b; echo \$TSX_RESCUE_BACKLIGHT")
-	[ "$pct" -ge 1 ] && [ "$pct" -le 80 ] && ok "$fam board value $pct is between 1 and 80" || bad "$fam board value '$pct'"
-	rm -rf "$T/sys"; mkdir -p "$T/sys/bl"; echo 4095 > "$T/sys/bl/max_brightness"; echo 4095 > "$T/sys/bl/brightness"
-	TSX_BOARD_CONF=$b TSX_RESCUE_SYS="$T/sys" TSX_RESCUE_BL_WAIT=0 sh "$RB" > /dev/null
-	[ "$(cat "$T/sys/bl/brightness")" -lt 4095 ] && ok "$fam: the rescue level is not full" || bad "$fam: the level is full"
-done
+echo "== board file =="
+# The level comes from TSX_RESCUE_BACKLIGHT of the board file (35 percent on the made-up board).
+b=$TSX_BOARD_CONF
+pct=$(sh -c ". $b; echo \$TSX_RESCUE_BACKLIGHT")
+eq "$pct" 35 "the made-up board gives 35 percent"
+rm -rf "$T/sys"; mkdir -p "$T/sys/bl"; echo 4095 > "$T/sys/bl/max_brightness"; echo 4095 > "$T/sys/bl/brightness"
+TSX_BOARD_CONF=$b TSX_RESCUE_SYS="$T/sys" TSX_RESCUE_BL_WAIT=0 sh "$RB" > "$T/out"
+eq "$(cat "$T/sys/bl/brightness")" 1433 "the rescue level is the board percent of max_brightness (35 percent of 4095)"
+eq "$(cat "$T/out")" "tsx-rescue-backlight: bl 1433 of 4095" "the output names the level"
+rm -rf "$T/sys"; mkdir -p "$T/sys/bl"; echo 15 > "$T/sys/bl/max_brightness"; echo 15 > "$T/sys/bl/brightness"
+TSX_BOARD_CONF=$b TSX_RESCUE_SYS="$T/sys" TSX_RESCUE_BL_WAIT=0 sh "$RB" > /dev/null
+eq "$(cat "$T/sys/bl/brightness")" 5 "a narrow range (0 to 15): the board percent gives level 5"
+# the environment wins over the board file, as for every board value
+TSX_BOARD_CONF=$b TSX_RESCUE_BACKLIGHT=60 TSX_RESCUE_SYS="$T/sys" TSX_RESCUE_BL_WAIT=0 sh "$RB" > /dev/null
+eq "$(cat "$T/sys/bl/brightness")" 9 "TSX_RESCUE_BACKLIGHT in the environment wins over the board file"
+# a board file with no value: the default of the script
+printf 'TSX_FAMILY=nobl\n' > "$T/board-nobl.sh"
+TSX_BOARD_CONF=$T/board-nobl.sh TSX_RESCUE_SYS="$T/sys" TSX_RESCUE_BL_WAIT=0 sh "$RB" > /dev/null
+eq "$(cat "$T/sys/bl/brightness")" 8 "a board file with no value: 50 percent"
 
 echo "== no backlight =="
 rm -rf "$T/sys"; mkdir -p "$T/sys"
