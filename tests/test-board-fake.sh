@@ -7,6 +7,7 @@
 # no name of real hardware shows. It needs no panel and no compiler.
 #   - the rescue screen: model, firmware, unit, MAC source, extra line
 #   - the kiosk renderer selection, with a fake sysfs
+#   - the kiosk.d hooks of kiosk-session, with fake hook files
 #   - tsx-config apply: repository category, Bluetooth defaults, BT_MAC
 #   - tsx-mqtt: the Home Assistant model and the volume entity
 #   - tsx-autoupdate: the package names
@@ -34,7 +35,6 @@ TSX_HA_MODEL=second
 TSX_SOUND_CARD=SecondCard
 TSX_DISPLAY_DRM="seconddrm*"
 TSX_RENDER_DRM="secondgpu"
-TSX_RENDER_ES2_DRM="secondgpu"
 TSX_DISPLAY_ENV="SECOND_NOMOD=1 SECOND_FORMAT=argb8888"
 TSX_BT_CHIP=none
 TSX_BT_PROXY_DEFAULT=off
@@ -102,20 +102,36 @@ mkdrm() { d=$1; shift; rm -rf "$d"; mkdir -p "$d"
 			case "$drv" in secondgpu) ;; *) mkdir -p "$d/$c/$c-CONN-1";; esac;;
 		esac
 	done; }
+# HOOKDIR names a kiosk.d folder, HOOKUID the owner that counts as root (default: the user of the test).
 sel() { # DRMDIR BOARDFILE [KIOSK_GPU]
-	env -i PATH="$PATH" TSX_BOARD_CONF="$2" TSX_DRM_SYS="$1" KIOSK_GPU="${3:-auto}" KIOSK_RENDER_ENV="${KIOSK_RENDER_ENV:-auto}" sh -c '
+	env -i PATH="$PATH" TSX_BOARD_CONF="$2" TSX_DRM_SYS="$1" KIOSK_GPU="${3:-auto}" KIOSK_RENDER_ENV="${KIOSK_RENDER_ENV:-auto}" \
+		TSX_KIOSK_HOOK_DIR="${HOOKDIR:-$T/no-kiosk.d}" TSX_KIOSK_HOOK_UID="${HOOKUID:-$(id -u)}" KIOSK_DISABLE_FEATURES="${KIOSK_DISABLE_FEATURES:-}" sh -c '
+		set -u   # as in kiosk-session
 		KIOSK_OSK=off KIOSK_URL=u ROLE=session
 		log() { echo "log: $*"; }
 		. "$TSX_BOARD_CONF"
 		. '"$T"'/sel.sh
 		echo "WLR_RENDERER=$WLR_RENDERER WLR_DRM_DEVICES=${WLR_DRM_DEVICES:-} SECOND=${SECOND_NOMOD:-}/${SECOND_FORMAT:-} RENV=${FAKE_GPU_DEBUG:-}"
-		echo "comp_gl=$comp_gl browser_gl=$browser_gl"' 2>&1; }
+		echo "comp_gl=$comp_gl browser_gl=$browser_gl flags=$KIOSK_BROWSER_GL_FLAGS features=$KIOSK_DISABLE_FEATURES"' 2>&1; }
 # Board B has a display driver and a GPU that offers GLES 2.0 only (secondgpu: card0, no display).
 mkdrm "$T/drmb" card0:secondgpu card2:seconddrm render:secondgpu
+# The GLES 2.0 rule is not in kiosk-session. Board B ships it as a kiosk.d hook.
 out=$(sel "$T/drmb" "$BOARDB")
-echo "$out" | grep -q "^log: display=/dev/dri/card2 (seconddrm) render=/dev/dri/renderD128 renderer=gles2 browser_gpu=0" && ok "board B: display card, render node of the GPU, GLES in the compositor, software browser" || bad "board B: $out"
+echo "$out" | grep -q "^log: display=/dev/dri/card2 (seconddrm) render=/dev/dri/renderD128 renderer=gles2 browser_gpu=1" && ok "board B with no hook: display card, render node of the GPU, GLES in the compositor and in the browser" || bad "board B, no hook: $out"
+echo "$out" | grep -q "GLES 2.0" && bad "board B with no hook: a GLES 2.0 note" || ok "board B with no hook: kiosk-session has no GLES 2.0 rule of its own"
+mkdir -p "$T/hooks-b"; chmod 755 "$T/hooks-b"
+cat > "$T/hooks-b/10-secondgpu.sh" <<'EOH'
+# Hook of board B: secondgpu offers OpenGL ES 2.0 only. The browser needs more.
+if [ "$KIOSK_GL_BROWSER" = 1 ] && [ "$renderdrv" = secondgpu ]; then
+	KIOSK_GL_BROWSER=0
+	log "GPU is $renderdrv (GLES 2.0): the browser renders in software"
+fi
+EOH
+chmod 644 "$T/hooks-b/10-secondgpu.sh"
+out=$(HOOKDIR=$T/hooks-b sel "$T/drmb" "$BOARDB")
+echo "$out" | grep -q "^log: display=/dev/dri/card2 (seconddrm) render=/dev/dri/renderD128 renderer=gles2 browser_gpu=0" && ok "board B with its hook: display card, render node of the GPU, GLES in the compositor, software browser" || bad "board B: $out"
 echo "$out" | grep -q "SECOND=1/argb8888" && ok "board B: the display variables are exported" || bad "board B variables: $out"
-echo "$out" | grep -q "log: GPU is secondgpu (GLES 2.0)" && ok "board B: the GLES 2.0 note names the driver" || bad "board B note: $out"
+echo "$out" | grep -q "log: GPU is secondgpu (GLES 2.0)" && ok "board B: the note of the hook names the driver" || bad "board B note: $out"
 mkdrm "$T/drma" card0:fakedrm render:fakedrm
 out=$(sel "$T/drma" "$BOARDA")
 echo "$out" | grep -q "^log: display=/dev/dri/card0 (fakedrm) render=/dev/dri/renderD128 renderer=gles2 browser_gpu=1" && ok "board A: fakedrm display and render node, GPU browser" || bad "board A: $out"
@@ -140,6 +156,107 @@ echo "$out" | grep -q "RENV=$" && ok "KIOSK_RENDER_ENV=0 keeps the GPU variables
 mkdrm "$T/drman" card0:fakedrm
 out=$(sel "$T/drman" "$T/board-anyrender.sh")
 echo "$out" | grep -q "RENV=$" && ok "no render node: the GPU variables stay out" || bad "no render node: $out"
+
+echo "== kiosk hooks (kiosk.d) =="
+# hk DIR NAME CONTENT: a hook file that is safe (mode 644)
+hk() { printf '%s\n' "$3" > "$1/$2"; chmod 644 "$1/$2"; }
+mkhooks() { rm -rf "$1"; mkdir -p "$1"; chmod 755 "$1"; }
+mkdrm "$T/drmh" card0:fakedrm render:fakedrm
+# a hook reads the renderer facts and the starting values of the four names
+H=$T/h1; mkhooks "$H"
+hk "$H" 10-seen.sh 'log "hook sees gpu=$KIOSK_GPU disp=$disp dispdrv=$dispdrv render=$render renderdrv=$renderdrv card=$TSX_SOUND_CARD comp=$KIOSK_GL_COMPOSITOR browser=$KIOSK_GL_BROWSER flags=$KIOSK_BROWSER_GL_FLAGS"'
+out=$(HOOKDIR=$H sel "$T/drmh" "$T/board-anyrender.sh")
+echo "$out" | grep -q "^log: hook sees gpu=auto disp=/dev/dri/card0 dispdrv=fakedrm render=/dev/dri/renderD128 renderdrv=fakedrm card=FakeCard comp=1 browser=1 flags=--use-angle=gles$" && ok "a hook sees KIOSK_GPU, the display, the render node and its driver, the board values and the choice of the script" || bad "hook sees: $out"
+echo "$out" | grep -q "^comp_gl=1 browser_gl=1 flags=--use-angle=gles features=$" && ok "a hook that changes nothing leaves the choice as it was" || bad "hook that changes nothing: $out"
+# a hook changes the four names. The script reads them after the hook.
+H=$T/h2; mkhooks "$H"
+hk "$H" 20-change.sh 'KIOSK_GL_COMPOSITOR=0; KIOSK_GL_BROWSER=1; KIOSK_BROWSER_GL_FLAGS="--fake-gl-flag"; KIOSK_DISABLE_FEATURES="FakeFeature${KIOSK_DISABLE_FEATURES:+,$KIOSK_DISABLE_FEATURES}"'
+out=$(KIOSK_DISABLE_FEATURES=Existing HOOKDIR=$H sel "$T/drmh" "$BOARDA")
+echo "$out" | grep -q "WLR_RENDERER=pixman" && ok "a hook turns the GLES compositor off: pixman" || bad "hook compositor: $out"
+echo "$out" | grep -q "^comp_gl=0 browser_gl=1 flags=--fake-gl-flag features=FakeFeature,Existing$" && ok "a hook changes the browser mode, the GPU flags and the disabled features" || bad "hook, four names: $out"
+echo "$out" | grep -q "browser_gpu=1" && ok "the log line shows the browser mode after the hook" || bad "hook, log line: $out"
+H=$T/h2b; mkhooks "$H"
+hk "$H" 10-on.sh 'KIOSK_GL_COMPOSITOR=yes; KIOSK_GL_BROWSER=2'
+out=$(HOOKDIR=$H sel "$T/drmh" "$BOARDA")
+echo "$out" | grep -q "^comp_gl=0 browser_gl=0 " && echo "$out" | grep -q "WLR_RENDERER=pixman" && ok "a value other than 1 counts as 0" || bad "hook, bad values: $out"
+H=$T/h2c; mkhooks "$H"
+hk "$H" 10-unset.sh 'unset KIOSK_GL_COMPOSITOR KIOSK_GL_BROWSER'
+out=$(HOOKDIR=$H sel "$T/drmh" "$BOARDA")
+echo "$out" | grep -q "^comp_gl=0 browser_gl=0 " && ok "a hook that unsets the names gets 0, and the script goes on" || bad "hook, unset names: $out"
+# the browser section uses the browser mode and the flags of the hook
+sed -n '/^# --- browser ---/,/^mem=\$(awk/p' "$KS" | sed '$d' > "$T/browser.sh"
+[ "$(wc -l < "$T/browser.sh")" -gt 30 ] && ok "the browser section is in kiosk-session" || bad "cannot find the browser section"
+bflags() { # BROWSER_GL FLAGS FEATURES
+	env -i PATH="$PATH" sh -c '
+		log() { :; }
+		KIOSK_PROFILE='"$T"'/profile KIOSK_SCALE=1 KIOSK_NO_SANDBOX=1 browser_gl='"$1"' KIOSK_BROWSER_GL_FLAGS="'"$2"'" KIOSK_DISABLE_FEATURES="'"$3"'"
+		. '"$T"'/browser.sh
+		echo "$@"' 2>&1; }
+f=$(bflags 1 "--fake-gl-flag --fake-two" "FakeFeature")
+case " $f " in *" --ignore-gpu-blocklist --fake-gl-flag --fake-two "*) ok "GPU browser: the flags of the hook follow --ignore-gpu-blocklist";; *) bad "GPU browser flags: $f";; esac
+case "$f" in *--disable-features=*,FakeFeature*) ok "the disabled features of the hook reach --disable-features";; *) bad "disabled features: $f";; esac
+case "$f" in *--disable-gpu-compositing*) bad "GPU browser: software flags";; *) ok "GPU browser: GPU compositing stays on";; esac
+f=$(bflags 0 "--fake-gl-flag" "")
+case "$f" in *--disable-gpu-compositing*) ok "software browser: GPU compositing off";; *) bad "software browser flags: $f";; esac
+case "$f" in *--fake-gl-flag*|*--ignore-gpu-blocklist*) bad "software browser: GPU flags: $f";; *) ok "software browser: the GPU flags stay out";; esac
+# name order, only *.sh, and every safe file runs
+H=$T/h3; mkhooks "$H"
+hk "$H" 10-a.sh 'order=a'
+hk "$H" 20-b.sh 'order="${order:-}b"; log "order=$order"'
+hk "$H" 15-note.txt 'log "text file ran"'
+out=$(HOOKDIR=$H sel "$T/drmh" "$BOARDA")
+echo "$out" | grep -q "^log: order=ab$" && ok "hooks run in name order" || bad "hook order: $out"
+echo "$out" | grep -q "text file ran" && bad "a file that does not end in .sh ran" || ok "a file that does not end in .sh is ignored"
+# a hook that is not safe is skipped, and the others still run
+H=$T/h4; mkhooks "$H"
+hk "$H" 10-open.sh 'log "world-writable hook ran"'; chmod 666 "$H/10-open.sh"
+hk "$H" 11-group.sh 'log "group-writable hook ran"'; chmod 664 "$H/11-group.sh"
+hk "$H" 12-bad.sh 'if then fi ('
+printf 'log "symlink hook ran"\n' > "$T/h4-real.sh"; chmod 644 "$T/h4-real.sh"; ln -s "$T/h4-real.sh" "$H/13-link.sh"
+hk "$H" 40-good.sh 'log "good hook ran"'
+out=$(HOOKDIR=$H sel "$T/drmh" "$BOARDA")
+echo "$out" | grep -q "world-writable hook ran" && bad "a world-writable hook ran" || ok "a world-writable hook is skipped"
+echo "$out" | grep -q "^log: hook $H/10-open.sh skipped: root must own the file" && ok "the skip of a world-writable hook has one log line" || bad "no skip line for 10-open.sh: $out"
+echo "$out" | grep -q "group-writable hook ran" && bad "a group-writable hook ran" || ok "a group-writable hook is skipped"
+echo "$out" | grep -q "^log: hook $H/12-bad.sh skipped: syntax error" && ok "a hook with a syntax error is skipped with a log line" || bad "no skip line for 12-bad.sh: $out"
+echo "$out" | grep -q "symlink hook ran" && bad "a symbolic link ran as a hook" || ok "a symbolic link is skipped"
+echo "$out" | grep -q "^log: good hook ran$" && ok "a safe hook runs after the skipped ones" || bad "good hook: $out"
+echo "$out" | grep -q "^comp_gl=1 browser_gl=1 " && ok "the skipped hooks changed nothing" || bad "skipped hooks: $out"
+# the owner must be root: no hook runs when another user owns the folder
+H=$T/h5; mkhooks "$H"
+hk "$H" 10-owner.sh 'log "owner hook ran"'
+out=$(HOOKUID=$(( $(id -u) + 1 )) HOOKDIR=$H sel "$T/drmh" "$BOARDA")
+echo "$out" | grep -q "owner hook ran" && bad "a hook ran with the wrong owner" || ok "a hook that root does not own is skipped"
+echo "$out" | grep -q "^log: hooks in $H skipped: root must own the folder" && ok "a folder that root does not own: one log line" || bad "no skip line for the folder: $out"
+chmod 777 "$H"
+out=$(HOOKDIR=$H sel "$T/drmh" "$BOARDA")
+echo "$out" | grep -q "owner hook ran" && bad "a hook ran from a world-writable folder" || ok "a world-writable folder is skipped"
+echo "$out" | grep -q "^log: hooks in $H skipped: root must own the folder" && ok "a world-writable folder: one log line" || bad "no skip line for the writable folder: $out"
+chmod 755 "$H"
+# no folder and an empty folder: nothing changes
+out=$(HOOKDIR=$T/no-such-folder sel "$T/drmh" "$BOARDA")
+echo "$out" | grep -q "^comp_gl=1 browser_gl=1 " && ! echo "$out" | grep -q "skipped" && ok "no kiosk.d folder: the choice of the script stands" || bad "no folder: $out"
+H=$T/h6; mkhooks "$H"
+out=$(HOOKDIR=$H sel "$T/drmh" "$BOARDA")
+echo "$out" | grep -q "^comp_gl=1 browser_gl=1 " && ! echo "$out" | grep -q "skipped" && ok "an empty kiosk.d folder: the choice of the script stands" || bad "empty folder: $out"
+# a KIOSK_GPU value that only a hook knows
+out=$(sel "$T/drmh" "$BOARDA" fakemode)
+echo "$out" | grep -q "^comp_gl=1 browser_gl=1 " && ok "a KIOSK_GPU value that no hook knows counts as auto" || bad "unknown KIOSK_GPU: $out"
+H=$T/h7; mkhooks "$H"
+hk "$H" 10-mode.sh 'if [ "$KIOSK_GPU" = fakemode ]; then KIOSK_GL_COMPOSITOR=1; KIOSK_GL_BROWSER=0; log "fakemode: software browser"; fi'
+out=$(HOOKDIR=$H sel "$T/drmh" "$BOARDA" fakemode)
+echo "$out" | grep -q "^log: fakemode: software browser$" && echo "$out" | grep -q "^comp_gl=1 browser_gl=0 " && ok "a hook adds a KIOSK_GPU mode" || bad "hook mode: $out"
+out=$(HOOKDIR=$H sel "$T/drmh" "$BOARDA" auto)
+echo "$out" | grep -q "fakemode" && bad "the hook mode ran for KIOSK_GPU=auto" || ok "the hook mode stays off for the other modes"
+# the pixman note comes after the hooks
+mkdrm "$T/drmx" card2:seconddrm render:secondgpu
+out=$(sel "$T/drmx" "$T/board-anyrender.sh")
+echo "$out" | grep -q "^log: GPU /dev/dri/renderD128 present but display is seconddrm: using pixman" && ok "a render node and a display driver of another board: pixman, with a note" || bad "pixman note: $out"
+H=$T/h8; mkhooks "$H"
+hk "$H" 10-gl.sh 'KIOSK_GL_COMPOSITOR=1'
+out=$(HOOKDIR=$H sel "$T/drmx" "$T/board-anyrender.sh")
+echo "$out" | grep -q "using pixman" && bad "pixman note after a hook turned GLES on" || ok "no pixman note when a hook turns GLES on"
+echo "$out" | grep -q "WLR_RENDERER=gles2" && ok "a hook turns GLES on in the compositor" || bad "hook GLES on: $out"
 
 echo "== tsx-config apply =="
 CFG=$T/panel.conf; FX=$T/fixture

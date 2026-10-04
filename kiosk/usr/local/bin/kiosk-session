@@ -76,7 +76,7 @@ drv_in() {
 	return 1
 }
 DRM=${TSX_DRM_SYS:-/sys/class/drm}
-disp= dispdrv= render=
+disp= dispdrv= render= renderdrv=
 for c in "$DRM"/card[0-9]*; do
 	case "${c##*/}" in *-*) continue;; esac     # skip connectors (card2-LVDS-1)
 	[ -e "$c/device/driver" ] || continue
@@ -93,48 +93,77 @@ for c in "$DRM"/card[0-9]*; do
 done
 for r in "$DRM"/renderD*; do
 	[ -e "$r/device/driver" ] || continue
+	_rd=$(basename "$(readlink -f "$r/device/driver")")
 	# TSX_RENDER_DRM names the GPUs that have no display. Empty: any render node.
 	if [ -n "$TSX_RENDER_DRM" ]; then
-		drv_in "$(basename "$(readlink -f "$r/device/driver")")" "$TSX_RENDER_DRM" || continue
+		drv_in "$_rd" "$TSX_RENDER_DRM" || continue
 	fi
-	render=/dev/dri/${r##*/}; break
+	render=/dev/dri/${r##*/} renderdrv=$_rd; break
 done
 
-# KIOSK_GPU: auto | browser (GLES compositor + GPU browser through the
-# patched ES2 fallback) | on (GLES compositor + GPU browser, stock
-# flags) | compositor (GLES compositor, software browser) | off (pixman +
-# software browser)
-comp_gl=0 browser_gl=0 es2=0
+# KIOSK_GPU: auto | on (GLES compositor + GPU browser, stock flags) |
+# compositor (GLES compositor, software browser) | off (pixman + software
+# browser). A board hook in kiosk.d (below) can add a mode. Any other value
+# counts as auto.
+comp_gl=0 browser_gl=0 pixman_note=0
 case "$KIOSK_GPU" in
-browser)
-   # Chromium 152 needs an ES 3.0 context, unless the rootfs build patches out
-   # its ES version fallback gate (tsx-chromium-es2). Only then can
-   # ANGLE-on-GLES create the ES 2.0 context that lima offers.
-   comp_gl=1
-   if [ -n "$render" ] && /usr/local/sbin/tsx-chromium-es2 check >/dev/null 2>&1; then
-      browser_gl=1 es2=1
-   else
-      log "KIOSK_GPU=browser but the Chromium ES2 patch is not present (tsx-chromium-es2 check): browser renders in software"
-   fi;;
 on) comp_gl=1 browser_gl=1;;
 compositor) comp_gl=1;;
 off) ;;
 *) if drv_in "$dispdrv" "$TSX_DISPLAY_DRM"; then [ -n "$render" ] && comp_gl=1 browser_gl=1; fi
-   # A GPU in TSX_RENDER_ES2_DRM (the Mali-400/450, lima) is GLES 2.0 only. Chromium 152 asks for an ES 3.0
-   # context with no ES2 fallback ("ES version fallback is disabled", also
-   # through ANGLE). Its GPU process then dies three times, and Chromium ends
-   # up in software compositing anyway (measured on the TSW-1060,
-   # 2026-09-26). Skip that: use GLES in cage only. KIOSK_GPU=on still forces
-   # the attempt.
-   case "$render" in /dev/dri/*)
-      rdrv=$(basename "$(readlink -f "$DRM/${render##*/}/device/driver")")
-      if drv_in "$rdrv" "$TSX_RENDER_ES2_DRM"; then
-         [ $browser_gl = 1 ] && log "GPU is $rdrv (GLES 2.0): stock Chromium needs GLES 3.0, browser renders in software (KIOSK_GPU=browser uses the ES2 patch)"
-         browser_gl=0
-      fi;;
-   esac
-   [ $comp_gl = 0 ] && [ -n "$render" ] && log "GPU $render present but display is ${dispdrv:-none}: using pixman";;
+   [ $comp_gl = 0 ] && [ -n "$render" ] && pixman_note=1;;
 esac
+
+# --- board hooks (kiosk.d) --------------------------------------------------
+# A board package can ship shell files in /usr/local/lib/tsx/kiosk.d (name
+# order, *.sh). Each file changes the choice above. Use a hook for a GPU or a
+# browser that needs its own rules. The file is sourced by this script, as the
+# kiosk user, in the session and in the browser role. The board and the
+# renderer are known at this point. The contract is in docs/kiosk-hooks.md.
+# A hook may read: KIOSK_GPU, disp, dispdrv, render, renderdrv (the driver of
+# the render node), the board values and the function log. A hook may change
+# four names, and only these:
+#   KIOSK_GL_COMPOSITOR     1 = GLES in the compositor, 0 = pixman
+#   KIOSK_GL_BROWSER        1 = GPU compositing in the browser, 0 = software
+#   KIOSK_BROWSER_GL_FLAGS  the flags for a browser that uses the GPU
+#   KIOSK_DISABLE_FEATURES  the Chromium features to turn off (comma list)
+# The first three start with the choice above. The script reads all four
+# after the hooks.
+# The script sources a file only when root owns the folder and the file and
+# group and others cannot write them. Else it logs one line and skips the file.
+# Test hooks: TSX_KIOSK_HOOK_DIR, TSX_KIOSK_HOOK_UID (the owner that counts as
+# root).
+KIOSK_GL_COMPOSITOR=$comp_gl KIOSK_GL_BROWSER=$browser_gl KIOSK_BROWSER_GL_FLAGS=${TSX_BROWSER_GL_FLAGS:-}
+# hook_safe PATH: succeed if PATH is no symbolic link, root owns it, and group
+# and others cannot write it
+hook_safe() {
+	[ -L "$1" ] && return 1
+	_l=$(ls -dn "$1" 2>/dev/null) || return 1
+	set -- $_l
+	[ "${3:-}" = "${TSX_KIOSK_HOOK_UID:-0}" ] || return 1
+	case "$1" in ?????w*|????????w*) return 1;; esac
+	return 0
+}
+hookdir=${TSX_KIOSK_HOOK_DIR:-/usr/local/lib/tsx/kiosk.d}
+if [ -d "$hookdir" ]; then
+	if hook_safe "$hookdir"; then
+		for _h in "$hookdir"/*.sh; do
+			[ -f "$_h" ] || continue
+			if ! hook_safe "$_h"; then
+				log "hook $_h skipped: root must own the file and group and others must not write it"
+			elif ! sh -n "$_h" 2>/dev/null; then
+				log "hook $_h skipped: syntax error"
+			else
+				. "$_h"
+			fi
+		done
+	else
+		log "hooks in $hookdir skipped: root must own the folder and group and others must not write it"
+	fi
+fi
+case "${KIOSK_GL_COMPOSITOR:-}" in 1) comp_gl=1;; *) comp_gl=0;; esac
+case "${KIOSK_GL_BROWSER:-}" in 1) browser_gl=1;; *) browser_gl=0;; esac
+[ $pixman_note = 1 ] && [ $comp_gl = 0 ] && log "GPU $render present but display is ${dispdrv:-none}: using pixman"
 if [ $comp_gl = 1 ]; then
 	export WLR_RENDERER=gles2
 else
@@ -160,7 +189,7 @@ export WLR_LIBINPUT_NO_DEVICES=1          # start even before touch is probed
 export WLR_NO_HARDWARE_CURSORS=1
 # Invisible cursor theme for the compositor and the browser (touch-only panel)
 export XCURSOR_PATH=/usr/share/tsx/cursors XCURSOR_THEME=blank XCURSOR_SIZE=24
-log "display=${disp:-none} (${dispdrv:-?}) render=${render:-none} renderer=$WLR_RENDERER browser_gpu=$browser_gl es2=$es2 osk=$KIOSK_OSK url=$KIOSK_URL"
+log "display=${disp:-none} (${dispdrv:-?}) render=${render:-none} renderer=$WLR_RENDERER browser_gpu=$browser_gl osk=$KIOSK_OSK url=$KIOSK_URL"
 
 # --- the compositor: sway, or cage without a keyboard -----------------------
 # cage 0.3.1 has no wlr-layer-shell, so no keyboard surface can show under it
@@ -274,16 +303,6 @@ P="$KIOSK_PROFILE/Default/Preferences"
 [ -f "$P" ] && sed -i 's/"exit_type":"[A-Za-z]*"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' "$P"
 rm -f "$KIOSK_PROFILE"/Singleton*
 
-if [ $es2 = 1 ]; then
-	# ANGLE "passthrough shaders" (Chromium feature AllowANGLEPassthroughShaders)
-	# give the driver the GLSL of Skia untranslated. ANGLE then counts every
-	# sampler as used by the vertex stage too, and the Mali-450 has 0 vertex
-	# texture units. Every textured program fails to link ("VERTEX shader
-	# texture image units count exceeds MAX_VERTEX_TEXTURE_IMAGE_UNITS(0)"),
-	# and the page is transparent = black on the panel (2026-09-26).
-	# Translated shaders work.
-	KIOSK_DISABLE_FEATURES="AllowANGLEPassthroughShaders${KIOSK_DISABLE_FEATURES:+,$KIOSK_DISABLE_FEATURES}"
-fi
 set -- --ozone-platform=wayland \
 	--user-data-dir="$KIOSK_PROFILE" \
 	--no-first-run --no-default-browser-check --noerrdialogs --disable-infobars \
@@ -320,18 +339,15 @@ else
 		set -- "$@" --disable-gpu-sandbox
 	fi
 fi
-if [ $es2 = 1 ]; then
-	# browser: GPU compositing on the Mali-450 through the GLES backend of
-	# ANGLE with an ES 2.0 context (patched fallback). WebGL2 needs ES 3.0: off.
-	set -- "$@" --use-gl=angle --use-angle=gles --ignore-gpu-blocklist --disable-webgl2
-elif [ $browser_gl = 1 ]; then
+if [ $browser_gl = 1 ]; then
 	# A small GPU can be on the blocklist of Chromium. Chromium falls back to
 	# software compositing by itself if the GL init fails (see chrome://gpu
 	# through KIOSK_DEVTOOLS). The board can add flags in TSX_BROWSER_GL_FLAGS
-	# (for example the ANGLE backend). Variants to try with KIOSK_EXTRA_FLAGS:
+	# (for example the ANGLE backend), and a hook in kiosk.d can replace them
+	# (KIOSK_BROWSER_GL_FLAGS). Variants to try with KIOSK_EXTRA_FLAGS:
 	# --use-angle=gles | --use-angle=gl | --enable-gpu-rasterization
 	# shellcheck disable=SC2086
-	set -- "$@" --ignore-gpu-blocklist ${TSX_BROWSER_GL_FLAGS:-}
+	set -- "$@" --ignore-gpu-blocklist ${KIOSK_BROWSER_GL_FLAGS:-}
 else
 	set -- "$@" --disable-gpu --disable-gpu-compositing --disable-software-rasterizer
 fi
