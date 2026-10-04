@@ -63,6 +63,11 @@
 #   never. It replaces BLANK_TIMEOUT of kiosk.conf through
 #   /run/tsx/blank-timeout, which tsx-idled watches. It is the Home
 #   Assistant "Blank timeout" number.
+# KEY_LED_BLANK: the level of the key LEDs while the screen is blank (the
+#   screen-off level), 0 to 255. Empty = LED_BLANK of /etc/tsx/buttons.conf.
+#   Apply writes it as LED_BLANK to /run/tsx/buttons.conf, which tsx-buttons
+#   reads after /etc/tsx/buttons.conf, and reloads tsx-buttons when it
+#   changed. It is the Home Assistant "Key LEDs screen-off level" number.
 # BOOT_VERBOSE: 1 = kernel and boot text on the LCD instead of the boot
 #   splash, from the next boot on. Apply keeps the flag file
 #   /etc/tsx/boot-verbose on the root file system. The initramfs reads it,
@@ -138,10 +143,10 @@ BOARD=${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}
 [ -r "$BOARD" ] || BOARD=$(dirname "$0")/../lib/tsx/board.sh
 . "$BOARD"
 
-KNOWN_KEYS="PANEL_NAME KIOSK_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_API_KEY HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR APK_URL BLANK_TIMEOUT BOOT_VERBOSE ORIENTATION BT_PROXY BT_ACTIVE BT_MAC CAMERA PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
+KNOWN_KEYS="PANEL_NAME KIOSK_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_API_KEY HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR APK_URL BLANK_TIMEOUT KEY_LED_BLANK BOOT_VERBOSE ORIENTATION BT_PROXY BT_ACTIVE BT_MAC CAMERA PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 SECRET_KEYS="HA_TOKEN HA_API_KEY MQTT_PASSWORD ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 
-usage() { sed -n '2,108p' "$0" >&2; exit 2; }
+usage() { sed -n '2,/^set -eu$/p' "$0" | sed '$d' >&2; exit 2; }
 die() { echo "tsx-config: ERROR: $*" >&2; exit 2; }
 log() { echo "tsx-config: $*" >&2; }
 
@@ -261,6 +266,8 @@ val_ok() {
 	APK_URL) [ "$v" = off ] && return 0; printf '%s' "$v" | grep -Eq '^(https?://[A-Za-z0-9.:@_~%+-]+(/[^[:space:]]*)?|/[^[:space:]]*)$';;
 	# seconds, 0 = never, at most a day
 	BLANK_TIMEOUT) printf '%s' "$v" | grep -Eq '^[0-9]{1,5}$' && [ "$v" -le 86400 ];;
+	# the key LED level while the screen is blank, 0 to 255. Empty = buttons.conf
+	KEY_LED_BLANK) [ -z "$v" ] && return 0; printf '%s' "$v" | grep -Eq '^[0-9]{1,3}$' && [ "$v" -le 255 ];;
 	BOOT_VERBOSE) case "$v" in 0|1) return 0;; esac; return 1;;
 	ORIENTATION) case "$v" in landscape|portrait|landscape-flipped|portrait-flipped) return 0;; esac; return 1;;
 	BT_PROXY) case "$v" in on|off|"") return 0;; esac; return 1;;
@@ -473,6 +480,18 @@ sync_root() {
 	log "root password hash saved to panel.conf, so a reinstall keeps it"
 }
 
+keyled_apply() {
+	kl=$(cfg_get KEY_LED_BLANK) || kl=
+	kold=$(cat "$RUN/buttons.conf" 2>/dev/null) || kold=
+	{ [ -n "$kl" ] && printf 'LED_BLANK=%s\n' "$kl"; true; } | write_override "$RUN/buttons.conf" 644
+	knew=$(cat "$RUN/buttons.conf" 2>/dev/null) || knew=
+	[ "$knew" != "$kold" ] || return 0
+	if command -v rc-service >/dev/null 2>&1 && rc-service tsx-buttons status >/dev/null 2>&1; then
+		rc-service tsx-buttons reload >/dev/null 2>&1 || true
+		log "KEY_LED_BLANK=${kl:-empty (buttons.conf)}: tsx-buttons reloaded"
+	fi
+}
+
 apply() {
 	[ "${TSX_APPLY_ALLOW_NONROOT:-0}" = 1 ] || [ "$(id -u)" = 0 ] || die "apply must run as root"
 	mkdir -p "$RUN"
@@ -500,6 +519,12 @@ apply() {
 	else
 		rm -f "$RUN/blank-timeout"
 	fi
+
+	# KEY_LED_BLANK: LED_BLANK in /run/tsx/buttons.conf (mode 644, no
+	# secret). tsx-buttons reads it after /etc/tsx/buttons.conf. When the file
+	# changed and tsx-buttons runs, reload it, so the new level applies at
+	# once. At boot this apply runs before tsx-buttons starts.
+	keyled_apply
 
 	{
 		[ -n "$name" ] && printf 'NAME="%s"\n' "$(shq "$name")"

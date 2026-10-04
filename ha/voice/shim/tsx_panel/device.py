@@ -109,6 +109,7 @@ class PanelDevice:
     camera_entity: Optional[camera.CameraEntity] = None
     camera_button: Optional[ButtonEntity] = None
     camera_time: Optional[TextSensorEntity] = None
+    key_led_blank: Optional[NumberEntity] = None
     _last_lightbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar_fx: Optional[str] = field(default=None, repr=False)
@@ -162,7 +163,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         entities.append(ledbar)
 
     # ---- key LEDs (brightness-only light; only with front keys) --------------
-    keypad = None
+    keypad = key_led_blank = None
     if backend.keypad_present():
         kp_on, kp_bri = backend.get_keypad()
         keypad = PanelLight(
@@ -176,6 +177,15 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
 
         keypad.update_on_changed(keypad_changed)
         entities.append(keypad)
+        # the level of the key LEDs while the screen is blank, 0 to 255 (the
+        # raw level, like buttons.conf). Stored in panel.conf (KEY_LED_BLANK),
+        # and tsx-buttons applies it at once
+        key_led_blank = NumberEntity(
+            server, key_for("key_led_blank"), "Key LEDs screen-off level", "key_led_blank",
+            get_state=backend.get_key_led_blank, set_state=backend.set_key_led_blank,
+            min_value=0, max_value=255, step=1, icon="mdi:gesture-tap-button",
+        )
+        entities.append(key_led_blank)
 
     # ---- screen + backlight --------------------------------------------------
     screen = SwitchEntity(
@@ -385,7 +395,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         lightbar=lightbar, usb_power=usb_power, presence=presence, distance=distance, poe_class=poe_class,
         emmc_life_a=emmc_life_a, emmc_life_b=emmc_life_b, emmc_eol=emmc_eol, nfc=backend.nfc_present(),
         ledbar_fx=ledbar_fx, ledbar_leds=ledbar_leds, ledbar_actions=ledbar_actions, camera_entity=camera_entity,
-        camera_button=camera_button, camera_time=camera_time,
+        camera_button=camera_button, camera_time=camera_time, key_led_blank=key_led_blank,
     )
 
 
@@ -477,7 +487,8 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
     for entity in (device.screen, device.backlight, device.blank_timeout, device.als_auto, device.illuminance,
                    device.volume, device.verbose_boot, device.cpu_temp, device.uptime, device.ip_address,
                    device.touched_recently, device.update, device.presence, device.distance, device.usb_power,
-                   device.poe_class, device.emmc_life_a, device.emmc_life_b, device.emmc_eol, device.camera_time):
+                   device.poe_class, device.emmc_life_a, device.emmc_life_b, device.emmc_eol, device.camera_time,
+                   device.key_led_blank):
         if entity is None:
             continue
         before = getattr(entity, "_state", None)

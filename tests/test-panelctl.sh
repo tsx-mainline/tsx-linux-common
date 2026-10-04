@@ -118,6 +118,16 @@ send "verbose-boot maybe"
 send "verbose-boot on extra"
 
 [ ! -s "$T/cmds.log" ] && ok "no fake CLI was ever run for any hostile line" || { bad "a hostile line reached a CLI"; cat "$T/cmds.log"; }
+
+echo "== keypad led-blank: the screen-off level of the key LEDs (panel.conf KEY_LED_BLANK) =="
+: > "$T/cmds.log"
+send "keypad led-blank 0"
+send "keypad led-blank 255"
+[ "$(cat "$T/cmds.log")" = "$(printf 'tsx-config set KEY_LED_BLANK 0\ntsx-config apply\ntsx-config set KEY_LED_BLANK 255\ntsx-config apply')" ] \
+	&& ok "keypad led-blank 0 and 255 -> tsx-config set KEY_LED_BLANK + apply" || { bad "keypad led-blank"; cat "$T/cmds.log"; }
+: > "$T/cmds.log"
+for l in "keypad led-blank 256" "keypad led-blank -1" "keypad led-blank" "keypad led-blank 5 extra" "keypad led-blank x" "keypad led-blank *"; do send "$l"; done
+[ ! -s "$T/cmds.log" ] && ok "keypad led-blank: out of range, missing, extra or not a number is rejected" || { bad "a bad led-blank line ran"; cat "$T/cmds.log"; }
 rejected=$(grep -c 'rejected:' "$T/panelctl.log")
 [ "$rejected" -ge 21 ] && ok "all 21 hostile lines were logged as rejected ($rejected)" || bad "expected >=21 rejections, got $rejected"
 kill -0 "$PID" 2>/dev/null && ok "daemon is still alive after the hostile batch" || bad "daemon died"

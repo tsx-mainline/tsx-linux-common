@@ -379,6 +379,26 @@ syncr apply >/dev/null 2>&1
 grep -q '^root:\$6\$newsalt\$anotherhashvalue' "$FXS/etc/shadow" && ok "reinstall (locked root, kept panel.conf): the saved hash is applied again" || bad "reinstall: saved hash not applied"
 rm -f "$CFGS"; syncr sync-root >/dev/null 2>&1; [ ! -e "$CFGS" ] && ok "sync-root: no panel.conf, nothing created" || bad "sync-root created panel.conf"
 
+echo "== KEY_LED_BLANK: /run/tsx/buttons.conf for tsx-buttons, a reload only on a change =="
+BOV="$FX/run/tsx/buttons.conf"
+TSX_CONF="$CFG" busybox sh "$SCRIPT" unset KEY_LED_BLANK >/dev/null; applyp
+[ ! -e "$BOV" ] && ok "KEY_LED_BLANK unset: no buttons.conf override" || bad "KEY_LED_BLANK unset: $BOV exists"
+b0=$(breloads)
+set_ KEY_LED_BLANK 9 >/dev/null; applyp
+[ "$(cat "$BOV" 2>/dev/null)" = "LED_BLANK=9" ] && ok "KEY_LED_BLANK=9: the override has LED_BLANK=9" || bad "override: '$(cat "$BOV" 2>/dev/null)'"
+[ "$(stat -c '%a' "$BOV" 2>/dev/null)" = 644 ] && ok "the override is mode 644 (no secret)" || bad "override mode $(stat -c '%a' "$BOV" 2>/dev/null)"
+[ "$(breloads)" = $((b0 + 1)) ] && ok "a new KEY_LED_BLANK reloads tsx-buttons" || bad "new KEY_LED_BLANK: $(breloads) reloads (was $b0)"
+applyp; [ "$(breloads)" = $((b0 + 1)) ] && ok "an unchanged KEY_LED_BLANK does not reload tsx-buttons" || bad "unchanged KEY_LED_BLANK: $(breloads) reloads"
+set_ KEY_LED_BLANK 0 >/dev/null; applyp
+[ "$(cat "$BOV" 2>/dev/null)" = "LED_BLANK=0" ] && [ "$(breloads)" = $((b0 + 2)) ] && ok "KEY_LED_BLANK=0: dark keys on a blank screen, reloaded" || bad "KEY_LED_BLANK=0: '$(cat "$BOV" 2>/dev/null)', $(breloads) reloads"
+set_ KEY_LED_BLANK "" >/dev/null; applyp
+[ ! -e "$BOV" ] && [ "$(breloads)" = $((b0 + 3)) ] && ok "KEY_LED_BLANK empty: override removed (buttons.conf again), reloaded" || bad "KEY_LED_BLANK empty: $(breloads) reloads"
+printf '#!/bin/sh\necho "rc-service $*" >> "%s/rc.log"\n[ "$2" != status ]\n' "$W" > "$W/bin/rc-service"
+set_ KEY_LED_BLANK 30 >/dev/null; applyp
+[ "$(cat "$BOV" 2>/dev/null)" = "LED_BLANK=30" ] && [ "$(breloads)" = $((b0 + 3)) ] && ok "tsx-buttons stopped (boot): the override is written, no reload" || bad "stopped tsx-buttons: $(breloads) reloads"
+printf '#!/bin/sh\necho "rc-service $*" >> "%s/rc.log"\nexit 0\n' "$W" > "$W/bin/rc-service"
+TSX_CONF="$CFG" busybox sh "$SCRIPT" unset KEY_LED_BLANK >/dev/null; applyp
+
 echo "== $N ok, $F failed =="
 [ $F = 0 ] && echo PASS test-tsx-config-apply || echo FAIL test-tsx-config-apply
 exit $F

@@ -210,8 +210,8 @@ ledbar_state() {
 		echo "OFF 0 0,0,0"
 	fi
 }
-keypad_state() {
-	l=$(field "$R/buttons.state" led); set -- ${l:-0 unknown}
+keypad_state() {  # the level while the screen is awake. An older tsx-buttons: the level now
+	l=$(field "$R/buttons.state" led_awake); [ -n "$l" ] || l=$(field "$R/buttons.state" led); set -- ${l:-0 unknown}
 	[ "${1:-0}" -gt 0 ] 2>/dev/null && echo "ON $1" || echo "OFF 0"
 }
 screen_state() {

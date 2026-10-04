@@ -221,7 +221,7 @@ set_bt(False)
 ALL = dict.fromkeys(PARTS, True)
 d = standalone(ALL)
 REF = listed(d.entities)
-check("all parts: the entity count (with the actions)", len(REF), 39)
+check("all parts: the entity count (with the actions)", len(REF), 40)
 check("all parts: each key is the fixed key of its identity",
       {i: k for i, k in REF.items() if k != keys.stable_key(i)}, {})
 

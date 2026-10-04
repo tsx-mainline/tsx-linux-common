@@ -20,7 +20,8 @@ esac
 EOF
 chmod +x "$T/bin/tsx-panelctl"
 printf 'want 0 0 40\nlast 0 0 40\nout 0 0 40\n' > "$T/run/ledbar.state"
-printf 'screen awake\nled 128 day\nlast home short 12:00:01\n' > "$T/run/buttons.state"
+# The key LEDs show LED_BLANK (24) on a blank screen. The light reports the awake level (128).
+printf 'screen blank\nled 24 blank\nled_awake 128 day\nled_blank 24\nlast home short 12:00:01\n' > "$T/run/buttons.state"
 echo "on 17" > "$T/idled"; echo 0 > "$T/bl/x/brightness"
 echo 120 > "$T/run/blank-timeout"; date +%s > "$T/run/last-input"
 printf '%s' '{"installed_version":"abc123","latest_version":"abc123+2pending","title":"TSX test packages","release_summary":"musl (1.2.5-r0 -> 1.2.5-r1)","in_progress":false}' > "$T/run/update-ha-state.json"

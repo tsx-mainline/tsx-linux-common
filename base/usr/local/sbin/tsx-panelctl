@@ -373,6 +373,10 @@ handle() {
 			log "keypad led auto"; "$KEYPAD" led auto
 		elif [ "$a1" = led ] && in_range "$a2" 1 255 && [ -z "$a3$a4$rest" ]; then
 			log "keypad led $a2"; "$KEYPAD" led "$a2"
+		elif [ "$a1" = led-blank ] && in_range "$a2" 0 255 && [ -z "$a3$a4$rest" ]; then
+			# The screen-off level of the key LEDs. panel.conf stores it
+			# (KEY_LED_BLANK), and tsx-config apply hands it to tsx-buttons.
+			log "keypad led-blank $a2"; "$CONFIG" set KEY_LED_BLANK "$a2" && "$CONFIG" apply
 		else reject "keypad $a1 $a2 $a3 $a4 $rest"; fi;;
 	blank)
 		if { [ "$a1" = on ] || [ "$a1" = off ]; } && [ -z "$a2$a3$a4$rest" ]; then

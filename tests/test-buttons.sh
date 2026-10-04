@@ -181,6 +181,48 @@ kill -USR1 $(pgrep -x tsx-idled | head -1); sleep 0.9
 [ "$(led keypad)" = 128 ] || fail "wake: keypad LED $(led keypad)"
 ok "wake -> key LEDs 128"
 
+# The override and the blank screen. "led off" applies at once and holds in
+# every screen state. "led N" is the awake level. While the screen is blank,
+# the keys show LED_BLANK. Each change applies at once.
+IDLED_PID=$(pgrep -x tsx-idled | head -1)
+blank_on() { kill -USR2 $IDLED_PID; sleep 0.9; grep -q '^blank' $T/idled.state || fail "tsx-idled did not blank"; }
+blank_off() { kill -USR1 $IDLED_PID; sleep 0.9; grep -q '^on' $T/idled.state || fail "tsx-idled did not wake"; }
+st() { sed -n "s/^$1 //p" $T/run/buttons.state; }
+state() { tr '\n' ';' < $T/run/buttons.state; }
+blank_on; [ "$(led keypad)" = 5 ] || fail "blank: keypad LED $(led keypad), want LED_BLANK 5"
+ctl "led off"; sleep 0.3
+[ "$(led keypad)$(led key1)" = 00 ] || fail "led off on a blank screen: keypad $(led keypad), key1 $(led key1), want dark at once"
+[ "$(st led)/$(st led_awake)/$(st led_blank)" = "0 override/0 override/5" ] || fail "led off on a blank screen: $(state)"
+blank_off; [ "$(led keypad)$(led key1)" = 00 ] || fail "led off: the wake lit the keys ($(led keypad))"
+blank_on; [ "$(led keypad)" = 0 ] || fail "led off: the next blank lit the keys ($(led keypad))"
+ok "led off on a blank screen: dark at once, and it holds across wake and blank"
+ctl "led 40"; sleep 0.3
+[ "$(led keypad)$(led key1)" = 51 ] || fail "led 40 on a blank screen: keypad $(led keypad), want LED_BLANK 5 at once"
+[ "$(st led)/$(st led_awake)" = "5 blank/40 override" ] || fail "led 40 on a blank screen: $(state)"
+blank_off; [ "$(led keypad)" = 40 ] || fail "led 40: the wake shows $(led keypad), want 40"
+ok "led 40 on a blank screen: LED_BLANK at once, 40 after the wake"
+ctl "led off"; sleep 0.3; [ "$(led keypad)" = 0 ] || fail "led off on an awake screen: $(led keypad)"
+ctl "led -5"; sleep 0.3; [ "$(st led_awake)" = "0 override" ] || fail "led -5 from 0 must stay 0, not auto: $(state)"
+ctl "led +30"; sleep 0.3; [ "$(led keypad)" = 30 ] || fail "led +30 from 0: $(led keypad)"
+ctl "led auto"; sleep 0.3
+[ "$(led keypad)" = 128 ] && [ "$(st led)/$(st led_awake)" = "128 day/128 day" ] || fail "led auto: $(state)"
+ok "led off, -5 (stays 0), +30, auto on an awake screen"
+
+# The panel.conf override /run/tsx/buttons.conf (tsx-config apply, KEY_LED_BLANK):
+# its settings replace those of buttons.conf. It cannot add keys or bindings.
+printf 'LED_BLANK=9\nbutton extra KEY_F18 led=1\non power short none\n' > $T/run/buttons.conf
+kill -HUP $BPID; sleep 0.5
+[ "$(st led_blank)" = 9 ] || fail "override LED_BLANK=9: $(state)"
+grep -q "$T/run/buttons.conf:2: only KEY=VALUE settings here" $T/buttons.log && grep -q "$T/run/buttons.conf:3: only KEY=VALUE" $T/buttons.log \
+	|| fail "override: button and on lines not refused"
+grep ' buttons, ' $T/buttons.log | tail -n 1 | grep -q '^tsx-buttons: 5 buttons, 8 bindings, .* blank 9 ' \
+	|| fail "override: $(grep ' buttons, ' $T/buttons.log | tail -n 1)"
+blank_on; [ "$(led keypad)" = 9 ] || fail "override LED_BLANK=9: blank shows $(led keypad)"
+rm $T/run/buttons.conf; kill -HUP $BPID; sleep 0.5
+[ "$(led keypad)" = 5 ] && [ "$(st led_blank)" = 5 ] || fail "override removed: blank shows $(led keypad), want 5"
+blank_off; [ "$(led keypad)" = 128 ] || fail "override removed: wake shows $(led keypad)"
+ok "panel.conf override: LED_BLANK=9 applies on reload (also on a blank screen), button and on lines refused"
+
 ctl "led 40"; sleep 0.3; [ "$(led keypad)" = 40 ] || fail "ctl led 40: $(led keypad)"
 ctl "key lights off"; sleep 0.3; [ "$(led key3)" = 0 ] || fail "ctl key lights off"
 ctl "key 3 auto"; sleep 0.3; [ "$(led key3)" = 1 ] || fail "ctl key 3 auto"

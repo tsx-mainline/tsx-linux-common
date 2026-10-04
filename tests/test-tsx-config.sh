@@ -136,6 +136,16 @@ run validate PRESENCE_HOLD_S 30 && run validate PRESENCE_WAKE "" && run validate
 	&& ok "validate: a number in range, and empty (= the default)" || bad "validate of the sensor keys"
 for k in PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS; do run unset "$k"; done
 
+echo "== KEY_LED_BLANK: the screen-off level of the key LEDs, 0 to 255 or empty =="
+for v in 0 1 24 255 ""; do
+	run set KEY_LED_BLANK "$v" && [ "$(run get KEY_LED_BLANK)" = "$v" ] && ok "KEY_LED_BLANK '$v' accepted" || bad "KEY_LED_BLANK '$v'"
+done
+for v in 256 -1 1000 abc 2.5 " 5" "5;reboot" 0x10; do
+	run set KEY_LED_BLANK "$v" >/dev/null 2>&1 && bad "KEY_LED_BLANK '$v' accepted" || ok "KEY_LED_BLANK '$v' rejected"
+done
+run validate KEY_LED_BLANK 24 && ok "validate KEY_LED_BLANK 24" || bad "validate KEY_LED_BLANK 24"
+run unset KEY_LED_BLANK
+
 echo "== a value containing a literal newline is rejected =="
 V=$(printf 'line1\nline2')
 run set MQTT_USER "$V" >/dev/null 2>&1 && bad "embedded newline accepted" || ok "embedded newline rejected"

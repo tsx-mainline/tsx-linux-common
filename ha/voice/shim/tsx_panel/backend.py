@@ -371,7 +371,13 @@ class PanelBackend:
         return self.buttons_conf.is_file()
 
     def get_keypad(self):
-        raw = _field(self.run_dir / "buttons.state", "led") or "0 unknown"
+        """(on, level) of the Key LEDs light: the level while the screen is
+        awake (buttons.state "led_awake": the override or the day or night
+        level). The light does not follow the screen-off level, so it does not
+        jump at each blank and wake. An older tsx-buttons without that line:
+        the level on the LEDs now ("led")."""
+        state = self.run_dir / "buttons.state"
+        raw = _field(state, "led_awake") or _field(state, "led") or "0 unknown"
         try:
             level = int(raw.split()[0])
         except (ValueError, IndexError):
@@ -379,10 +385,50 @@ class PanelBackend:
         return level > 0, level
 
     def set_keypad(self, on: bool, brightness: int) -> None:
+        """Off keeps the keys dark, also while the screen is blank. On sets the
+        level while the screen is awake. Both hold until `tsx-keypad led auto`."""
         if not on:
             self._ctl("keypad", "led", "off")
         else:
             self._ctl("keypad", "led", str(max(1, min(255, brightness))))
+
+    # A screen-off level that Home Assistant just set, and when (see get_key_led_blank)
+    _key_led_blank_pending: Optional[Tuple[int, float]] = None
+
+    def get_key_led_blank(self) -> int:
+        """The level of the key LEDs while the screen is blank, 0 to 255, as
+        tsx-buttons uses it (buttons.state "led_blank": LED_BLANK of
+        buttons.conf, or KEY_LED_BLANK of panel.conf). An older tsx-buttons
+        without that line: LED_BLANK of buttons.conf. A value just set is
+        reported until tsx-buttons has it (as get_blank_timeout)."""
+        value = None
+        raw = _field(self.run_dir / "buttons.state", "led_blank")
+        try:
+            if raw:
+                value = int(raw.split()[0])
+        except (ValueError, IndexError):
+            value = None
+        if value is None:
+            value = 0
+            try:
+                for line in self.buttons_conf.read_text(encoding="utf-8", errors="replace").splitlines():
+                    line = line.strip()
+                    if line.startswith("LED_BLANK="):
+                        value = int(line.split("=", 1)[1].split("#", 1)[0].strip().strip("'\""))
+            except (OSError, ValueError):
+                pass
+        pending = self._key_led_blank_pending
+        if pending and pending[0] != value and time.monotonic() - pending[1] < 10:
+            return pending[0]
+        self._key_led_blank_pending = None
+        return value
+
+    def set_key_led_blank(self, level: float) -> None:
+        """Store the screen-off level in panel.conf (KEY_LED_BLANK). tsx-config
+        apply hands it to tsx-buttons, which applies it at once."""
+        level = max(0, min(255, int(round(level))))
+        self._key_led_blank_pending = (level, time.monotonic())
+        self._ctl("keypad", "led-blank", str(level))
 
     # ---- screen / backlight ------------------------------------------------
     def get_backlight_max(self) -> int:

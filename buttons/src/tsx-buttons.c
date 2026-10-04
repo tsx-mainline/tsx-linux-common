@@ -12,10 +12,17 @@
  *    long press plus repeat.
  *    Actions: exec, ha, ha-post, navigate, home, reload, blank, brightness,
  *    led, none. An optional HA event fires per press (HA_EVENT).
- *  - The LED level follows the screen. It is LED_BLANK while tsx-idled has
- *    the screen blanked (/run/tsx-idled.state), and LED_DAY or LED_NIGHT when
- *    the screen is awake. An override (control FIFO "led N", or the "led"
- *    action) replaces the day/night level until "led auto".
+ *  - The LED level follows the screen. It is LED_BLANK (the screen-off level)
+ *    while tsx-idled has the screen blanked (/run/tsx-idled.state), and
+ *    LED_DAY or LED_NIGHT when the screen is awake. An override (control FIFO
+ *    "led N", or the "led" action, for example from Home Assistant) replaces
+ *    the day/night level until "led auto". It holds across blank, wake and
+ *    the day/night change. The override 0 ("led off") keeps the keys dark in
+ *    every screen state. Any other override is the awake level only. While
+ *    the screen is blank, the keys show LED_BLANK.
+ *  - Settings in rundir/buttons.conf (tsx-config apply writes it from
+ *    panel.conf, for example LED_BLANK from KEY_LED_BLANK) replace the same
+ *    settings of the config file. That file has no button or "on" lines.
  *  - Brightness: "brightness N" writes /run/tsx/brightness, an absolute level.
  *    tsx-idled uses it in place of ALS or its day/night level until the next
  *    day/night change. "brightness +N|-N" and the key-strip slide are the
@@ -258,65 +265,82 @@ static void origin_of(const char *url, char *out, size_t n)
 	snprintf(out, n, "%.*s", (int)len, url);
 }
 
-static void cfg_load(void)
+/* One line of a buttons.conf-format file. settings_only: the panel.conf
+ * override (rundir/buttons.conf) can only change KEY=VALUE settings. */
+static void cfg_line(struct cfg *c, char *line, const char *path, int lineno, int settings_only)
 {
-	struct cfg c; FILE *f; char line[1024]; int lineno = 0, ns, ne;
-	cfg_defaults(&c);
-	if (!(f = fopen(cfgfile, "r"))) logm("no %s, using defaults (no buttons bound)", cfgfile);
-	while (f && fgets(line, sizeof line, f)) {
-		char *p = trim(line), *eq, *w[3], *rest;
-		lineno++;
-		if (!*p || *p == '#') continue;
-		if (!strncmp(p, "button", 6) && isspace((unsigned char)p[6])) {
-			/* button NAME KEYCODE [led=N] */
-			char nm[32] = "", kc[32] = "", opt[32] = "";
-			int n = sscanf(p + 6, "%31s %31s %31s", nm, kc, opt), code = keycode(kc);
-			if (n < 2 || code < 0 || c.nbtn >= MAXBTN) { logm("%s:%d: bad button line", cfgfile, lineno); continue; }
-			struct button *b = &c.btn[c.nbtn++];
-			memset(b, 0, sizeof *b);
-			snprintf(b->name, sizeof b->name, "%s", nm); b->code = code; b->led = 0;
-			if (n == 3 && !strncmp(opt, "led=", 4)) b->led = atoi(opt + 4);
-			if (b->led < 0 || b->led > NLED) b->led = 0;
-			continue;
+	char *p = trim(line), *eq, *w[3], *rest;
+	int is_button = !strncmp(p, "button", 6) && isspace((unsigned char)p[6]);
+	int is_on = !strncmp(p, "on", 2) && isspace((unsigned char)p[2]);
+	if (!*p || *p == '#') return;
+	if (settings_only && (is_button || is_on)) { logm("%s:%d: only KEY=VALUE settings here, line ignored", path, lineno); return; }
+	if (is_button) {
+		/* button NAME KEYCODE [led=N] */
+		char nm[32] = "", kc[32] = "", opt[32] = "";
+		int n = sscanf(p + 6, "%31s %31s %31s", nm, kc, opt), code = keycode(kc);
+		if (n < 2 || code < 0 || c->nbtn >= MAXBTN) { logm("%s:%d: bad button line", path, lineno); return; }
+		struct button *b = &c->btn[c->nbtn++];
+		memset(b, 0, sizeof *b);
+		snprintf(b->name, sizeof b->name, "%s", nm); b->code = code; b->led = 0;
+		if (n == 3 && !strncmp(opt, "led=", 4)) b->led = atoi(opt + 4);
+		if (b->led < 0 || b->led > NLED) b->led = 0;
+		return;
+	}
+	if (is_on) {
+		/* on NAME short|long|hold ACTION... */
+		rest = p + 2;
+		for (int k = 0; k < 2; k++) {
+			while (isspace((unsigned char)*rest)) rest++;
+			w[k] = rest;
+			while (*rest && !isspace((unsigned char)*rest)) rest++;
+			if (*rest) *rest++ = 0;
 		}
-		if (!strncmp(p, "on", 2) && isspace((unsigned char)p[2])) {
-			/* on NAME short|long|hold ACTION... */
-			rest = p + 2;
-			for (int k = 0; k < 2; k++) {
-				while (isspace((unsigned char)*rest)) rest++;
-				w[k] = rest;
-				while (*rest && !isspace((unsigned char)*rest)) rest++;
-				if (*rest) *rest++ = 0;
-			}
-			w[2] = trim(rest);
-			int bi = -1, ev = -1;
-			for (int i = 0; i < c.nbtn; i++) if (!strcmp(c.btn[i].name, w[0])) bi = i;
-			for (int i = 0; i < NEVT; i++) if (!strcmp(evname[i], w[1])) ev = i;
-			if (bi < 0 || ev < 0 || !*w[2] || c.nbind >= MAXBIND) {
-				logm("%s:%d: bad 'on' line (button defined above? short|long|hold? action?)", cfgfile, lineno);
-				continue;
-			}
-			c.bind[c.nbind].btn = bi; c.bind[c.nbind].evt = ev;
-			snprintf(c.bind[c.nbind].action, sizeof c.bind[0].action, "%s", w[2]);
-			c.nbind++;
-			continue;
+		w[2] = trim(rest);
+		int bi = -1, ev = -1;
+		for (int i = 0; i < c->nbtn; i++) if (!strcmp(c->btn[i].name, w[0])) bi = i;
+		for (int i = 0; i < NEVT; i++) if (!strcmp(evname[i], w[1])) ev = i;
+		if (bi < 0 || ev < 0 || !*w[2] || c->nbind >= MAXBIND) {
+			logm("%s:%d: bad 'on' line (button defined above? short|long|hold? action?)", path, lineno);
+			return;
 		}
-		if (!(eq = strchr(p, '='))) { logm("%s:%d: ignored", cfgfile, lineno); continue; }
-		*eq = 0; char *k = trim(p), *v = kv_value(eq + 1);
-#define I(n, f) if (!strcmp(k, n)) { c.f = atoi(v); continue; }
-#define S(n, f) if (!strcmp(k, n)) { snprintf(c.f, sizeof c.f, "%s", v); continue; }
-		I("LONG_PRESS_MS", long_ms) I("HOLD_REPEAT_MS", hold_ms) I("PRESS_FEEDBACK_MS", feedback_ms)
-		I("HA_TIMEOUT", ha_timeout) I("LED_DAY", led_day) I("LED_NIGHT", led_night)
-		I("LED_BLANK", led_blank) I("LED_NIGHT_START", night_start) I("LED_NIGHT_END", night_end)
-		S("HA_URL", ha_url) S("HA_TOKEN_FILE", ha_token_file) S("HA_EVENT", ha_event)
-		S("KIOSK_CONF", kiosk_conf) S("DEVTOOLS", devtools) S("NAV_FALLBACK", nav_fallback)
-		S("LED_PWM", led_pwm) S("LED_KEY_PREFIX", led_key)
-		I("SLIDE_STEP", slide_step) I("SLIDE_GAP_MS", slide_gap_ms) S("OVERLAY_FALLBACK", overlay_fallback)
+		c->bind[c->nbind].btn = bi; c->bind[c->nbind].evt = ev;
+		snprintf(c->bind[c->nbind].action, sizeof c->bind[0].action, "%s", w[2]);
+		c->nbind++;
+		return;
+	}
+	if (!(eq = strchr(p, '='))) { logm("%s:%d: ignored", path, lineno); return; }
+	*eq = 0; char *k = trim(p), *v = kv_value(eq + 1);
+#define I(n, f) if (!strcmp(k, n)) { c->f = atoi(v); return; }
+#define S(n, f) if (!strcmp(k, n)) { snprintf(c->f, sizeof c->f, "%s", v); return; }
+	I("LONG_PRESS_MS", long_ms) I("HOLD_REPEAT_MS", hold_ms) I("PRESS_FEEDBACK_MS", feedback_ms)
+	I("HA_TIMEOUT", ha_timeout) I("LED_DAY", led_day) I("LED_NIGHT", led_night)
+	I("LED_BLANK", led_blank) I("LED_NIGHT_START", night_start) I("LED_NIGHT_END", night_end)
+	S("HA_URL", ha_url) S("HA_TOKEN_FILE", ha_token_file) S("HA_EVENT", ha_event)
+	S("KIOSK_CONF", kiosk_conf) S("DEVTOOLS", devtools) S("NAV_FALLBACK", nav_fallback)
+	S("LED_PWM", led_pwm) S("LED_KEY_PREFIX", led_key)
+	I("SLIDE_STEP", slide_step) I("SLIDE_GAP_MS", slide_gap_ms) S("OVERLAY_FALLBACK", overlay_fallback)
 #undef I
 #undef S
-		logm("%s:%d: unknown setting %s", cfgfile, lineno, k);
-	}
+	logm("%s:%d: unknown setting %s", path, lineno, k);
+}
+
+static int clamp_led(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+
+static void cfg_load(void)
+{
+	struct cfg c; FILE *f; char line[1024], override[PATH_MAX]; int lineno = 0, ns, ne;
+	cfg_defaults(&c);
+	if (!(f = fopen(cfgfile, "r"))) logm("no %s, using defaults (no buttons bound)", cfgfile);
+	while (f && fgets(line, sizeof line, f)) cfg_line(&c, line, cfgfile, ++lineno, 0);
 	if (f) fclose(f);
+	/* the panel.conf override (tsx-config apply): its settings win */
+	snprintf(override, sizeof override, "%s/buttons.conf", rundir);
+	if (strcmp(override, cfgfile) && (f = fopen(override, "r"))) {
+		lineno = 0;
+		while (fgets(line, sizeof line, f)) cfg_line(&c, line, override, ++lineno, 1);
+		fclose(f);
+		logm("settings of %s applied", override);
+	}
 	kiosk_conf_load(&c, &ns, &ne);
 	if (c.night_start < 0) c.night_start = ns;
 	if (c.night_end < 0) c.night_end = ne;
@@ -327,6 +351,7 @@ static void cfg_load(void)
 	if (c.slide_gap_ms < 50) c.slide_gap_ms = 50;
 	if (c.slide_gap_ms > 1000) c.slide_gap_ms = 1000;
 	if (!strncmp(c.overlay_fallback, "overlay", 7)) strcpy(c.overlay_fallback, "none");
+	c.led_day = clamp_led(c.led_day); c.led_night = clamp_led(c.led_night); c.led_blank = clamp_led(c.led_blank);
 	C = c;
 
 	/* Write the HA token to a header file for curl -H @file. This keeps it off the command line. */
@@ -362,11 +387,30 @@ static void led_path(char *p, size_t n, const char *name)
 	snprintf(p, n, "%s/%s/brightness", leddir, name);
 }
 
-static int led_target(void)
+/* The level while the screen is awake: the override, else the day or night level. */
+static int led_awake(void)
 {
-	if (blanked == 1) return C.led_blank;
 	if (led_override >= 0) return led_override;
 	return is_night() ? C.led_night : C.led_day;
+}
+
+/* The level for the LEDs now. The override 0 ("led off") comes first, so an
+ * "off" from Home Assistant also makes the keys of a blank screen dark at
+ * once. Else the screen-off level applies while the screen is blank. */
+static int led_target(void)
+{
+	if (led_override == 0) return 0;
+	if (blanked == 1) return C.led_blank;
+	return led_awake();
+}
+
+/* Where the level of led_target() comes from (buttons.state "led"). */
+static const char *led_source(void)
+{
+	if (led_override == 0) return "override";
+	if (blanked == 1) return "blank";
+	if (led_override > 0) return "override";
+	return is_night() ? "night" : "day";
 }
 
 static void write_state(void);
@@ -498,19 +542,20 @@ static void do_brightness(const char *arg)
 	logm("brightness %d -> %d (cap %d)", cur, lvl, max);
 }
 
-/* led +N | -N | N | auto | toggle */
+/* led +N | -N | N | on | off | toggle | auto. The new level applies at once,
+ * also while the screen is blank (see led_target). +N, -N and toggle start
+ * from the awake level. */
 static void do_led(const char *arg)
 {
-	int cur = led_override >= 0 ? led_override : (is_night() ? C.led_night : C.led_day);
-	if (!strcmp(arg, "auto")) led_override = -1;
-	else if (!strcmp(arg, "toggle")) led_override = cur > 0 ? 0 : (C.led_day > 0 ? C.led_day : 128);
-	else if (!strcmp(arg, "off")) led_override = 0;
-	else if (!strcmp(arg, "on")) led_override = C.led_day > 0 ? C.led_day : 128;
-	else if (arg[0] == '+' || arg[0] == '-') led_override = cur + atoi(arg);
-	else if (isdigit((unsigned char)arg[0])) led_override = atoi(arg);
+	int cur = led_awake(), v;
+	if (!strcmp(arg, "auto")) v = -1;
+	else if (!strcmp(arg, "toggle")) v = cur > 0 ? 0 : (C.led_day > 0 ? C.led_day : 128);
+	else if (!strcmp(arg, "off")) v = 0;
+	else if (!strcmp(arg, "on")) v = C.led_day > 0 ? C.led_day : 128;
+	else if (arg[0] == '+' || arg[0] == '-') v = clamp_led(cur + atoi(arg));   /* -N from 0 stays 0, not auto */
+	else if (isdigit((unsigned char)arg[0])) v = clamp_led(atoi(arg));
 	else { logm("led: bad argument '%s'", arg); return; }
-	if (led_override > 255) led_override = 255;
-	if (led_override < -1) led_override = 0;
+	led_override = v;
 	logm("keypad LED override %s", led_override < 0 ? "auto" : arg);
 	leds_apply(0);
 }
@@ -1089,8 +1134,12 @@ static void write_state(void)
 	for (int i = 0; i < NLED; i++)
 		snprintf(keys + strlen(keys), sizeof keys - strlen(keys), "%s%d", i ? " " : "",
 			 key_written[i] < 0 ? -1 : key_written[i]);
-	fprintf(f, "screen %s\nled %d %s\nkey_leds %s\nkey_override", blanked == 1 ? "blank" : "awake",
-		led_written, led_override >= 0 ? "override" : blanked == 1 ? "blank" : is_night() ? "night" : "day", keys);
+	/* led: the level on the LEDs and its source. led_awake: the level while
+	 * the screen is awake (the Home Assistant light shows it). led_blank: the
+	 * screen-off level (LED_BLANK). */
+	fprintf(f, "screen %s\nled %d %s\nled_awake %d %s\nled_blank %d\nkey_leds %s\nkey_override",
+		blanked == 1 ? "blank" : "awake", led_written, led_source(), clamp_led(led_awake()),
+		led_override >= 0 ? "override" : is_night() ? "night" : "day", C.led_blank, keys);
 	for (int i = 0; i < NLED; i++)
 		fprintf(f, " %s", key_override[i] < 0 ? "auto" : key_override[i] ? "on" : "off");
 	char bo[PATH_MAX + 32]; int off = 0; FILE *of;
