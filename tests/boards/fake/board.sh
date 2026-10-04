@@ -46,3 +46,11 @@ tsx_board_mac_early() {
 tsx_board_mac() { tsx_board_mac_early; }
 tsx_board_mac_source() { echo "$TSX_MAC_SOURCE"; }
 tsx_board_rescue_extra() { echo "board line   : fake"; }
+# tsx_board_ledbar_map MODEL: the name of the LED map for the LED bar of the
+# panel model, or nothing for the firmware default map. MODEL can be empty.
+# FAKE-100 and its variants (for example FAKE-100-NC) use the map FAKE-LB.
+tsx_board_ledbar_map() {
+	case ${1:-} in
+	FAKE-100|FAKE-100-*) echo FAKE-LB;;
+	esac
+}
