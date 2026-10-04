@@ -1,5 +1,5 @@
 /*
- * tsx-idled: screen blanking with wake-on-touch for the xx60 kiosk.
+ * tsx-idled: screen blanking with wake-on-touch for the kiosk.
  *
  * It does not depend on the compositor. It watches every /dev/input/event*
  * device itself.
@@ -20,9 +20,9 @@
  *    starts during the blank (the nightly kiosk restart) turns its output on.
  *  - Brightness follows a day/night schedule (BRIGHTNESS_DAY/NIGHT in
  *    backlight steps, NIGHT_START/NIGHT_END hours, local time). BACKLIGHT_MAX
- *    limits it (the TSX panels: MP3309C 0..31, vendor cap 23, U-Boot 17).
- *    A value that no config file sets is a share of max_brightness (see
- *    resolve_levels), so the defaults fit any backlight range.
+ *    limits it. A value that no config file sets is a share of
+ *    max_brightness (see resolve_levels), so the defaults fit any backlight
+ *    range.
  *  - No lit level goes below BACKLIGHT_MIN (the floor). A slider at the
  *    bottom then still shows a picture. The default is 3 % of max_brightness
  *    (at least 1). Blanking still turns the backlight off.
@@ -32,7 +32,7 @@
  *    (default 2000). 0 = jump. The ramp is linear in the slider scale of
  *    tsx-level.h, so it looks even. The daemon has no timer while no ramp
  *    runs. The wake from blank and the start set the level at once.
- *  - KEY_POWER (the TSX power key, gpio-keys-polled) toggles blank and wake
+ *  - KEY_POWER (the power key of the panel) toggles blank and wake
  *    when POWER_KEY=blank.
  *  - On-screen keyboard toggle (OSK_GESTURE=threefinger|twofinger|off): a
  *    short tap with exactly three (or two) fingers runs OSK_TOGGLE_CMD
@@ -41,10 +41,12 @@
  *    the screen is blank or the daemon swallows a gesture.
  *    The default is three fingers, because Chromium opens its context menu on
  *    a two-finger tap.
- *  - Quick-settings overlay (OVERLAY_GESTURE=fourfinger|threefinger|off,
- *    default off): the same kind of tap runs OVERLAY_CMD (default: "toggle"
- *    to the FIFO /run/tsx/overlay.ctl of tsx-overlay). For a panel without
- *    front keys to show the overlay with.
+ *  - Quick-settings overlay (OVERLAY_GESTURE=fivefinger|off, default
+ *    fivefinger): a tap with exactly five fingers runs OVERLAY_CMD (default:
+ *    "toggle" to the FIFO /run/tsx/overlay.ctl of tsx-overlay, only if that
+ *    FIFO exists). The tap needs the exact number, so a five-finger tap never
+ *    runs the keyboard toggle. Another value gives one log line and counts as
+ *    fivefinger.
  *  - Signals: SIGUSR1 = wake now, SIGUSR2 = blank now, SIGHUP = reload config.
  *  - The daemon writes its state to /run/tsx-idled.state ("on <level>" or
  *    "blank").
@@ -139,7 +141,10 @@ static char bldir[PATH_MAX];
 static int verbose;
 static volatile sig_atomic_t sig_wake, sig_blank, sig_hup, sig_term;
 
-#define MAXSLOT 10
+/* A five-finger tap needs five slots. A touch controller has 10 slots or a
+ * few more (for example 11). The daemon ignores a slot number of MAXSLOT or
+ * more. */
+#define MAXSLOT 16
 struct dev {
 	int fd; char path[PATH_MAX]; int grabbed;
 	/* multitouch state for the OSK tap */
@@ -170,8 +175,8 @@ static void cfg_defaults(struct cfg *c)
 	strcpy(c->backlight, "auto");
 	c->osk_gesture = 3; c->osk_tap_ms = 500;
 	strcpy(c->osk_cmd, "/usr/local/bin/tsx-osk toggle");
-	c->overlay_gesture = 0;
-	strcpy(c->overlay_cmd, "timeout 2 sh -c 'echo toggle > /run/tsx/overlay.ctl'");
+	c->overlay_gesture = 5;
+	strcpy(c->overlay_cmd, "timeout 2 sh -c '[ -p /run/tsx/overlay.ctl ] && echo toggle > /run/tsx/overlay.ctl'");
 	strcpy(c->disp_cmd, "/usr/local/bin/tsx-display-power");
 	c->disp_timeout_ms = 3000;
 }
@@ -200,7 +205,13 @@ static void cfg_parse(struct cfg *c, const char *cfgfile, int first)
 		if (!strcmp(p, "OSK_GESTURE")) c->osk_gesture = !strcmp(v, "threefinger") ? 3 : !strcmp(v, "twofinger") ? 2 : 0;
 		I("OSK_TAP_MS", osk_tap_ms);
 		if (!strcmp(p, "OSK_TOGGLE_CMD") && *v) snprintf(c->osk_cmd, sizeof c->osk_cmd, "%s", v);
-		if (!strcmp(p, "OVERLAY_GESTURE")) c->overlay_gesture = !strcmp(v, "fourfinger") ? 4 : !strcmp(v, "threefinger") ? 3 : 0;
+		if (!strcmp(p, "OVERLAY_GESTURE")) {
+			if (!strcmp(v, "off")) c->overlay_gesture = 0;
+			else {
+				if (strcmp(v, "fivefinger")) logm("OVERLAY_GESTURE=%s is not known, using fivefinger", v);
+				c->overlay_gesture = 5;
+			}
+		}
 		if (!strcmp(p, "OVERLAY_CMD") && *v) snprintf(c->overlay_cmd, sizeof c->overlay_cmd, "%s", v);
 		I("ALS_WATCH", als_watch);
 		/* An empty value turns the display power control off. */
@@ -321,7 +332,7 @@ static int target_level(void)
 	if (st_override < 0) st_override = 0;
 	st_base = base_level();
 	/* The local manual setting: an offset on top of ALS or the schedule. */
-	/* The offset has the range of the backlight (xx60: 0..23, a wide range: 0..4095). */
+	/* The offset has the range of the backlight (for example 0..23, or a wide range: 0..4095). */
 	int lim = C.bl_max > 64 ? C.bl_max : 64;
 	if (read_sint(ovrdir, "brightness-offset", &off) || off < -lim || off > lim) off = 0;
 	st_offset = off;
@@ -438,8 +449,8 @@ static void backlight_on(int mode)
 	if (lvl > max) lvl = max;
 	if (lvl < st_min) lvl = st_min;
 	write_bstate(lvl);
-	/* Write the level again also when someone else changed it (the panel
-	 * enable of drm/meson restores 16 on unblank, and so does brightnessctl).
+	/* Write the level again also when someone else changed it (a display
+	 * driver can restore its own level on unblank, and so does brightnessctl).
 	 * The config is authoritative. A ramp step is the last value that this
 	 * daemon wrote, so it is no outside change. */
 	int actual = read_int(bldir, "brightness");
@@ -586,7 +597,7 @@ static int mt_event(struct dev *d, const struct input_event *e, long long t)
 	if (e->type != EV_ABS && e->type != EV_SYN) return 0;
 	if (e->type == EV_ABS) {
 		switch (e->code) {
-		case ABS_MT_SLOT: if (e->value >= 0 && e->value < MAXSLOT) d->slot = e->value; return 0;
+		case ABS_MT_SLOT: d->slot = e->value >= 0 && e->value < MAXSLOT ? e->value : MAXSLOT; return 0;
 		case ABS_MT_POSITION_X: if (s < MAXSLOT) d->x[s] = e->value; return 0;
 		case ABS_MT_POSITION_Y: if (s < MAXSLOT) d->y[s] = e->value; return 0;
 		case ABS_MT_TRACKING_ID:
@@ -648,8 +659,9 @@ static void watch_rundir(void)
 
 /* Return a bit mask: 1 if a manual brightness file changed (the slider), 2 if
  * the blank timeout file changed, 4 if als-level changed (ALS_WATCH only).
- * Without ALS_WATCH, the 5 s re-apply handles als-level. On the xx60 that file
- * changes every second, and tsx-als ramps the backlight toward it itself. */
+ * Without ALS_WATCH, the 5 s re-apply handles als-level. A light sensor
+ * service can write that file every second (for example tsx-als). It then
+ * ramps the backlight toward the level itself. */
 static int read_inotify(void)
 {
 	char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
@@ -713,10 +725,11 @@ int main(int argc, char **argv)
 	}
 	watch_rundir();
 	load_timeout(1);
-	logm("timeout %ds%s, day %d, night %d (%02d-%02d h), cap %d, backlight %s, osk gesture %s",
+	logm("timeout %ds%s, day %d, night %d (%02d-%02d h), cap %d, backlight %s, osk gesture %s, overlay gesture %s",
 	     eff_timeout, eff_timeout != C.blank_timeout ? " (runtime override)" : "",
 	     C.day, C.night, C.night_start, C.night_end, C.bl_max, bldir[0] ? bldir : "none",
-	     C.osk_gesture == 3 ? "threefinger" : C.osk_gesture == 2 ? "twofinger" : "off");
+	     C.osk_gesture == 3 ? "threefinger" : C.osk_gesture == 2 ? "twofinger" : "off",
+	     C.overlay_gesture == 5 ? "fivefinger" : "off");
 	/* A previous instance can have stopped while the output was off. */
 	display_power(1);
 	backlight_on(RAMP_NONE);

@@ -10,11 +10,11 @@
 #   KIOSK_OSK=wvkbd        sway + wvkbd (starts hidden. A three-finger tap or
 #                          "tsx-osk toggle" shows or hides it)
 # Under sway it also runs the quick-settings overlay tsx-overlay (brightness,
-# auto brightness, screen off, reload. KIOSK_OVERLAY=on). tsx-buttons shows
-# it on a slide along the front-key strip or a long hold of the top key.
-# Cage has no layer-shell, so there is no overlay there. The key-strip slide
-# still sets the brightness. The long hold runs OVERLAY_FALLBACK of
-# buttons.conf.
+# auto brightness, screen off, reload. KIOSK_OVERLAY=on). A five-finger tap
+# shows or hides it (OVERLAY_GESTURE, read by tsx-idled). A key of a board with
+# front keys can show it too (the overlay action of tsx-buttons).
+# Cage has no layer-shell, so there is no overlay there. A key that runs the
+# overlay action runs OVERLAY_FALLBACK of buttons.conf instead.
 # Under sway, this script runs a second time as "kiosk-session --browser"
 # (from the generated sway config) to start Chromium. Sway exits when
 # Chromium exits.

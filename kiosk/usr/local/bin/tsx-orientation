@@ -29,13 +29,13 @@
 #                       mounting turns it, KIOSK_TOUCH_MATRIX of kiosk.conf
 #                       replaces it). sway maps the touchscreen to
 #                       the built-in output, and wlroots then turns every
-#                       touch by the transform of that output (measured on
-#                       a TSS-10: a turned matrix on top of that turned the
-#                       touches twice). The script still sends it, so a live
+#                       touch by the transform of that output (measured: a
+#                       turned matrix on top of that turned the touches
+#                       twice). The script still sends it, so a live
 #                       change resets a matrix set by hand or by an older build.
 #       FBCON_ROTATE    /sys/class/graphics/fbcon/rotate_all (1 = clockwise,
 #                       3 = counter-clockwise, the same number as ROTATE)
-#       SLIDE_INVERT    1 = tsx-buttons turns the key-strip slide around, so
+#       SLIDE_INVERT    1 = tsx-buttons turns the slide along the front keys around, so
 #                       sliding up or right is brighter in every orientation
 #   tsx-orientation [-f FILE] sway [NAME]  the sway config lines (kiosk-session).
 #                                          Nothing when the screen needs no turn
@@ -86,7 +86,7 @@ touch_override() {
 }
 
 # info NAME: the table. Only ROTATE is chosen per name. Everything else
-# follows from it. Checked on the xx60 panels (raw scanout dumps): sway
+# follows from it. Checked on a panel (raw scanout dumps): sway
 # transform 270 and fbcon rotate 3 put the top of the picture at the left
 # edge of the native LCD. That is upright on a panel turned clockwise
 # (portrait).
@@ -113,7 +113,7 @@ info() {
 	# A touch controller that reports in the mounted frame needs a matrix that
 	# turns the touches back by the mounting. wlroots then turns them by the
 	# output transform, like the picture. Sway's "transform 90" turns a touch
-	# (x, y) into (y, 1-x) (measured on the xx60). These matrices undo the
+	# (x, y) into (y, 1-x) (measured on a panel). These matrices undo the
 	# quarter turns of the mounting before that. Mounting 0 gives the identity.
 	case $mt in
 	0) m="1 0 0 0 1 0";;

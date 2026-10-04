@@ -6,7 +6,8 @@ surface is under the point (browser or keyboard layer).
 Usage: tap.py [--ip IP] [--hold MS] [--gap MS] x,y [x,y ...]   (screen pixels,
        one tap after the other)
        tap.py --together x1,y1 x2,y2   (one tap with several fingers at once,
-       e.g. the three-finger tap that toggles the on-screen keyboard)"""
+       e.g. the three-finger tap that toggles the on-screen keyboard, or the
+       five-finger tap that opens the quick-settings overlay)"""
 import argparse, os, struct, subprocess, time
 
 EV_SYN, EV_KEY, EV_ABS = 0, 1, 3

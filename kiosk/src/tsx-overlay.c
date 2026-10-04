@@ -1,14 +1,14 @@
 /*
- * tsx-overlay: local quick settings for the xx60 kiosk (sway session only).
+ * tsx-overlay: local quick settings for the kiosk (sway session only).
  *
  * A wlr-layer-shell surface on the OVERLAY layer at the right edge of the
- * screen, next to the front-key strip. In landscape it sits at the right
- * edge. When the panel hangs in portrait, it stays at the right edge, at most
- * as high as on the 10-inch landscape panel, and centered
- * (tsx-overlay-layout.h). The surface stays hidden (no surface at all) until
- * tsx-buttons asks for it over /run/tsx/overlay.ctl:
+ * screen. When the panel hangs in portrait, it stays at the right edge, at
+ * most as high as on a landscape panel, and centered (tsx-overlay-layout.h).
+ * The surface stays hidden (no surface at all) until tsx-idled (the
+ * five-finger tap) or tsx-buttons (a key) asks for it over
+ * /run/tsx/overlay.ctl:
  *   slider   compact brightness bar, shown while a finger slides along the
- *            key strip. It hides OVERLAY_SLIDER_MS after the last step.
+ *            front keys. It hides OVERLAY_SLIDER_MS after the last step.
  *   full     brightness slider, Auto brightness, Screen off, Reload page and
  *            Close. It hides OVERLAY_FULL_MS after the last touch on it.
  *   hide, toggle
@@ -100,10 +100,9 @@ static double ptr_x, ptr_y;
 
 /*
  * Layout (surface coordinates, scale 1, see tsx-overlay-layout.h). The surface
- * spans the output height minus a top and a bottom margin, so it fits either
- * panel: 1280x800 (10-inch: slider 600, full 720 px high) and 1024x600
- * (7-inch: slider 400, full 520). On a portrait output the margins grow, so
- * the surface is no higher than that.
+ * spans the output height minus a top and a bottom margin. It is at most 600
+ * px high (slider) or 720 px (full). On a portrait output the margins grow,
+ * so the surface is no higher than that.
  */
 static struct rect r_track, r_btn[NBTN];
 

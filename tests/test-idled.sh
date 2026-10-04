@@ -24,7 +24,6 @@ POWER_KEY=blank
 OSK_GESTURE=threefinger
 OSK_TAP_MS=500
 OSK_TOGGLE_CMD="echo x >> $T/osk"
-OVERLAY_GESTURE=fourfinger
 OVERLAY_CMD="echo y >> $T/ovl"
 DISPLAY_POWER_CMD=
 C
@@ -40,9 +39,19 @@ tap2() { evs "3 47 0" "3 57 11" "3 53 100" "3 54 100" "3 47 1" "3 57 12" "3 53 3
 tap3() { evs "3 47 0" "3 57 21" "3 53 100" "3 54 100" "3 47 1" "3 57 22" "3 53 300" "3 54 100" "3 47 2" "3 57 23" "3 53 500" "3 54 100" "1 330 1"
 	 [ "${2:-0}" != 0 ] && evs "3 47 2" "3 53 $((500 + $2))"
 	 sleep $1; evs "3 47 0" "3 57 -1" "3 47 1" "3 57 -1" "3 47 2" "3 57 -1" "1 330 0"; }
-# four-finger tap (OVERLAY_GESTURE), up after $1 s
+# four-finger tap (no gesture uses it), up after $1 s
 tap4() { evs "3 47 0" "3 57 31" "3 53 100" "3 54 100" "3 47 1" "3 57 32" "3 53 300" "3 54 100" "3 47 2" "3 57 33" "3 53 500" "3 54 100" "3 47 3" "3 57 34" "3 53 700" "3 54 100" "1 330 1"
 	 sleep $1; evs "3 47 0" "3 57 -1" "3 47 1" "3 57 -1" "3 47 2" "3 57 -1" "3 47 3" "3 57 -1" "1 330 0"; }
+# five-finger tap (the default OVERLAY_GESTURE), up after $1 s. $2 = move finger 5 by px.
+# $3 = the first slot (default 0). A controller with 11 slots can report slots 6 to 10.
+tap5() { local s=${3:-0} k down=() up=()
+	for k in 0 1 2 3 4; do
+		down+=("3 47 $((s + k))" "3 57 $((41 + k))" "3 53 $((100 + 150 * k))" "3 54 100")
+		up+=("3 47 $((s + k))" "3 57 -1")
+	done
+	evs "${down[@]}" "1 330 1"
+	[ "${2:-0}" != 0 ] && evs "3 47 $((s + 4))" "3 53 $((700 + $2))"
+	sleep $1; evs "${up[@]}" "1 330 0"; }
 osk() { [ -f $T/osk ] && wc -l < $T/osk || echo 0; }
 ovl() { [ -f $T/ovl ] && wc -l < $T/ovl || echo 0; }
 mkdir -p $T/run
@@ -69,13 +78,21 @@ evs "3 47 0" "3 57 13" "3 53 50" "3 54 50" "1 330 1"; sleep 0.1; evs "3 57 -1" "
 sleep 0.3; [ "$(osk)" = 1 ] || fail "one-finger tap ran OSK_TOGGLE_CMD"
 tap3 0.8; sleep 0.3; [ "$(osk)" = 1 ] || fail "slow three-finger press ran OSK_TOGGLE_CMD"
 tap3 0.1 80; sleep 0.3; [ "$(osk)" = 1 ] || fail "three-finger swipe ran OSK_TOGGLE_CMD"
-tap4 0.1; sleep 0.3; [ "$(ovl)" = 1 ] || fail "four-finger tap did not run OVERLAY_CMD ($(ovl))"
+[ "$(ovl)" = 0 ] || fail "a three-finger tap ran OVERLAY_CMD ($(ovl))"
+tap4 0.1; sleep 0.3; [ "$(ovl)" = 0 ] || fail "four-finger tap ran OVERLAY_CMD ($(ovl))"
 [ "$(osk)" = 1 ] || fail "four-finger tap ran OSK_TOGGLE_CMD ($(osk))"
-tap3 0.1; sleep 0.3; [ "$(ovl)" = 1 ] || fail "three-finger tap ran OVERLAY_CMD (OVERLAY_GESTURE=fourfinger)"
+tap5 0.1; sleep 0.3; [ "$(ovl)" = 1 ] || fail "five-finger tap did not run OVERLAY_CMD (default OVERLAY_GESTURE) ($(ovl))"
+[ "$(osk)" = 1 ] || fail "five-finger tap ran OSK_TOGGLE_CMD ($(osk))"
+tap3 0.1; sleep 0.3; [ "$(ovl)" = 1 ] || fail "three-finger tap ran OVERLAY_CMD (OVERLAY_GESTURE=fivefinger)"
 [ "$(osk)" = 2 ] || fail "three-finger tap did not run OSK_TOGGLE_CMD again ($(osk))"
-tap4 0.8; sleep 0.3; [ "$(ovl)" = 1 ] || fail "slow four-finger press ran OVERLAY_CMD"
+tap5 0.8; sleep 0.3; [ "$(ovl)" = 1 ] || fail "slow five-finger press ran OVERLAY_CMD"
+tap5 0.1 80; sleep 0.3; [ "$(ovl)" = 1 ] || fail "five-finger swipe ran OVERLAY_CMD"
+tap5 0.1 0 6; sleep 0.3; [ "$(ovl)" = 2 ] || fail "five-finger tap on the slots 6 to 10 did not run OVERLAY_CMD ($(ovl))"
+[ "$(osk)" = 2 ] || fail "a five-finger tap ran OSK_TOGGLE_CMD ($(osk))"
 kill -USR2 $PID; sleep 0.3; tap3 0.1; sleep 0.9; [ "$(osk)" = 2 ] || fail "wake touch (three fingers) ran OSK_TOGGLE_CMD"
 [ "$(b)" = 10 ] || fail "three-finger wake: $(b)"
+kill -USR2 $PID; sleep 0.3; tap5 0.1; sleep 0.9; [ "$(ovl)" = 2 ] || fail "wake touch (five fingers) ran OVERLAY_CMD"
+[ "$(b)" = 10 ] || fail "five-finger wake: $(b)"
 echo 14 > $T/bl/fakebl/brightness   # a display driver restores its own level behind our back
 for i in 1 2 3 4 5 6; do ev 1 330 1; sleep 1; done
 [ "$(b)" = 10 ] || fail "external change not corrected: $(b)"
@@ -90,6 +107,25 @@ PID=$!
 sleep 0.6; [ "$(b)" = 7 ] || fail "the board file did not win: $(b), want 7"
 kill $PID; wait $PID || true; PID=
 grep -q 'no .*none.conf' $T/log2 && fail "a missing board file was reported"
+grep -q 'overlay gesture fivefinger' $T/log || fail "the default OVERLAY_GESTURE is not fivefinger ($(grep 'overlay gesture' $T/log))"
+# OVERLAY_GESTURE=off turns the five-finger tap off. The three-finger tap still toggles the keyboard.
+# A value that is not known gives one log line and counts as fivefinger (a four-finger value of an old config).
+run_gesture() { # the OVERLAY_GESTURE line
+	rm -rf $T/osk $T/ovl $T/run4; mkdir -p $T/run4
+	printf 'BLANK_TIMEOUT=0\nBRIGHTNESS_DAY=10\nBRIGHTNESS_NIGHT=10\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nNIGHT_START=0\nNIGHT_END=0\nOSK_GESTURE=threefinger\nOSK_TAP_MS=500\nOSK_TOGGLE_CMD="echo x >> %s/osk"\nOVERLAY_CMD="echo y >> %s/ovl"\nDISPLAY_POWER_CMD=\n%s\n' "$T" "$T" "$1" > $T/gesture.conf
+	TSX_INPUT_DIR=$T/input TSX_BACKLIGHT_DIR=$T/bl TSX_STATE_FILE=$T/state4 TSX_RUN_DIR=$T/run4 $BIN -c $T/gesture.conf -v 2>$T/log4 &
+	PID=$!; sleep 0.5
+}
+run_gesture OVERLAY_GESTURE=off
+tap5 0.1; sleep 0.3; [ "$(ovl)" = 0 ] || fail "five-finger tap ran OVERLAY_CMD (OVERLAY_GESTURE=off)"
+tap3 0.1; sleep 0.3; [ "$(osk)" = 1 ] || fail "three-finger tap did not run OSK_TOGGLE_CMD (OVERLAY_GESTURE=off)"
+grep -q 'overlay gesture off' $T/log4 || fail "the log does not show OVERLAY_GESTURE=off"
+kill $PID; wait $PID || true; PID=
+run_gesture OVERLAY_GESTURE=fourfinger
+tap5 0.1; sleep 0.3; [ "$(ovl)" = 1 ] || fail "an unknown OVERLAY_GESTURE value did not count as fivefinger ($(ovl))"
+tap4 0.1; sleep 0.3; [ "$(ovl)" = 1 ] || fail "four-finger tap ran OVERLAY_CMD (OVERLAY_GESTURE=fourfinger)"
+[ "$(grep -c 'OVERLAY_GESTURE=fourfinger is not known' $T/log4)" = 1 ] || fail "the unknown value gave $(grep -c 'is not known' $T/log4) log lines, want 1"
+kill $PID; wait $PID || true; PID=
 # no value in any config: the levels are shares of max_brightness (day 55 %, night 26 %, cap 74 %)
 run_defaults() { # MAX CONF-OR-none; prints the level and the max of brightness.state
 	rm -rf $T/bl2 $T/run2; mkdir -p $T/bl2/pwm $T/run2

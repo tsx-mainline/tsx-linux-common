@@ -31,23 +31,25 @@ show() { # prints the values of the layers
 
 cp "$KCONF" "$T/etc/kiosk.conf"
 rm -f "$T/etc/tsx/panel-board.conf" "$T/run/kiosk.conf"
-eq "$(show)" "gpu=auto max= day= gov=off ovl=off" "no board file: the neutral values of kiosk.conf"
+eq "$(show)" "gpu=auto max= day= gov=off ovl=fivefinger" "no board file: the neutral values of kiosk.conf"
 
 for fam in xx60; do
 	[ -r "$HERE/tests/boards/$fam/panel-board.conf" ] || continue
 	cp "$HERE/tests/boards/$fam/panel-board.conf" "$T/etc/tsx/panel-board.conf"
 	case $fam in
-	xx60) eq "$(show)" "gpu=browser max=23 day=17 gov=performance ovl=off" "the xx60 board file sets GPU, backlight range and governor";;
+	xx60) eq "$(show)" "gpu=browser max=23 day=17 gov=performance ovl=fivefinger" "the xx60 board file sets GPU, backlight range and governor";;
 	esac
 done
 
 cp "$HERE/tests/boards/xx60/panel-board.conf" "$T/etc/tsx/panel-board.conf"
 printf 'KIOSK_GPU="off"\nBRIGHTNESS_DAY=5\n' > "$T/run/kiosk.conf"
-eq "$(show)" "gpu=off max=23 day=5 gov=performance ovl=off" "panel.conf (/run/tsx/kiosk.conf) wins over the board file"
+eq "$(show)" "gpu=off max=23 day=5 gov=performance ovl=fivefinger" "panel.conf (/run/tsx/kiosk.conf) wins over the board file"
 rm -f "$T/run/kiosk.conf"
 
 printf 'KIOSK_GPU=on\n' > "$T/etc/tsx/panel-board.conf"
-eq "$(show)" "gpu=on max= day= gov=off ovl=off" "the board file wins over kiosk.conf"
+eq "$(show)" "gpu=on max= day= gov=off ovl=fivefinger" "the board file wins over kiosk.conf"
+printf 'OVERLAY_GESTURE=off\n' > "$T/etc/tsx/panel-board.conf"
+eq "$(show)" "gpu=auto max= day= gov=off ovl=off" "a board file can turn the five-finger tap off"
 
 # The kiosk service reads the same layers in the same order.
 l1=$(grep -n '^[[:space:]]*\. /etc/kiosk.conf' "$KSVC" | head -n 1 | cut -d: -f1)
