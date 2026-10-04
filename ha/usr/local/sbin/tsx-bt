@@ -1,6 +1,6 @@
 #!/bin/sh
 # tsx-bt: start and stop the Bluetooth controller of the panel
-# (docs/hardware.md "Bluetooth (CSR8811)"). /etc/init.d/tsx-bt runs it when
+# (docs/layout.md "Bluetooth chip file"). /etc/init.d/tsx-bt runs it when
 # BT_PROXY=on in panel.conf. You can also run it by hand as root.
 #
 #   tsx-bt up       bring the controller up: hciN exists, HCIDEVUP is done
@@ -9,11 +9,11 @@
 #   tsx-bt mac      print the Bluetooth address that "up" loads
 #
 # This script holds the steps that every board needs. The steps of one chip
-# are in a chip file (default /usr/local/lib/tsx/bt-chip-csr8811.sh, see its
-# header for the functions): the rfkill pulse, the PSR upload, hciattach and
-# the government check. A board with another chip sets TSX_BT_CHIP to its
-# own file. A board whose kernel driver registers hciN by itself sets
-# TSX_BT_CHIP=none.
+# are in a chip file. The board names it in TSX_BT_CHIP (board.sh). The chip
+# file has the functions chip_up and chip_down, and it can have
+# chip_absent_reason (see docs/layout.md). A board whose kernel driver
+# registers hciN by itself sets TSX_BT_CHIP=none. A board that sets nothing
+# does the same.
 #
 # "up" does these steps:
 #   1. Stop when the board has no Bluetooth module (hw.conf BT=no) or the
@@ -24,28 +24,32 @@
 #      hci0) when no chip file says it.
 #   4. HCIDEVUP on hciN (btscan.py --up).
 #
-# The Bluetooth address: BT_MAC of panel.conf if set, else the eth0 MAC. The
-# vendor firmware uses the same value (ro.boot.mac_bt = the U-Boot ethaddr).
-# It is unique for each panel and does not change on a reinstall. A passive
+# The Bluetooth address: BT_MAC of panel.conf if set, else the eth0 MAC. It
+# is unique for each panel and does not change on a reinstall. A passive
 # scan never sends it over the air. A board with no address source (no chip
 # file, or no network MAC and no BT_MAC) keeps the address of the controller.
 # tsx-btscan then reads it with Read BD_ADDR and writes it to bt.mac.
 #
 # Every step logs why it failed. "up" writes $TSX_RUN_DIR/bt.state
 # (state=up|failed|down|absent, reason=, hci=, mac=, psr=) and exits 1 on a
-# failure. The init script never fails the boot on that exit status.
+# failure. The init script never fails the boot on that exit status. The
+# value of psr= is the PSRKIND of the chip file. It names the firmware that
+# the chip file loaded. It is empty for a chip with no firmware step.
 #
-# A panel without a Bluetooth module (BT=no in /run/tsx/hw.conf, from
-# tsx-hw: government=1, the TSW-760-NC) never touches the chip: no rfkill
-# pulse, no UART. "up", "down" and "status" then report state=absent with
-# the reason, and exit 0.
+# A board without a Bluetooth module (BT=no in /run/tsx/hw.conf, from the
+# tsx-hw of the board) never touches the chip: no reset, no UART. "up",
+# "down" and "status" then report state=absent with the reason, and exit 0.
+# The reason is chip_absent_reason of the chip file. Without that function,
+# or without a chip file, it is the REASON= text of hw.conf.
 #
-# Files: /run/tsx/hw.conf (BT=, GOVERNMENT=, REASON=, written by tsx-hw at
-# boot), /run/tsx/bt.conf (PROXY=, ACTIVE=, MAC=, written by tsx-config
-# apply), /usr/local/share/tsx/csr8811/PSR-CSR8811.psr (+ SOURCE, from the
-# installer). Test hooks: TSX_RUN_DIR, TSX_SYSFS, TSX_PROC, TSX_BT_CHIP,
-# TSX_BT_LIB, TSX_BT_WAIT, TSX_BT_HCI, TSX_BT_MODDIR, and the hooks of the
-# chip file.
+# A chip file that TSX_BT_CHIP names but that is missing gets a warning. "up"
+# then runs with no chip steps. It ends with state=failed if hciN does not
+# show up.
+#
+# Files: /run/tsx/hw.conf (BT=, REASON=, written by tsx-hw at boot),
+# /run/tsx/bt.conf (PROXY=, ACTIVE=, MAC=, written by tsx-config apply).
+# Test hooks: TSX_RUN_DIR, TSX_SYSFS, TSX_PROC, TSX_BT_CHIP, TSX_BT_LIB,
+# TSX_BT_WAIT, TSX_BT_HCI, TSX_BT_MODDIR, and the hooks of the chip file.
 set -u
 RUN=${TSX_RUN_DIR:-/run/tsx}
 SYS=${TSX_SYSFS:-/sys}
@@ -53,7 +57,7 @@ PROC=${TSX_PROC:-/proc}
 LIB=${TSX_BT_LIB:-/usr/local/lib/tsx}
 # The board values (TSX_BT_CHIP: the chip file, or none). Test hook: TSX_BOARD_CONF.
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
-CHIP=$TSX_BT_CHIP
+CHIP=${TSX_BT_CHIP:-none}
 WAIT=${TSX_BT_WAIT:-20}
 DEFAULT_HCI=${TSX_BT_HCI:-hci0}
 MODDIR=${TSX_BT_MODDIR:-/lib/modules/$(uname -r 2>/dev/null)}
@@ -70,16 +74,21 @@ conf_get() {
 # hw_get KEY: a value from $RUN/hw.conf (tsx-hw). Empty if it is not there.
 hw_get() { sed -n "s/^$1=//p" "$RUN/hw.conf" 2>/dev/null | tail -n 1; }
 
-# The chip file: chip_absent_reason, chip_up and chip_down. With
-# TSX_BT_CHIP=none (or no file) the board has no chip steps.
-HAVE_CHIP=no
-if [ "$CHIP" != none ] && [ -r "$CHIP" ]; then
-	. "$CHIP"
-	HAVE_CHIP=yes
+# The chip file: chip_up, chip_down and chip_absent_reason (optional). With
+# TSX_BT_CHIP=none the board has no chip steps. A named file that is not
+# there gives a warning in "up" and no chip steps.
+HAVE_CHIP=no CHIP_MISSING=
+if [ "$CHIP" != none ]; then
+	if [ -r "$CHIP" ]; then
+		. "$CHIP"
+		HAVE_CHIP=yes
+	else
+		CHIP_MISSING=yes
+	fi
 fi
 
 absent_reason() {
-	if [ "$HAVE_CHIP" = yes ]; then chip_absent_reason
+	if [ "$HAVE_CHIP" = yes ] && type chip_absent_reason >/dev/null 2>&1; then chip_absent_reason
 	else echo "no Bluetooth module on this board ($(hw_get REASON))"
 	fi
 }
@@ -160,7 +169,7 @@ wait_hci() {
 	while [ ! -e "$SYS/class/bluetooth/$HCI" ] && [ "$i" -lt $((WAIT * 10)) ]; do
 		sleep 0.1; i=$((i + 1))
 	done
-	[ -e "$SYS/class/bluetooth/$HCI" ] || fail "$HCI did not show up in $WAIT s (does the kernel driver find the controller?)"
+	[ -e "$SYS/class/bluetooth/$HCI" ] || fail "$HCI did not show up in $WAIT s (does the kernel driver find the controller?)${CHIP_MISSING:+ The chip file $CHIP is missing.}"
 }
 
 do_up() {
@@ -175,6 +184,7 @@ do_up() {
 		esac
 		chip_up
 	else
+		[ -z "$CHIP_MISSING" ] || log "WARNING: the chip file $CHIP is missing. There are no chip steps"
 		if [ -n "$(conf_get MAC)" ]; then
 			log "WARNING: BT_MAC does not apply on this board (no chip file, the controller keeps its address)"
 		fi

@@ -103,8 +103,8 @@ so the daemon starts the passive scan again after those events.
 
 When bt.mac is missing or empty, the daemon reads the address of the
 controller (Read BD_ADDR) and writes it there. A board that loads its own
-address (the xx60: tsx-bt) has bt.mac already. If the controller reports
-another address than bt.mac, the daemon logs a warning.
+address into the chip (in the chip file of tsx-bt) has bt.mac already. If the
+controller reports another address than bt.mac, the daemon logs a warning.
 """
 
 import argparse
@@ -145,9 +145,9 @@ SCAN_INTERVAL = 0x00A0  # 100 ms (0.625 ms units)
 SCAN_WINDOW = 0x00A0    # the same: listen all the time
 WATCHDOG = 60.0
 # After a link event the kernel updates its own scan state (it sends LE Set
-# Scan Enable itself, within about 0.2 s on the CSR8811). Start the passive
-# scan again only after that, or the commands of both collide ("Command
-# Disallowed").
+# Scan Enable itself, within about 0.2 s on a tested controller). Start the
+# passive scan again only after that, or the commands of both collide
+# ("Command Disallowed").
 SCAN_RESUME_DELAY = 0.5
 STATS_EVERY = 600.0
 
@@ -430,7 +430,7 @@ class Scanner:
         "stopped", the kernel does not start the scan for a pending LE link,
         and every connect() runs into the 20 s timeout. The Command Complete
         of Inquiry Cancel sets the state to "stopped" when no active scan
-        runs. The CSR8811 answers "Command Disallowed" (no inquiry runs), and
+        runs. A controller can answer "Command Disallowed" (no inquiry runs), and
         the kernel takes that answer as success. Call this with the scan off.
         """
         if not self.discovery_dirty or self.hci is None:

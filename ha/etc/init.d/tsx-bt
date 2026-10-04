@@ -1,18 +1,18 @@
 #!/sbin/openrc-run
-# The CSR8811 Bluetooth controller and the passive BLE scanner of the
+# The Bluetooth controller and the passive BLE scanner of the
 # Bluetooth proxy (docs/ha.md "Bluetooth proxy"). It runs only when
-# BT_PROXY=on in panel.conf. Empty BT_PROXY is the board default (off on the
-# xx60).
+# BT_PROXY=on in panel.conf. Empty BT_PROXY is the board default
+# (TSX_BT_PROXY_DEFAULT in the board file).
 #
-# start: tsx-bt up (chip reset, PSR upload, hciattach, hciN up), then the
+# start: tsx-bt up (the chip steps of the board, then hciN up), then the
 # scanner daemon (tsx-btscan, /usr/local/lib/tsx/btscan.py). It hands the
 # advertising reports to tsx-esphome or the voice satellite over
 # /run/tsx/bt-adv.sock. With BT_ACTIVE=on it also holds the BLE links of
 # Home Assistant (/run/tsx/bt-gatt.sock, btgatt.py).
 # A failed bring-up never fails the boot: the service logs why
 # (/var/log/tsx-bt.log, /run/tsx/bt.state) and ends without the scanner.
-# A panel without a Bluetooth module (BT=no in /run/tsx/hw.conf,
-# government=1) never touches the chip: tsx-bt records state=absent.
+# A panel without a Bluetooth module (BT=no in /run/tsx/hw.conf) never
+# touches the chip: tsx-bt records state=absent.
 # tsx-btscan runs under supervise-daemon: a daemon that crashes starts again
 # after 2 s. The chip bring-up (tsx-bt up) runs once, before the daemon.
 description="Bluetooth controller, BLE scanner and BLE links for the Home Assistant Bluetooth proxy"
