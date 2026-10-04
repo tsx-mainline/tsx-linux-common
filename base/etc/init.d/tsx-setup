@@ -4,7 +4,7 @@ depend() { need localmount; before networking kiosk; }
 
 # select_eth0_mac: print the MAC that eth0 must use on stdout, and keep
 # TSX_ETH0_MAC_FILE in step with it. It is separate from start(), so a host
-# test (rootfs/tests/test-tsx-setup-mac.sh) can call only this function. The
+# test (tests/test-tsx-setup-mac.sh) can call only this function. The
 # rest of start() has zram, cpufreq and timezone side effects on a real host.
 #
 # Mainline has no MAC source on these boards. The kernel picks a random MAC

@@ -47,7 +47,7 @@
 # (default /var/lib/tsx/autoupdate, moved onto /data by tsx-data). So
 # "status" and the HA entity have something to show right after the boot.
 #
-# Env overrides (for host tests only. See rootfs/tests/test-autoupdate*.sh):
+# Env overrides (for host tests only. See tests/test-autoupdate*.sh):
 #   TSX_AUTOUPDATE_CONF TSX_RUN_DIR TSX_STATE_DIR TSX_LOG TSX_IDLED_STATE
 #   TSX_KIOSK_CONF TSX_WORLD TSX_SIGS TSX_PATCH_TOOL TSX_ES2_MARKER
 #   TSX_CHROMIUM_BIN TSX_BUILD_ID_FILE TSX_INITD

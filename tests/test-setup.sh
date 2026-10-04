@@ -26,6 +26,8 @@
 #  - a save lands in a temp panel.conf
 #  - a save writes only the fields that the page sent (the changed ones), and
 #    refuses a page with an old revision of panel.conf
+#  - the revision stays the same over a restart of tsx-setup-helper, and
+#    tsx-setupd reads only the reply with the tag of its own request
 #  - the refresh endpoint (/setup/api/status) carries no field value
 #  - no secret ever appears in a JSON response or in the log of either daemon
 set -uo pipefail
@@ -43,10 +45,11 @@ command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-setup: no busybox on 
 command -v python3 >/dev/null 2>&1 || { echo "SKIPPED test-setup: no python3 on this host"; exit 0; }
 
 T=$(mktemp -d)
-SETUPD_PID= HELPER_PID=
+SETUPD_PID= HELPER_PID= HELPER2_PID=
 cleanup() {
 	[ -n "$SETUPD_PID" ] && kill "$SETUPD_PID" 2>/dev/null
 	[ -n "$HELPER_PID" ] && kill "$HELPER_PID" 2>/dev/null
+	[ -n "$HELPER2_PID" ] && kill "$HELPER2_PID" 2>/dev/null
 	[ -n "${KEEP:-}" ] && echo "kept $T" || rm -rf "$T"
 }
 trap cleanup EXIT
@@ -148,9 +151,13 @@ sed -i "s/TSX_SETUP_PORT=0/TSX_SETUP_PORT=$PORT/" "$T/setup.conf"
 # would pick. The server then sees a non-loopback peer, although both ends
 # are this test host. CI has no real second LAN host. The connect timeout is
 # short: after tsx-setupd binds to loopback only, a LAN attempt must fail
-# fast (connection refused) and must not hang.
+# fast (connection refused) and must not hang. The wait for the answer is
+# long: a request goes through tsx-setup-helper and tsx-config, which take
+# seconds on a busy host. A client error prints status 0. The body says
+# "retry": true only when the server did not get the request (refused, or a
+# reset before an answer: a connection in the backlog of a closed socket).
 cat > "$T/client.py" <<'PYEOF'
-import argparse, http.client, sys
+import argparse, http.client, json, sys
 p = argparse.ArgumentParser()
 p.add_argument("method"); p.add_argument("path")
 p.add_argument("--port", type=int, required=True)
@@ -169,15 +176,25 @@ if a.data is not None:
 	headers["Content-Type"] = "application/json"
 if a.cookie:
 	headers["Cookie"] = "tsxsetup=" + a.cookie
+def fail(e, retry):
+	print(0); print("")
+	print(json.dumps({"_client_error": str(e), "retry": retry}))
+	sys.exit(0)
+try:
+	conn.connect()
+except Exception as e:
+	fail(e, isinstance(e, (ConnectionRefusedError, ConnectionResetError)))
+conn.sock.settimeout(120)
 try:
 	conn.request(a.method, a.path, body=body, headers=headers)
 	resp = conn.getresponse()
 	raw = resp.read()
 	status = resp.status
 	setcookie = resp.getheader("Set-Cookie") or ""
+except (ConnectionResetError, BrokenPipeError) as e:
+	fail(e, True)
 except Exception as e:
-	print(0); print(""); print('{"_client_error": "%s"}' % str(e).replace('"', "'"))
-	sys.exit(0)
+	fail(e, False)
 token = ""
 if setcookie.startswith("tsxsetup="):
 	token = setcookie.split(";")[0][len("tsxsetup="):]
@@ -193,11 +210,14 @@ call() {
 	# in that window gets a connection reset or refused, not a real answer.
 	# Retry a few times before the test counts this as a failure. A real
 	# client (the kiosk, a browser tab) also retries after the first reset.
+	# Retry only a request that the server did not get. A second copy of a
+	# save that the server did get is refused as stale (409).
 	local out status tries=0
 	while :; do
 		out=$(python3 "$T/client.py" "$@" --port "$PORT")
 		status=$(printf '%s\n' "$out" | sed -n '1p')
 		[ "$status" != 0 ] && break
+		printf '%s\n' "$out" | sed -n '3p' | grep -q '"retry": true' || break
 		tries=$((tries + 1))
 		[ "$tries" -ge 3 ] && break
 		sleep 0.2
@@ -267,14 +287,28 @@ FAKE_CHPASSWD_LOG="$T/chpasswd-stdin.log"
 FAKE_CMD_LOG="$T/fake-cmd.log"
 export FAKE_CHPASSWD_LOG FAKE_CMD_LOG
 
-PATH="$T/bin:$PATH" TSX_CONFIG_BIN="$T/bin/tsx-config" TSX_CONF="$CONF" \
-TSX_RUN="$RUNBASE" TSX_RUN_DIR="$RUNDIR" TSX_APPLY_ALLOW_NONROOT=1 \
-TSX_APPLY_PREFIX="$T/prefix" TSX_STATE_DIR="$T/state" \
-TSX_CHPASSWD_BIN="$T/bin/chpasswd" TSX_SHADOW_FILE="$T/shadow" TSX_RCSERVICE_BIN="$T/bin/rc-service" TSX_PANELCTL_BIN="$T/bin/tsx-panelctl" \
-	busybox sh "$HELPER" > "$T/helper.log" 2>&1 &
-HELPER_PID=$!
-for _ in $(seq 1 50); do grep -q "listening on" "$T/helper.log" 2>/dev/null && break; sleep 0.1; done
-grep -q "listening on" "$T/helper.log" 2>/dev/null || { echo "FAIL: tsx-setup-helper did not start"; cat "$T/helper.log"; exit 1; }
+# start_helper LOG [REQ RESP]: start a tsx-setup-helper on the run directory
+# of this test, with its output appended to LOG, and wait until it listens.
+# Without REQ and RESP it uses the FIFOs of the run directory, the ones that
+# tsx-setupd uses. HPID is the process.
+start_helper() {
+	local log=$1 n
+	n=$(grep -c "listening on" "$log" 2>/dev/null); n=${n:-0}
+	PATH="$T/bin:$PATH" TSX_CONFIG_BIN="$T/bin/tsx-config" TSX_CONF="$CONF" \
+	TSX_RUN="$RUNBASE" TSX_RUN_DIR="$RUNDIR" TSX_APPLY_ALLOW_NONROOT=1 \
+	TSX_APPLY_PREFIX="$T/prefix" TSX_STATE_DIR="$T/state" \
+	TSX_SETUP_HELPER_REQ="${2:-$RUNDIR/setup-helper}" TSX_SETUP_HELPER_RESP="${3:-$RUNDIR/setup-helper.resp}" \
+	TSX_CHPASSWD_BIN="$T/bin/chpasswd" TSX_SHADOW_FILE="$T/shadow" TSX_RCSERVICE_BIN="$T/bin/rc-service" TSX_PANELCTL_BIN="$T/bin/tsx-panelctl" \
+		busybox sh "$HELPER" >> "$log" 2>&1 &
+	HPID=$!
+	for _ in $(seq 1 100); do
+		[ "$(grep -c "listening on" "$log" 2>/dev/null)" -gt "$n" ] 2>/dev/null && return 0
+		sleep 0.1
+	done
+	return 1
+}
+start_helper "$T/helper.log" || { echo "FAIL: tsx-setup-helper did not start"; cat "$T/helper.log"; exit 1; }
+HELPER_PID=$HPID
 
 : > "$T/voice-service"   # a panel with a voice service
 TSX_CONFIG_BIN="$T/bin/tsx-config" TSX_RUN_DIR="$RUNDIR" TSX_ZONEINFO_DIR="$T/zoneinfo" \
@@ -351,8 +385,15 @@ fi
 
 # ---- 3. tsx-setup-helper: strict allowlist, nothing outside it ever runs
 echo "== tsx-setup-helper rejects anything outside its command set =="
+# These requests go to a second tsx-setup-helper with its own FIFOs. The
+# FIFOs of the first one belong to tsx-setupd, which asks the helper every
+# few seconds: two readers on one reply FIFO can each get the reply of the
+# other.
+mkdir -p "$T/h2"
+start_helper "$T/helper2.log" "$T/h2/req" "$T/h2/resp" || bad "a second tsx-setup-helper did not start: $(cat "$T/helper2.log")"
+HELPER2_PID=$HPID
 : > "$FAKE_CMD_LOG"
-helper_send() { printf '%s\n' "$1" > "$RUNDIR/setup-helper"; timeout 3 head -1 "$RUNDIR/setup-helper.resp"; }
+helper_send() { printf '%s\n' "$1" > "$T/h2/req"; timeout 10 head -1 "$T/h2/resp"; }
 r=$(helper_send "frobnicate --evil"); echo "$r" | grep -q '^err' && ok "unknown command rejected: $r" || bad "unknown command not rejected: $r"
 r=$(helper_send "unset BAD KEY"); echo "$r" | grep -q '^err' && ok "unset with a spaced key rejected: $r" || bad "bad unset accepted: $r"
 r=$(helper_send "; rm -rf /"); echo "$r" | grep -q '^err' && ok "a shell-metacharacter command name rejected: $r" || bad "metacharacter command accepted: $r"
@@ -360,10 +401,16 @@ r=$(helper_send "rootpw short"); echo "$r" | grep -q '^err' && ok "a too-short r
 [ ! -s "$FAKE_CMD_LOG" ] && ok "none of the rejected lines ever ran the fake chpasswd" || { bad "a rejected line reached a real command"; cat "$FAKE_CMD_LOG"; }
 grep -q '^ok' <(helper_send "show") && ok "the allowed 'show' command still works after the rejected batch" || bad "helper stopped answering after rejections"
 r=$(helper_send "rev"); echo "$r" | grep -Eq '^ok [0-9a-f]{64}$' && ok "rev gives a sha256 revision: $r" || bad "rev: $r"
+[ "${r#ok }" = "$(rev_now)" ] && ok "two helper processes give the same revision (the salt is in the run directory)" || bad "the second helper gives another revision: $r / $(rev_now)"
+[ "$(stat -c %a "$RUNDIR/setup-helper.salt" 2>/dev/null)" = 600 ] && ok "the salt file has mode 600" || bad "salt file: $(ls -l "$RUNDIR/setup-helper.salt" 2>&1)"
 r=$(helper_send "rev now"); echo "$r" | grep -q '^err' && ok "rev with an argument is refused" || bad "rev with an argument: $r"
-grep -q 'tsx-setup-helper: rev' "$T/helper.log" && bad "rev writes a log line (the page asks every 20 s)" || ok "rev writes no log line"
+grep -q 'tsx-setup-helper: rev' "$T/helper.log" "$T/helper2.log" && bad "rev writes a log line (the page asks every 20 s)" || ok "rev writes no log line"
+r=$(helper_send "#t1 rev"); echo "$r" | grep -Eq '^#t1 ok [0-9a-f]{64}$' && ok "a tagged request gets a reply with the same tag" || bad "tagged rev: $r"
+r=$(helper_send "#t2 frobnicate"); [ "$r" = "#t2 err unknown command" ] && ok "a tagged unknown command is refused with the tag" || bad "tagged unknown command: $r"
+r=$(helper_send "#t-3 rev"); [ "$r" = "err bad tag" ] && ok "a tag with a character other than a letter or a digit is refused" || bad "bad tag: $r"
 r=$(helper_send "brightness-learn-reset"); [ "$r" = ok ] && grep -qxF 'tsx-panelctl send brightness-learn-reset' "$T/panelctl-cmds.log" && ok "brightness-learn-reset asks tsx-panelctl to forget the learned brightness" || bad "learn reset: '$r' $(cat "$T/panelctl-cmds.log" 2>/dev/null)"
 r=$(helper_send "brightness-learn-reset now"); echo "$r" | grep -q '^err' && ok "brightness-learn-reset with an argument is refused" || bad "learn reset with an argument: $r"
+kill "$HELPER2_PID" 2>/dev/null; wait "$HELPER2_PID" 2>/dev/null; HELPER2_PID=
 out=$(call POST /setup/api/brightness-learn-reset --data '{}')
 [ "$(status_of "$out")" = 200 ] && [ "$(grep -c 'send brightness-learn-reset' "$T/panelctl-cmds.log")" = 2 ] && ok "the setup page button (POST brightness-learn-reset) reaches the helper" || bad "page reset: $out"
 
@@ -510,6 +557,27 @@ out=$(call POST /setup/api/submit --data '{"PANEL_NAME":"from-the-page"}'); body
 out=$(submit '{"PANEL_NAME":"from-the-page"}' "$R2")
 [ "$(status_of "$out")" = 200 ] && grep -q '^PANEL_NAME="from-the-page"$' "$CONF" && grep -q '^BLANK_TIMEOUT="77"$' "$CONF" \
 	&& ok "after a reload (the new revision) the save works and keeps BLANK_TIMEOUT=77" || bad "save after reload: $out"
+
+echo "== a restart of tsx-setup-helper keeps the revision =="
+R=$(rev_now)
+kill "$HELPER_PID" 2>/dev/null; wait "$HELPER_PID" 2>/dev/null
+start_helper "$T/helper.log" || bad "tsx-setup-helper did not start again: $(tail -n 3 "$T/helper.log")"
+HELPER_PID=$HPID
+[ -n "$R" ] && [ "$(rev_now)" = "$R" ] && ok "the revision is the same after a restart of tsx-setup-helper" || bad "the revision changed with a restart: $R / $(rev_now)"
+out=$(submit '{"BLANK_TIMEOUT":"301"}' "$R")
+[ "$(status_of "$out")" = 200 ] && grep -q '^BLANK_TIMEOUT="301"$' "$CONF" \
+	&& ok "a page that loaded before the restart can save" || bad "save after a restart of the helper: $out"
+
+echo "== tsx-setupd reads only the reply to its own request =="
+R=$(rev_now)
+# A request that tsx-setupd did not send (no tag): the helper needs about a
+# second for show, so its reply comes while tsx-setupd waits for the reply
+# to its own request.
+printf 'show\n' > "$RUNDIR/setup-helper"
+out=$(call GET /setup/api/status)
+[ "$(status_of "$out")" = 200 ] && [ "$(body_of "$out" | jget revision)" = "$R" ] \
+	&& ok "a late reply to another request is skipped (the revision is right)" || bad "late reply: $out (want $R)"
+[ "$(rev_now)" = "$R" ] && ok "the next request gets its own reply too" || bad "the next request: $(rev_now) (want $R)"
 
 echo "== the revision follows a change of a secret too =="
 R=$(rev_now); F1=$(body_of "$(call GET /setup/api/state)" | jget fields)

@@ -15,7 +15,7 @@
 # In those cases it prints the URL of the local setup page (tsx-setupd)
 # instead. It never touches panel.conf or any other state. It is a pure
 # function of its argument and /run/tsx/setup-open. So a test can run it
-# standalone (rootfs/tests/test-setup.sh) without the rest of kiosk-session
+# standalone (tests/test-setup.sh) without the rest of kiosk-session
 # (compositor, GPU probing, Chromium flags...).
 #
 # Env overrides for tests: TSX_RUN_DIR, TSX_SETUP_CONF. tsx-config and

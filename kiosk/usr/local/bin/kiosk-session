@@ -32,7 +32,7 @@ set -u
 # min after `tsx-config setup` or the overlay "Setup" entry (docs/rootfs.md
 # "Setup page"). tsx-kiosk-url is a pure function of its argument and
 # /run/tsx/setup-open. It is not inline in this script, so a test can run it
-# standalone (rootfs/tests/test-setup.sh).
+# standalone (tests/test-setup.sh).
 KIOSK_URL=$(/usr/local/bin/tsx-kiosk-url "${KIOSK_URL:-}")
 : "${KIOSK_URL:=https://ha.example.org}" "${KIOSK_GPU:=auto}" "${KIOSK_SCALE:=1.0}"
 : "${KIOSK_PROFILE:=/var/lib/kiosk/chromium}" "${KIOSK_EXTRA_FLAGS:=}" "${KIOSK_DEVTOOLS:=0}"

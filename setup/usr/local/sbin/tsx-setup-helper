@@ -21,16 +21,26 @@
 # name cleaned and capped the same way as tsx-panelctl does for a rejected
 # line.
 #
+# A request can start with a tag: "#TAG CMD REST", TAG is 1 to 32 letters or
+# digits. The reply then starts with the same tag: "#TAG ok[ TEXT]" or
+# "#TAG err MESSAGE". tsx-setupd tags each request and reads only the reply
+# with its tag. So a late reply to an earlier request (a caller that timed
+# out, or a tsx-setupd that stopped) never counts as the reply to a new one.
+#
 #   show                 tsx-config show (it already masks the secrets)
 #   rev                  the revision of panel.conf: the sha256 of a salt and
 #                          the content of the file. Each change of the file
 #                          gives a new revision, also a change of a secret
-#                          that show masks. The salt is random and new at each
-#                          start of this script, and the reply never gives it.
-#                          So the revision does not let a client test a guess
-#                          of a secret. A missing file has a revision too.
-#                          tsx-setupd sends the revision to the page and
-#                          refuses a save from a page with an old revision.
+#                          that show masks. The salt is random and is in
+#                          $TSX_RUN_DIR/setup-helper.salt (mode 600, root).
+#                          /run is a tmpfs, so each boot makes a new salt. A
+#                          restart of this script keeps it. So in one boot,
+#                          only a change of the file gives a new revision.
+#                          The reply never gives the salt. So the revision
+#                          does not let a client test a guess of a secret. A
+#                          missing file has a revision too. tsx-setupd sends
+#                          the revision to the page and refuses a save from a
+#                          page with an old revision.
 #   set KEY VALUE         tsx-config set KEY VALUE. VALUE can be empty. It
 #                          can contain anything, including shell
 #                          metacharacters. The per-key regex of tsx-config
@@ -69,10 +79,31 @@ SHADOW=${TSX_SHADOW_FILE:-/etc/shadow}
 RCSERVICE=${TSX_RCSERVICE_BIN:-rc-service}
 ONESHOT=${TSX_SETUP_HELPER_ONESHOT:-0}
 CONF=${TSX_CONF:-/data/tsx/panel.conf}
-# The salt of "rev". It stays in this process only.
-SALT=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+# The salt of "rev" (see above). salt_init below reads or makes it.
+SALT_FILE=$R/setup-helper.salt
+SALT=
+TAG=
 
 log() { echo "$(date '+%F %T') tsx-setup-helper: $*"; }
+
+# Read the salt of this boot, or make it (16 random bytes, in hex). The file
+# is written with umask 077 and then moved into place, so it is never
+# readable by another user. If the file cannot be written, the salt stays in
+# this process only: then a restart of this script gives a new revision.
+salt_init() {
+	SALT=$(cat "$SALT_FILE" 2>/dev/null)
+	case "$SALT" in
+	*[!0-9a-f]*|'') ;;
+	*) if [ "${#SALT}" = 32 ]; then chmod 600 "$SALT_FILE"; return 0; fi;;
+	esac
+	SALT=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+	if [ "${#SALT}" != 32 ]; then SALT=; log "warning: no random salt: rev is refused"; return 1; fi
+	tmp="$SALT_FILE.tmp.$$"
+	if ! (umask 077; printf '%s\n' "$SALT" > "$tmp") || ! mv -f "$tmp" "$SALT_FILE"; then
+		rm -f "$tmp"
+		log "warning: cannot write $SALT_FILE: the revision changes at the next start of this script"
+	fi
+}
 # Use this only to log a hostile or malformed COMMAND NAME. Never apply it to
 # a reply payload. The own output of tsx-config legitimately contains the \1
 # line separator that "show" below uses, and this filter would strip it.
@@ -91,8 +122,8 @@ safe() { printf '%s' "$1" | tr -d '\000-\010\013-\037\177' | cut -c1-200; }
 # script (stdout and stderr of tsx-config, or a fixed message). It goes back
 # over a FIFO that only tsx-setupd (on this same machine) reads. tsx-config
 # show masks the secrets itself, before this script sees them.
-reply_ok() { printf 'ok%s\n' "${1:+ $1}" >&4; }
-reply_err() { printf 'err %s\n' "$1" >&4; }
+reply_ok() { printf '%sok%s\n' "${TAG:+$TAG }" "${1:+ $1}" >&4; }
+reply_err() { printf '%serr %s\n' "${TAG:+$TAG }" "$1" >&4; }
 
 handle() {
 	cmd=$1; rest=$2
@@ -106,6 +137,7 @@ handle() {
 		;;
 	rev)
 		[ -z "$rest" ] || { reply_err "rev takes no arguments"; return; }
+		[ -n "$SALT" ] || { reply_err "rev: no salt"; return; }
 		h=$({ printf '%s\n' "$SALT"; cat "$CONF" 2>/dev/null; } | sha256sum) \
 			|| { reply_err "rev failed"; return; }
 		reply_ok "${h%% *}"
@@ -175,12 +207,13 @@ handle() {
 		fi
 		reply_ok
 		;;
-	'') ;;
+	'') [ -z "$TAG" ] || reply_err "empty request";;
 	*) reject="$(safe "$cmd $rest")"; log "rejected: $reject"; reply_err "unknown command";;
 	esac
 }
 
 mkdir -p "$R"
+salt_init
 for p in "$REQ" "$RESP"; do
 	if [ ! -p "$p" ]; then rm -f "$p"; mkfifo "$p" || { log "mkfifo $p failed"; exit 1; }; fi
 	chown root:tsx-setup "$p" 2>/dev/null || true
@@ -194,6 +227,18 @@ done
 exec 3<>"$REQ" 4<>"$RESP"
 log "listening on $REQ"
 while IFS=' ' read -r cmd rest <&3; do
+	TAG=
+	case "$cmd" in
+	'#'*)
+		TAG=$cmd
+		cmd=${rest%% *}
+		case "$rest" in *" "*) rest=${rest#* };; *) rest=;; esac
+		case "$TAG" in
+		'#'|'#'*[!0-9A-Za-z]*|'#'?????????????????????????????????*)
+			TAG=; reply_err "bad tag"; [ "$ONESHOT" = 1 ] && break; continue;;
+		esac
+		;;
+	esac
 	handle "$cmd" "$rest"
 	[ "$ONESHOT" = 1 ] && break
 done

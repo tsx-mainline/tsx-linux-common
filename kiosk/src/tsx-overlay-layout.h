@@ -1,7 +1,7 @@
 /*
  * tsx-overlay-layout.h: the size and layout math of tsx-overlay. It has no
  * Wayland or cairo code, so a host test can compile it on its own
- * (rootfs/tests/test-orientation.sh).
+ * (tests/test-orientation.sh).
  *
  * The overlay is a layer surface at the right edge of the output, anchored
  * top, right and bottom. The compositor gives it the output height minus a

@@ -61,7 +61,7 @@ available. A submit then leaves them as they are. A plugin can report more
 settings in the same way (tsx-ha: no microphone, no Bluetooth module and no
 camera on the TSW-760-NC).
 
-Env overrides for host tests (rootfs/tests/test-setup.sh): TSX_SETUP_PORT,
+Env overrides for host tests (tests/test-setup.sh): TSX_SETUP_PORT,
 TSX_SETUP_CONF, TSX_HW_CONF, TSX_RUN_DIR, TSX_CONFIG_BIN, TSX_SETUP_HELPER_REQ,
 TSX_SETUP_HELPER_RESP, TSX_ZONEINFO_DIR, TSX_SETUP_NO_ZEROCONF=1,
 TSX_SETUP_PLUGIN_DIR (default /usr/local/share/tsx/setup.d).
@@ -149,7 +149,12 @@ def tcfg_validate(key, val):
 
 HELPER_REQ = os.environ.get("TSX_SETUP_HELPER_REQ", os.path.join(RUN_DIR, "setup-helper"))
 HELPER_RESP = os.environ.get("TSX_SETUP_HELPER_RESP", os.path.join(RUN_DIR, "setup-helper.resp"))
-HELPER_TIMEOUT = float(os.environ.get("TSX_SETUP_HELPER_TIMEOUT", "8"))
+# tsx-config show takes seconds on a panel (it reads panel.conf once per
+# key), and more while the panel is busy. apply and rootpw can restart
+# services and take longer. A request that runs out of time gets an error,
+# but the helper still runs it.
+HELPER_TIMEOUT = float(os.environ.get("TSX_SETUP_HELPER_TIMEOUT", "30"))
+HELPER_SLOW_TIMEOUT = max(HELPER_TIMEOUT, 120.0)
 _helper_lock = threading.Lock()
 
 
@@ -157,7 +162,9 @@ def _helper_drain(path):
     """Best-effort: discard any bytes already sitting in RESP before sending
     a new request, in case an earlier transaction's reader gave up early
     (tsx-setup-helper's own writes never block -- see its comments -- so a
-    stale reply can otherwise sit there for the next, unrelated request)."""
+    stale reply can otherwise sit there for the next, unrelated request).
+    A stale reply that arrives after the drain is skipped by its tag (see
+    helper_call)."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     except OSError:
@@ -173,11 +180,20 @@ def _helper_drain(path):
         os.close(fd)
 
 
-def helper_call(line):
+def helper_call(line, timeout=None):
     """One request, one reply. Returns (ok, text). Never raises: any failure
     (helper not running, timeout, closed channel) comes back as (False,
     message) so a caller can turn it into a normal HTTP error instead of a
-    crash."""
+    crash.
+
+    Each request has a new random tag ("#TAG CMD REST"), and tsx-setup-helper
+    puts the tag in front of its reply. This reads only the reply with the
+    tag of this request. A reply with another tag is late: the reply to a
+    request that timed out, or to a tsx-setupd that stopped before it read
+    the reply. It is skipped, so it never counts as the reply to this
+    request."""
+    tag = "#" + secrets.token_hex(8)
+    want = (tag + " ").encode()
     with _helper_lock:
         _helper_drain(HELPER_RESP)
         try:
@@ -185,7 +201,7 @@ def helper_call(line):
         except OSError as e:
             return False, "tsx-setup-helper not listening: %s" % e
         try:
-            os.write(wfd, (line + "\n").encode())
+            os.write(wfd, (tag + " " + line + "\n").encode())
         except OSError as e:
             os.close(wfd)
             return False, "tsx-setup-helper: write failed: %s" % e
@@ -196,8 +212,13 @@ def helper_call(line):
             return False, "tsx-setup-helper response channel: %s" % e
         try:
             buf = b""
-            deadline = time.monotonic() + HELPER_TIMEOUT
-            while b"\n" not in buf:
+            deadline = time.monotonic() + (HELPER_TIMEOUT if timeout is None else timeout)
+            while True:
+                lines = buf.split(b"\n")
+                buf = lines.pop()    # the start of a line that is not complete yet
+                reply = next((one[len(want):] for one in lines if one.startswith(want)), None)
+                if reply is not None:
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return False, "tsx-setup-helper did not answer in time"
@@ -210,7 +231,7 @@ def helper_call(line):
                 buf += chunk
         finally:
             os.close(rfd)
-    resp = buf.split(b"\n", 1)[0].decode(errors="replace")
+    resp = reply.decode(errors="replace")
     if resp.startswith("ok"):
         return True, resp[2:].lstrip()
     if resp.startswith("err "):
@@ -266,7 +287,7 @@ def tcfg_unset(key):
 
 
 def tcfg_apply():
-    return helper_call("apply")
+    return helper_call("apply", HELPER_SLOW_TIMEOUT)
 
 
 # ServerManager.watch_forever polls is_configured() forever (every POLL_S),
@@ -347,13 +368,13 @@ def lan_allowed():
 
 
 def restart_kiosk():
-    helper_call("kiosk-restart")
+    helper_call("kiosk-restart", HELPER_SLOW_TIMEOUT)
 
 
 def set_root_password(pw):
     if "\n" in pw or "\r" in pw or len(pw) < 8:
         return False
-    ok, _text = helper_call("rootpw %s" % pw)
+    ok, _text = helper_call("rootpw %s" % pw, HELPER_SLOW_TIMEOUT)
     return ok
 
 

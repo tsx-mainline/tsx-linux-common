@@ -126,7 +126,7 @@ TSX_CONF=${TSX_CONF:-/data/tsx/panel.conf}
 RUN=${TSX_RUN:-/run}/tsx
 STATE=${TSX_STATE_DIR:-/var/lib/tsx}
 SEED=${TSX_CONF_SEED:-/etc/tsx/panel.conf.seed}
-# PREFIX: hook for host tests only (rootfs/tests/, ci/). `apply` writes every
+# PREFIX: hook for host tests only (tests/, ci/). `apply` writes every
 # real system path outside $TSX_CONF/$RUN/$STATE/$SEED (already overridable
 # above) as "$PREFIX/etc/shadow" and so on. So a test can point a whole
 # fixture tree at it. If PREFIX is empty (the panel default), the paths stay

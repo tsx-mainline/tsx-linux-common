@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Daemon-side check of the active Bluetooth proxy for rootfs/tests/test-bt.sh.
+"""Daemon-side check of the active Bluetooth proxy for tests/test-bt.sh.
 It talks to the GATT socket of tsx-btscan (btscan.py, btgatt.py) the way the
 ESPHome front end does (the JSON messages in the docstring of btscan.py).
 The peers are the fakes of bt-gatt-peer.py behind TSX_BTSCAN_FAKE_L2CAP.

@@ -38,7 +38,7 @@ DOWN_GRACE stays: it gives the HCI Disconnection Complete time to arrive,
 so the event carries the real reason of a drop.
 
 Test hook: TSX_BTSCAN_FAKE_L2CAP=<path of a SOCK_SEQPACKET Unix socket>
-replaces the L2CAP socket (rootfs/tests/bt-gatt-peer.py fake): the link
+replaces the L2CAP socket (tests/bt-gatt-peer.py fake): the link
 sends "ADDRESS TYPE" and waits for "OK HANDLE" or "FAIL CODE" (hex).
 """
 

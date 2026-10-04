@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Client-side check of the Bluetooth proxy for rootfs/tests/test-esphome.sh.
+"""Client-side check of the Bluetooth proxy for tests/test-esphome.sh.
 It uses aioesphomeapi (the client library of Home Assistant) the way
 bleak-esphome does for a passive proxy: read the feature flags from the
 device info, then subscribe to raw advertisements.
