@@ -414,6 +414,24 @@ st=0; wait "$GOVV_PID" || st=$?
 [ "$st" != 0 ] && grep -q 'no microphone on this panel (government=1 (TSW-760-NC)' "$T/voice-gov.log" \
 	&& echo "OK: the voice satellite does not start without a microphone ($st)" || { echo "FAIL: the voice satellite started without a microphone"; cat "$T/voice-gov.log"; rc=1; }
 
+# ---- the voice feature flags (tsx_panel/esphome_server.py voice_feature_flags) -
+# Home Assistant makes the voice selects only when the flags are not 0 at the
+# setup of the config entry. So tsx-esphome (VOICE=off) announces the voice
+# feature too, on a panel with a microphone. Without one, it announces none.
+echo "== the voice feature flags in both modes =="
+"$T/venv/bin/python3" "$HERE/esphome-voiceflags-check.py" "$BT_PORT" "$VBT_PORT" "$GOV_PORT" --key "$KEY" || rc=1
+
+# ---- the device information is the same in both modes (tsx_panel/deviceinfo.py) -
+# Home Assistant builds the device page from it. Both servers have the same
+# panel name, MAC address and Bluetooth settings. No mDNS announcement, because
+# two instances with one name would collide.
+echo "== the same device information in both modes =="
+SAME_OFF=$((API_PORT + 70)); SAME_ON=$((API_PORT + 71))
+TSX_TEST_SERVER_ARGS=--no-zeroconf start_server standalone "$T/server-same.log" "$SAME_OFF" Same-Panel TSX_HA_API_KEY= TSX_BT_CONF="$F/run/tsx/bt-on.conf"
+start_server voice "$T/voice-same.log" "$SAME_ON" Same-Panel TSX_HA_API_KEY= TSX_BT_CONF="$F/run/tsx/bt-on.conf" TSX_HARNESS_REAL_MAC=1
+wait_listening "$T/server-same.log" "$T/voice-same.log"
+"$T/venv/bin/python3" "$HERE/esphome-deviceinfo-check.py" "$SAME_OFF" "$SAME_ON" || rc=1
+
 # ---- a panel without front keys, LED bar and eMMC health: those entities are not announced
 BARE_PORT=$((API_PORT + 60))
 mkdir -p "$F/bare/run"

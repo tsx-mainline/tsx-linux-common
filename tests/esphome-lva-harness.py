@@ -12,6 +12,8 @@ standalone test uses.
 
   esphome-lva-harness.py PORT      (env as for tsx_panel.esphome_server)
 
+With TSX_HARNESS_REAL_MAC=1 the MAC address is the one of the default
+interface, like in tsx-esphome (tests/esphome-deviceinfo-check.py).
 With TSX_HARNESS_WAKEWORDS=1 the harness builds the wake word list the way
 __main__.py does: find_available_wake_words over the stock folder of LVA,
 TSX_VOICE_WAKEWORDS and the openWakeWord folder, then load_wake_models for
@@ -90,10 +92,17 @@ async def _main(port: int) -> None:
         available = wake_word.find_available_wake_words(dirs, "stop")
         wake_words, active, _used = wake_word.load_wake_models(available, [], "okay_nabu")
         print(f"harness: {len(available)} wake words, active {sorted(active)}", flush=True)
+    mac = "02:aa:bb:cc:dd:ee"
+    if os.environ.get("TSX_HARNESS_REAL_MAC"):
+        # the MAC address of the default interface, the way tsx-esphome and LVA's __main__ read it
+        from getmac import get_mac_address  # noqa: WPS433
+        from linux_voice_assistant.util import get_default_interface  # noqa: WPS433
+
+        mac = get_mac_address(interface=get_default_interface()) or "00:00:00:00:00:00"
     state = ServerState(
         name="lva-02aabbccddee",  # what LVA's __main__ passes; tsx_lva's patch must replace it
         friendly_name="hostname-fallback",
-        mac_address="02:aa:bb:cc:dd:ee",
+        mac_address=mac,
         ip_address="127.0.0.1",
         network_interface="lo",
         version="test",

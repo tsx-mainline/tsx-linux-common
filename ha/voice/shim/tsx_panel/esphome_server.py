@@ -32,18 +32,20 @@ from aioesphomeapi.api_pb2 import (  # pylint: disable=no-name-in-module
     SubscribeHomeAssistantStatesRequest,
     SubscribeHomeassistantServicesRequest,
     SubscribeStatesRequest,
+    SubscribeVoiceAssistantRequest,
     SwitchCommandRequest,
     TextCommandRequest,
     UpdateCommandRequest,
 )
+from aioesphomeapi.model import VoiceAssistantFeature
 from getmac import get_mac_address
 from google.protobuf import message
 from linux_voice_assistant.api_server import APIServer
-from linux_voice_assistant.util import get_default_interface, get_default_ipv4, get_esphome_version, get_version
+from linux_voice_assistant.util import get_default_interface, get_default_ipv4
 from linux_voice_assistant.zeroconf import HomeAssistantZeroconf
 
-from . import bluetooth, camera, naming, security
-from .backend import PanelBackend, board_call, board_value, esphome_model
+from . import bluetooth, camera, deviceinfo, hw, naming, security
+from .backend import PanelBackend
 from .device import build_entities, poll
 
 _LOGGER = logging.getLogger("tsx_esphome")
@@ -61,6 +63,29 @@ COMMAND_TYPES = (
 )
 
 
+def voice_feature_flags() -> int:
+    """voice_assistant_feature_flags of this device (VOICE=off: the voice
+    satellite does not run). A panel with a microphone announces the voice
+    feature here, like the voice satellite does (tsx_lva, VOICE=on).
+
+    Home Assistant makes the voice selects (pipelines, finished speaking
+    detection, wake words) once, when it sets up the config entry
+    (esphome/select.py), and only if the flags are not 0 at that time. A later
+    connection with flags does not make them. They stay unavailable until
+    someone reloads the config entry. The assist satellite entity follows the
+    flags at each connection (esphome/manager.py). So the flag must be the
+    same in both modes.
+
+    Only VOICE_ASSISTANT. This device answers no announcement, no start
+    conversation request and no timer, and Home Assistant waits up to 5
+    minutes for the answer to an announcement. Without a microphone
+    (MIC=no in hw.conf) the satellite never runs and the flags stay 0.
+    """
+    if not hw.present("MIC"):
+        return 0
+    return int(VoiceAssistantFeature.VOICE_ASSISTANT)
+
+
 class PanelAPIServer(APIServer):
     """One connected Home Assistant client. All connections share the same
     `device` (entities + backend); see connection_made/connection_lost.
@@ -71,9 +96,6 @@ class PanelAPIServer(APIServer):
     name = "tsx-panel"
     friendly_name = "tsx-panel"
     mac_address = ""
-    model = "panel"  # replaced by the board value in main()
-    version = get_version()
-    esphome_version = get_esphome_version()
 
     def __init__(self) -> None:
         # asyncio.create_server's protocol_factory takes no arguments; the
@@ -121,19 +143,18 @@ class PanelAPIServer(APIServer):
 
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         if isinstance(msg, DeviceInfoRequest):
+            # project, versions, manufacturer and model: deviceinfo.py, the same as with VOICE=on.
             # BT_PROXY=on adds the Bluetooth proxy feature flags (bluetooth.py)
-            yield bluetooth.PROXY.apply_device_info(DeviceInfoResponse(
+            yield bluetooth.PROXY.apply_device_info(deviceinfo.apply(DeviceInfoResponse(
                 uses_password=False,
                 name=self.name,
                 friendly_name=self.friendly_name,
-                project_name="tsx-mainline.tsx-esphome",
-                project_version=self.version,
-                esphome_version=self.esphome_version,
                 mac_address=self.mac_address,
-                manufacturer="Crestron (mainline Linux)",
-                model=self.model,
-            ))
+                voice_assistant_feature_flags=voice_feature_flags(),
+            )))
             return
+        if isinstance(msg, SubscribeVoiceAssistantRequest):
+            return    # Home Assistant subscribes for the assist satellite. No voice runs here.
         if bluetooth.handle_message(self, msg):
             return
         if camera.handle_message(self, msg):
@@ -192,11 +213,7 @@ async def async_main() -> None:
     PanelAPIServer.name = device_name
     PanelAPIServer.friendly_name = friendly_name
     PanelAPIServer.mac_address = mac
-    # The model of the device: see esphome_model() ("xx60 panel" on the xx60,
-    # "Crestron <model>" on a board that gives the model of the unit).
-    ha_model = esphome_model(board_call("tsx_board_ha_model"), board_value("TSX_HA_MODEL"))
-    if ha_model:
-        PanelAPIServer.model = ha_model
+    deviceinfo.model()   # reads the board file once, before the server starts
 
     backend = PanelBackend()
     device = build_entities(None, backend)

@@ -240,7 +240,9 @@ def _patch_panel():
         ExecuteServiceRequest,
         SubscribeHomeassistantServicesRequest,
     )
-    from tsx_panel import bluetooth, camera  # noqa: WPS433
+    from tsx_panel import bluetooth, camera, deviceinfo  # noqa: WPS433
+
+    deviceinfo.model()   # reads the board file once, before the server starts
 
     def handle_message(self, msg):
         if isinstance(msg, keyed_commands):
@@ -267,6 +269,9 @@ def _patch_panel():
             return
         for out in orig_handle(self, msg):
             if isinstance(out, DeviceInfoResponse):
+                # project, versions, manufacturer and model of tsx-esphome (deviceinfo.py).
+                # Only the voice feature flags are the satellite's own.
+                deviceinfo.apply(out)
                 bluetooth.PROXY.apply_device_info(out)
             yield out
 
