@@ -43,9 +43,9 @@ Env overrides (all also read by tsx-mqtt; new ones only for this module):
   `tsx-config apply` leaves it for the initramfs and the kiosk; absent =
   landscape).
   Parts that only some boards have (an entity exists only when its state file
-  or device does): the distance sensor, the light bar, USB power, the PoE
-  class and NFC tags. Their daemons are board glue and write the state files
-  in TSX_RUN_DIR. TSX_STATE_DIR (/var/lib/tsx) holds the kept light bar state.
+  or device does): the distance sensor, USB power, the PoE class and NFC
+  tags. Their daemons are board glue and write the state files in
+  TSX_RUN_DIR.
 """
 
 import json
@@ -168,7 +168,6 @@ class PanelBackend:
         self.devtools = _env("TSX_DEVTOOLS", "127.0.0.1:9222")
         self.panelctl = Path(_env("TSX_PANELCTL", str(self.run_dir / "panelctl")))
         self.boot_verbose_flag = Path(_env("TSX_BOOT_VERBOSE_FLAG", "/etc/tsx/boot-verbose"))
-        self.state_dir = Path(_env("TSX_STATE_DIR", "/var/lib/tsx"))
         self.panelctl_bin = _env("TSX_PANELCTL_BIN", "tsx-panelctl")
         self._usb_pending: Optional[Tuple[bool, float]] = None
         self._last_tag: Optional[Tuple[str, str]] = None
@@ -518,31 +517,6 @@ class PanelBackend:
             return float(raw.split()[0]) if raw else None
         except (ValueError, IndexError):
             return None
-
-    # ---- light bar (tsx-lightbar; /sys/class/leds/rgb:lightbar-N) ---------------
-    def lightbar_present(self) -> bool:
-        """A multicolor light bar of the board (not the USB LED bar)."""
-        return self._panelctl("has", "lightbar")[0]
-
-    def get_lightbar(self):
-        """(on, brightness 0..255, r, g, b 0..255) from the kept state "on|off R G B BRI"."""
-        raw = _read_first_line(self.state_dir / "lightbar") or ""
-        parts = raw.split()
-        try:
-            r, g, b, bri = (int(x) for x in parts[1:5])
-            if not all(0 <= v <= 255 for v in (r, g, b, bri)):
-                raise ValueError
-            return parts[0] == "on" and bri > 0, bri, r, g, b
-        except (ValueError, IndexError):
-            return False, 255, 255, 255, 255
-
-    def set_lightbar(self, on: bool, bri: int, r: int, g: int, b: int) -> None:
-        bri = max(0, min(255, bri))
-        if not on or bri <= 0:
-            self._ctl("lightbar", "off")
-            return
-        r, g, b = (max(0, min(255, v)) for v in (r, g, b))
-        self._ctl("lightbar", "set", str(r), str(g), str(b), str(bri))
 
     # ---- rear USB power (tsx-usbpower, read back by tsx-sensord) ----------------
     def usb_power_present(self) -> bool:

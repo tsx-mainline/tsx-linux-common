@@ -3,7 +3,8 @@
 #
 # It publishes HA MQTT discovery (retained) for one device with:
 #   light  "LED bar"      RGB (tsx-ledbar. HA 0..255 <-> bar 0..100 per channel.
-#                         Only where tsx-ledbar is installed)
+#                         Only where tsx-ledbar is installed and hw.conf does not
+#                         say LEDBAR=no: tsx-panelctl has ledbar)
 #   light  "Key LEDs"     brightness 0..255 (tsx-keypad led N|off. Only where the
 #                         keys have LEDs: tsx-panelctl has keyleds)
 #   switch "Screen"       ON = lit, OFF = blanked (tsx-blank)
@@ -58,7 +59,6 @@ KBCONF=${TSX_PANEL_BOARD_CONF:-/etc/tsx/panel-board.conf}   # the board layer of
 ACONF=${TSX_ALS_CONF:-/etc/tsx/als.conf}
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 PCTL=${TSX_PANELCTL_BIN:-tsx-panelctl}   # the hardware interface of the base system
-STATE_DIR=${TSX_STATE_DIR:-/var/lib/tsx}
 DRY=${TSX_MQTT_DRY:-0}
 PUBTO=${TSX_MQTT_PUB_TIMEOUT:-5}
 LASTPUBOK=1   # 0 after a publish fails or times out. The stop trap then skips the LWT offline publish
@@ -132,7 +132,6 @@ has_sound() { "$PCTL" has sound >/dev/null 2>&1; }
 has_keyleds() { "$PCTL" has keyleds >/dev/null 2>&1; }
 has_als() { [ -r "$ACONF" ] || [ -r "$R/als.state" ]; }
 has_presence() { [ -r "$R/presence.state" ]; }
-has_lightbar() { "$PCTL" has lightbar >/dev/null 2>&1; }
 has_usbpower() { [ -r "$R/usb-power.state" ]; }
 has_poe() { [ -r "$R/poe.state" ]; }
 has_emmc() { [ -r "$R/emmc.state" ]; }
@@ -172,9 +171,6 @@ discovery() {
 	if has_presence; then
 		pub -r "$DP/binary_sensor/$NODE/presence/config" "{\"name\":\"Presence\",\"uniq_id\":\"${NODE}_presence\",\"stat_t\":\"$BASE/presence/state\",\"dev_cla\":\"occupancy\",\"icon\":\"mdi:account-eye\",$AV,$DEV}"
 		pub -r "$DP/sensor/$NODE/distance/config" "{\"name\":\"Distance\",\"uniq_id\":\"${NODE}_distance\",\"stat_t\":\"$BASE/presence/distance\",\"val_tpl\":\"{{ none if value == 'none' else value | int }}\",\"dev_cla\":\"distance\",\"unit_of_meas\":\"mm\",\"stat_cla\":\"measurement\",\"icon\":\"mdi:ruler\",$AV,$DEV}"
-	fi
-	if has_lightbar; then
-		pub -r "$DP/light/$NODE/lightbar/config" "{\"name\":\"Light bar\",\"uniq_id\":\"${NODE}_lightbar\",\"cmd_t\":\"$BASE/lightbar/set\",\"stat_t\":\"$BASE/lightbar/state\",\"bri_cmd_t\":\"$BASE/lightbar/brightness/set\",\"bri_stat_t\":\"$BASE/lightbar/brightness\",\"bri_scl\":255,\"rgb_cmd_t\":\"$BASE/lightbar/rgb/set\",\"rgb_stat_t\":\"$BASE/lightbar/rgb\",\"on_cmd_type\":\"last\",\"icon\":\"mdi:led-strip-variant\",$AV,$DEV}"
 	fi
 	if has_usbpower; then
 		pub -r "$DP/switch/$NODE/usb_power/config" "{\"name\":\"USB power\",\"uniq_id\":\"${NODE}_usb_power\",\"cmd_t\":\"$BASE/usb_power/set\",\"stat_t\":\"$BASE/usb_power/state\",\"icon\":\"mdi:usb-port\",$AV,$DEV}"
@@ -244,13 +240,6 @@ presence_state() {  # "ON|OFF DISTANCE|none"
 	[ -n "$p" ] && echo "$( [ "$p" = on ] && echo ON || echo OFF) ${d:-none}"
 }
 
-lightbar_state() {  # "ON|OFF BRIGHTNESS R,G,B" from tsx-lightbar's kept state
-	set -- $(cat "$STATE_DIR/lightbar" 2>/dev/null)
-	if [ $# -ge 5 ]; then
-		if [ "$1" = on ] && [ "$5" -gt 0 ] 2>/dev/null; then echo "ON $5 $2,$3,$4"; else echo "OFF $5 $2,$3,$4"; fi
-	else echo "OFF 255 255,255,255"; fi
-}
-
 usb_state() { p=$(field "$R/usb-power.state" power); [ -n "$p" ] && { [ "$p" = on ] && echo ON || echo OFF; }; }
 
 poe_state() {
@@ -278,7 +267,7 @@ update_state() {  # raw HA-ready JSON from tsx-autoupdate (same $R), or a safe d
 	fi
 }
 
-P_LED= P_KL= P_SCR= P_BL= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_LB= P_USB= P_POE= P_EMMC=
+P_LED= P_KL= P_SCR= P_BL= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_USB= P_POE= P_EMMC=
 publish_states() {  # $1 = force
 	f=${1:-}
 	v=$(ledbar_state); if [ "$v" != "$P_LED" ] || [ -n "${1:-}" ]; then
@@ -300,10 +289,6 @@ publish_states() {  # $1 = force
 	if has_presence; then
 		v=$(presence_state); if [ -n "$v" ] && { [ "$v" != "$P_PRES" ] || [ -n "$f" ]; }; then
 			set -- $v; pub -r "$BASE/presence/state" "$1"; pub -r "$BASE/presence/distance" "$2"; P_PRES=$v; fi
-	fi
-	if has_lightbar; then
-		v=$(lightbar_state); if [ "$v" != "$P_LB" ] || [ -n "$f" ]; then
-			set -- $v; pub -r "$BASE/lightbar/state" "$1"; pub -r "$BASE/lightbar/brightness" "$2"; pub -r "$BASE/lightbar/rgb" "$3"; P_LB=$v; fi
 	fi
 	if has_usbpower; then
 		v=$(usb_state); if [ -n "$v" ] && { [ "$v" != "$P_USB" ] || [ -n "$f" ]; }; then
@@ -352,20 +337,6 @@ handle() {  # topic payload
 		cur=$(ledbar_state); set -- $cur
 		bri=$(led_bri); [ "$1" = ON ] && bri=$2; [ "$bri" -gt 0 ] || bri=255
 		ledbar_set "$r" "$g" "$b" "$bri"; : > "$M/pending";;
-	lightbar/set)
-		case $p in ON) "$PCTL" send lightbar on;; OFF) "$PCTL" send lightbar off;; esac;;
-	lightbar/brightness/set)
-		case $p in *[!0-9]*|'') return;; esac
-		[ "${#p}" -le 3 ] && [ "$p" -le 255 ] || return
-		set -- $(lightbar_state); split_rgb "$3"
-		"$PCTL" send lightbar set "$r" "$g" "$b" "$p";;
-	lightbar/rgb/set)
-		case $p in *,*,*) ;; *) return;; esac
-		split_rgb "$p"
-		case "$r$g$b" in *[!0-9]*|'') return;; esac
-		[ "${#r}" -le 3 ] && [ "${#g}" -le 3 ] && [ "${#b}" -le 3 ] && [ "$r" -le 255 ] && [ "$g" -le 255 ] && [ "$b" -le 255 ] || return
-		set -- $(lightbar_state); bri=$2; [ "$bri" -gt 0 ] || bri=255
-		"$PCTL" send lightbar set "$r" "$g" "$b" "$bri";;
 	usb_power/set)
 		case $p in ON) "$PCTL" send usbpower on;; OFF) "$PCTL" send usbpower off;; esac;;
 	key_leds/set)

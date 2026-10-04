@@ -96,8 +96,32 @@ grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/key_leds/config ' "$T/out
 grep -q 'homeassistant/event/' "$T/outbare" && { echo "FAIL: bare: key events announced without keys"; fail=1; }
 grep -qE 'emmc|illuminance' "$T/outbare" && { echo "FAIL: bare: entities announced for parts this panel does not have"; fail=1; }
 grep '/config {' "$T/outbare" | while read -r _ _ t j; do echo "$j" | jq -e . >/dev/null || { echo "FAIL: bad JSON $t"; exit 1; }; done || fail=1
+# The real tsx-panelctl decides on the LED bar: the tool is installed, and hw.conf may say
+# LEDBAR=no (the tsx-hw of the board writes it). No file, no key and LEDBAR=yes announce the
+# light. LEDBAR=no clears its discovery topic.
+mkdir -p "$T/bin-led" "$T/run-led"
+printf '#!/bin/sh\nexit 0\n' > "$T/bin-led/tsx-ledbar"
+printf '#!/bin/sh\nexec sh "%s" "$@"\n' "$(P usr/local/sbin/tsx-panelctl)" > "$T/bin-led/tsx-panelctl"
+chmod +x "$T/bin-led/tsx-ledbar" "$T/bin-led/tsx-panelctl"
+ledbar_case() {  # ledbar_case "hw.conf text" announced|cleared NAME
+	rm -f "$T/run-led/hw.conf"; [ "$1" = NOFILE ] || printf '%b' "$1" > "$T/run-led/hw.conf"
+	PATH=$T/bin-led:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run-led TSX_IDLED_STATE=$T/idled \
+		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+		sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T/outled" 2>&1
+	if [ "$2" = announced ]; then
+		grep -qF 'PUB (retained) homeassistant/light/tsx-kiosk/ledbar/config {' "$T/outled" || { echo "FAIL: $3: the LED bar light is not announced"; fail=1; }
+	else
+		grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/ledbar/config ' "$T/outled" || { echo "FAIL: $3: the LED bar light is not cleared"; fail=1; }
+		grep -qF 'homeassistant/light/tsx-kiosk/ledbar/config {' "$T/outled" && { echo "FAIL: $3: the LED bar light is announced"; fail=1; }
+	fi
+	return 0
+}
+ledbar_case NOFILE announced "LED bar tool, no hw.conf"
+ledbar_case 'MIC=yes\nPRESENCE=no\n' announced "LED bar tool, hw.conf without LEDBAR"
+ledbar_case 'LEDBAR=yes\n' announced "LED bar tool, LEDBAR=yes"
+ledbar_case 'LEDBAR=no\n' cleared "LED bar tool, LEDBAR=no"
 grep -qE 'emmc' "$T/out" && { echo "FAIL: eMMC entities announced without emmc.state"; fail=1; }
-grep -qE 'presence|distance|lightbar|usb_power|poe_class|/tag/' "$T/out" && { echo "FAIL: entities announced for parts this panel does not have"; fail=1; }
+grep -qE 'presence|distance|usb_power|poe_class|/tag/' "$T/out" && { echo "FAIL: entities announced for parts this panel does not have"; fail=1; }
 
 # eMMC health from /run/tsx/emmc.state (tsx-emmc-state)
 T3=$T/hw; mkdir -p "$T3/run"

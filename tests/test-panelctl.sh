@@ -24,7 +24,7 @@ N=0 F=0
 ok() { echo "  ok: $*"; N=$((N + 1)); }
 bad() { echo "  FAIL: $*"; F=$((F + 1)); }
 
-for b in tsx-ledbar tsx-keypad tsx-kiosk-page tsx-blank tsx-als tsx-config tsx-autoupdate tsx-lightbar tsx-usbpower tsx-audio amixer; do
+for b in tsx-ledbar tsx-keypad tsx-kiosk-page tsx-blank tsx-als tsx-config tsx-autoupdate tsx-usbpower tsx-audio amixer; do
 	cat > "$T/bin/$b" <<EOF
 #!/bin/sh
 echo "$b \$*" >> "$T/cmds.log"
@@ -146,46 +146,35 @@ send "orientation landscape*"
 [ ! -s "$T/cmds.log" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 5)) ] \
 	&& ok "5 bad orientation lines rejected, nothing run" || bad "bad orientation lines: $(cat "$T/cmds.log" 2>/dev/null)"
 
-echo "== light bar and USB power =="
+echo "== USB power =="
 : > "$T/cmds.log"
-send "lightbar set 255 128 0 200"
-send "lightbar set 1 2 3"
-send "lightbar off"
 send "usbpower off"
 send "usbpower on"
-for want in 'tsx-lightbar set 255 128 0 200' 'tsx-lightbar set 1 2 3' 'tsx-lightbar off' 'tsx-usbpower off' 'tsx-usbpower on'; do
+for want in 'tsx-usbpower off' 'tsx-usbpower on'; do
 	grep -qxF "$want" "$T/cmds.log" && ok "ran: $want" || bad "missing: $want"
 done
 : > "$T/cmds.log"; r0=$(grep -c 'rejected:' "$T/panelctl.log")
-send "lightbar set 256 0 0"
-send "lightbar set 1 2 3 4 5"
-send "lightbar set 1 2 -3"
-send "lightbar set 1 2 3 256"
-send "lightbar set 1 2 *"
-send "lightbar on now"
-send "lightbar off now"
 send "usbpower maybe"
 send "usbpower on now"
-[ ! -s "$T/cmds.log" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 9)) ] \
-	&& ok "9 bad light bar and USB lines rejected, nothing run" || bad "bad lines: $(cat "$T/cmds.log" 2>/dev/null)"
+[ ! -s "$T/cmds.log" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 2)) ] \
+	&& ok "2 bad USB power lines rejected, nothing run" || bad "bad lines: $(cat "$T/cmds.log" 2>/dev/null)"
 
-echo "== the seam: commands for the Home Assistant layer (ledbar on, keypad led auto, lightbar on, backlight) =="
+echo "== the seam: commands for the Home Assistant layer (ledbar on, keypad led auto, backlight) =="
 : > "$T/cmds.log"
 mkdir -p "$T/bl/dev0"; echo 0 > "$T/bl/dev0/brightness"; echo "on 17" > "$T/idled.state"
 restart_with_hw() {
 	kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null
 	PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_REBOOT_BIN="$T/bin/reboot" TSX_IDLED_STATE="$T/idled.state" TSX_LEARN_FILE="$T/learn.json" \
 		TSX_BACKLIGHT_DIR="$T/bl" TSX_BUTTONS_CONF="$T/buttons.conf" TSX_ALS_CONF="$T/als.conf" TSX_ASOUND_DIR="$T/asound" \
-		TSX_LEDS_DIR="$T/leds" TSX_STATE_DIR="$T/state" TSX_NFC_SYS_DIR="$T/nfc" \
+		TSX_NFC_SYS_DIR="$T/nfc" \
 		busybox sh "$SCRIPT" > "$T/panelctl.log" 2>&1 &
 	PID=$!
 	for _ in $(seq 1 20); do grep -q "listening on" "$T/panelctl.log" 2>/dev/null && break; sleep 0.1; done
 }
 restart_with_hw
-send "ledbar on"; send "keypad led auto"; send "lightbar on"; send "backlight 9"
+send "ledbar on"; send "keypad led auto"; send "backlight 9"
 grep -qxF 'tsx-ledbar on' "$T/cmds.log" && ok "ledbar on -> tsx-ledbar on" || bad "ledbar on: $(cat "$T/cmds.log")"
 grep -qxF 'tsx-keypad led auto' "$T/cmds.log" && ok "keypad led auto -> tsx-keypad led auto" || bad "keypad led auto missing"
-grep -qxF 'tsx-lightbar on' "$T/cmds.log" && ok "lightbar on -> tsx-lightbar on" || bad "lightbar on missing"
 [ "$(cat "$T/run/brightness" 2>/dev/null)" = 9 ] && ok "backlight 9 writes the override file" || bad "backlight: override file wrong"
 [ "$(cat "$T/bl/dev0/brightness")" = 9 ] && ok "backlight 9 writes the backlight device while the screen is lit" || bad "backlight device not written"
 echo "blank" > "$T/idled.state"; send "backlight 12"
@@ -231,9 +220,9 @@ done
 kill -0 "$PID" 2>/dev/null && ok "daemon is still alive after the bad LED lines" || bad "daemon died"
 
 echo "== the seam: tsx-panelctl send, get, has, events =="
-PCTL="env PATH=$T/bin:$PATH TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled.state TSX_BUTTONS_CONF=$T/buttons.conf TSX_BUTTONS_BOARD_CONF=$T/buttons-board.conf TSX_ALS_CONF=$T/als.conf TSX_ASOUND_DIR=$T/asound TSX_LEDS_DIR=$T/leds TSX_STATE_DIR=$T/state TSX_NFC_SYS_DIR=$T/nfc TSX_LEDBAR=$T/bin/tsx-ledbar-none busybox sh $SCRIPT"
+PCTL="env PATH=$T/bin:$PATH TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled.state TSX_BUTTONS_CONF=$T/buttons.conf TSX_BUTTONS_BOARD_CONF=$T/buttons-board.conf TSX_ALS_CONF=$T/als.conf TSX_ASOUND_DIR=$T/asound TSX_NFC_SYS_DIR=$T/nfc TSX_LEDBAR=$T/bin/tsx-ledbar-none busybox sh $SCRIPT"
 : > "$T/cmds.log"
-$PCTL send lightbar set 4 5 6 && sleep 0.2 && grep -qxF 'tsx-lightbar set 4 5 6' "$T/cmds.log" && ok "send writes the command, the daemon runs it" || bad "send did not reach the daemon"
+$PCTL send ledbar set 4 5 6 && sleep 0.2 && grep -qxF 'tsx-ledbar set 4 5 6' "$T/cmds.log" && ok "send writes the command, the daemon runs it" || bad "send did not reach the daemon"
 $PCTL send 2>/dev/null && bad "send with no command succeeded" || ok "send with no command fails"
 $PCTL send "ledbar $(printf 'x\001y')" 2>/dev/null && bad "send accepted a control character" || ok "send refuses control characters"
 $PCTL send "$(printf 'a%.0s' $(seq 1 250))" 2>/dev/null && bad "send accepted a 250 character line" || ok "send refuses a long line"
@@ -250,10 +239,9 @@ rm -rf "$T/asound/FakeCard"
 env PATH="$T/bin2:$PATH" TSX_RUN_DIR="$T/run" TSX_ASOUND_DIR="$T/asound" busybox sh "$SCRIPT" get volume >/dev/null 2>&1 && bad "get volume without a sound card succeeded" || ok "get volume without a sound card: nothing, exit 1"
 printf 'want 10 20 30\n' > "$T/run/ledbar.state"; printf 'leds yes\nled 128 day\nlast home short 12:00:01\n' > "$T/run/buttons.state"; printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T/run/als.state"
 printf 'present on\ndistance 640\nwake on\n' > "$T/run/presence.state"; echo "power on" > "$T/run/usb-power.state"; echo "class plus" > "$T/run/poe.state"
-mkdir -p "$T/state"; echo "on 255 128 0 200" > "$T/state/lightbar"
 echo "on 17" > "$T/idled.state"
 for kv in "ledbar=10 20 30" "keypad-led=128 day" "last-key=home short 12:00:01" "lux=12.5" "als-auto=on" "screen=on 17" \
-	"presence=on" "distance=640" "usb-power=on" "poe-class=plus" "lightbar=on 255 128 0 200"; do
+	"presence=on" "distance=640" "usb-power=on" "poe-class=plus"; do
 	k=${kv%%=*}; w=${kv#*=}; got=$($PCTL get "$k" 2>/dev/null)
 	[ "$got" = "$w" ] && ok "get $k: $w" || bad "get $k: got '$got', want '$w'"
 done
@@ -263,8 +251,8 @@ printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T/run/als.state"
 printf '#!/bin/sh\n' > "$T/als.conf"; : > "$T/bin/tsx-ledbar-none"; chmod +x "$T/bin/tsx-ledbar-none"
 # the keys: a `button` line in the board layer. buttons.conf is the template of this repo (no keys).
 cp "$HERE/../buttons/etc/tsx/buttons.conf" "$T/buttons.conf"; printf '# board layer\nbutton prog1 KEY_PROG1 led=1\n' > "$T/buttons-board.conf"
-mkdir -p "$T/asound/FakeCard" "$T/leds/rgb:lightbar-0" "$T/nfc/nfc0"; printf 'count 0\nlast -\n' > "$T/run/nfc.state"
-for h in ledbar keypad keyleds als sound presence lightbar usbpower poe nfc; do $PCTL has $h && ok "has $h: yes" || bad "has $h: no"; done
+mkdir -p "$T/asound/FakeCard" "$T/nfc/nfc0"; printf 'count 0\nlast -\n' > "$T/run/nfc.state"
+for h in ledbar keypad keyleds als sound presence usbpower poe nfc; do $PCTL has $h && ok "has $h: yes" || bad "has $h: no"; done
 # has keypad reads the `button` lines: the board layer alone, buttons.conf alone, and not the template
 rm -f "$T/buttons-board.conf"
 $PCTL has keypad >/dev/null 2>&1; [ $? = 1 ] && ok "has keypad: no with the template only (no button line)" || bad "has keypad: yes with the template only"
@@ -282,9 +270,9 @@ printf 'leds yes\nled 128 day\n' > "$T/run/buttons.state"
 $PCTL has keyleds && ok "has keyleds: yes with leds yes" || bad "has keyleds: no with leds yes"
 printf 'leds yes\nled 128 day\nlast home short 12:00:01\n' > "$T/run/buttons.state"
 rm -f "$T/als.conf" "$T/buttons.conf" "$T/buttons-board.conf" "$T/run/als.state" "$T/run/presence.state" "$T/run/usb-power.state" "$T/run/poe.state" "$T/run/nfc.state" "$T/bin/tsx-ledbar-none"
-rm -rf "$T/asound/FakeCard" "$T/leds/rgb:lightbar-0" "$T/nfc/nfc0" "$T/run/buttons.state"
-for h in ledbar keypad keyleds als sound presence lightbar usbpower poe nfc; do $PCTL has $h && bad "has $h: yes without the hardware" || ok "has $h: no without the hardware"; done
-for h in ledbar keypad keyleds als sound presence lightbar usbpower poe nfc; do $PCTL has $h >/dev/null 2>&1; [ $? = 1 ] && ok "has $h: exit 1 without the hardware" || bad "has $h: exit is not 1"; done
+rm -rf "$T/asound/FakeCard" "$T/nfc/nfc0" "$T/run/buttons.state"
+for h in ledbar keypad keyleds als sound presence usbpower poe nfc; do $PCTL has $h && bad "has $h: yes without the hardware" || ok "has $h: no without the hardware"; done
+for h in ledbar keypad keyleds als sound presence usbpower poe nfc; do $PCTL has $h >/dev/null 2>&1; [ $? = 1 ] && ok "has $h: exit 1 without the hardware" || bad "has $h: exit is not 1"; done
 $PCTL has toaster >/dev/null 2>&1; [ $? = 2 ] && ok "has of an unknown name: exit 2" || bad "has of an unknown name"
 # has ledbar-fx: the answer of "tsx-ledbar fw". get ledbar-fx: the record in ledbar.state
 printf '#!/bin/sh\n[ "$1" = fw ] && cat "%s/fw"\n' "$T" > "$T/bin/tsx-ledbar-fw"; chmod +x "$T/bin/tsx-ledbar-fw"
@@ -332,6 +320,30 @@ printf 'firmware TSX-LEDBAR [v0.1.1]\neffects yes\nleds no\ncaps none\n' > "$FWF
 printf 'firmware FAKE-LB [v2.0.1]\neffects no\nleds no\ncaps none\n' > "$FWF"
 [ "$(yesno ledbar-fx) $(yesno ledbar-leds)" = "no no" ] && ok "ledbar.fw of the stock firmware: fx no, leds no (exit 1)" || bad "stock file: $(yesno ledbar-fx) $(yesno ledbar-leds)"
 [ "$(yesno ledbar)" = yes ] && ok "has ledbar: still the tool" || bad "has ledbar: $(yesno ledbar)"
+# has ledbar also reads LEDBAR of hw.conf ($TSX_RUN_DIR/hw.conf, which the tsx-hw of the board
+# writes). The tool must be installed, and LEDBAR=no says no. A missing file or key means present.
+HWC=$T/run/hw.conf
+hwcase() {  # hwcase "hw.conf text" EXPECTED NAME
+	printf '%s' "$1" > "$HWC"
+	got=$(yesno ledbar); [ "$got" = "$2" ] && ok "has ledbar: $2, $3" || bad "has ledbar: $got, want $2, $3"
+}
+rm -f "$HWC"
+[ "$(yesno ledbar)" = yes ] && ok "has ledbar: yes, the tool and no hw.conf" || bad "has ledbar without hw.conf: $(yesno ledbar)"
+hwcase "" yes "an empty hw.conf"
+hwcase $'GOVERNMENT=0\nMIC=yes\nREASON=\n' yes "hw.conf without a LEDBAR line"
+hwcase $'MIC=yes\nLEDBAR=yes\n' yes "LEDBAR=yes"
+hwcase $'MIC=yes\nLEDBAR=no\nREASON=no bar\n' no "LEDBAR=no"
+hwcase $'LEDBAR=no' no "LEDBAR=no without a final newline"
+hwcase $'LEDBAR=no\nLEDBAR=yes\n' yes "the last LEDBAR line counts (yes)"
+hwcase $'LEDBAR=yes\nLEDBAR=no\n' no "the last LEDBAR line counts (no)"
+hwcase $'LEDBAR=\n' yes "an empty LEDBAR value is not no"
+hwcase $'XLEDBAR=no\nLEDBAR_X=no\n' yes "other keys that contain the name are not LEDBAR"
+printf 'LEDBAR=no\n' > "$T/other-hw.conf"; printf 'LEDBAR=yes\n' > "$HWC"
+[ "$(TSX_HW_CONF=$T/other-hw.conf yesno ledbar)" = no ] && ok "TSX_HW_CONF names the hw.conf (LEDBAR=no)" || bad "TSX_HW_CONF: $(TSX_HW_CONF=$T/other-hw.conf yesno ledbar)"
+printf 'LEDBAR=yes\n' > "$HWC"
+[ "$(env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_LEDBAR="$T/bin/none-such" busybox sh "$SCRIPT" has ledbar >/dev/null 2>&1; echo $?)" = 1 ] \
+	&& ok "has ledbar: no without the tool, also with LEDBAR=yes" || bad "has ledbar with LEDBAR=yes but no tool"
+rm -f "$HWC" "$T/other-hw.conf"
 mv "$FWF" "$T/other.fw"
 sed -i 's/leds no/leds yes/; s/effects no/effects yes/' "$T/other.fw"
 [ "$(TSX_LEDBAR_FW=$T/other.fw yesno ledbar-leds)" = yes ] && ok "TSX_LEDBAR_FW names the file" || bad "TSX_LEDBAR_FW: $(TSX_LEDBAR_FW=$T/other.fw yesno ledbar-leds)"
@@ -352,9 +364,9 @@ $PCTL get ledbar-fx >/dev/null 2>&1 && bad "get ledbar-fx without a record succe
 printf 'want 10 20 30\n' > "$T/run/ledbar.state"; printf 'led 128 day\nlast home short 12:00:01\n' > "$T/run/buttons.state"
 echo "on 17" > "$T/idled.state"; printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T/run/als.state"; printf 'present on\ndistance 640\n' > "$T/run/presence.state"
 ( sleep 0.7; printf 'led 128 day\nlast power long 12:00:09\n' > "$T/run/buttons.state"; printf 'present off\ndistance none\n' > "$T/run/presence.state"; sleep 0.5; echo blank > "$T/idled.state" ) &
-EV=$(env TSX_EVENTS_POLL=0.2 TSX_EVENTS_MAX=12 TSX_RUN_DIR="$T/run" TSX_IDLED_STATE="$T/idled.state" TSX_STATE_DIR="$T/state" timeout 10 busybox sh "$SCRIPT" events)
+EV=$(env TSX_EVENTS_POLL=0.2 TSX_EVENTS_MAX=11 TSX_RUN_DIR="$T/run" TSX_IDLED_STATE="$T/idled.state" timeout 10 busybox sh "$SCRIPT" events)
 echo "$EV" | head -n 7 | grep -qx 'lux 12.5' && echo "$EV" | grep -qx 'als-auto on' && echo "$EV" | grep -qx 'screen on 17' && echo "$EV" | grep -qx 'ledbar 10 20 30' && echo "$EV" | grep -qx 'keypad-led 128 day' \
-	&& echo "$EV" | grep -qx 'presence on' && echo "$EV" | grep -qx 'distance 640' && echo "$EV" | grep -qx 'lightbar on 255 128 0 200' \
+	&& echo "$EV" | grep -qx 'presence on' && echo "$EV" | grep -qx 'distance 640' \
 	&& ok "events: the present values come first" || bad "events start: $EV"
 echo "$EV" | grep -q 'button home' && bad "events: the old key press came out as an event" || ok "events: the key press of before the start is not an event"
 echo "$EV" | grep -qx 'button power long' && ok "events: a new key press is 'button NAME TYPE'" || bad "events: no button event: $EV"
@@ -362,7 +374,7 @@ echo "$EV" | grep -qx 'presence off' && echo "$EV" | grep -qx 'distance none' &&
 echo "$EV" | grep -qx 'screen blank' && ok "events: a screen change is an event" || bad "events: no screen event: $EV"
 
 echo "== the seam: the Home Assistant layer holds no hardware call =="
-hw='tsx-(ledbar|lightbar|usbpower|keypad|blank|als|config|autoupdate|audio)|amixer'
+hw='tsx-(ledbar|usbpower|keypad|blank|als|config|autoupdate|audio)|amixer'
 for f in "$HERE/../ha/usr/local/sbin/tsx-mqtt" "$HERE/../ha/voice/shim/tsx_panel/backend.py"; do
 	if grep -nE "^[[:space:]]*($hw)[[:space:]]|[;&|(][[:space:]]*($hw)[[:space:]]|\"($hw)\"|subprocess\.(run|Popen)\(\[?self\.[a-z_]*_bin" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
 		bad "$(basename "$f") calls a hardware tool: $(grep -nE "^[[:space:]]*($hw)[[:space:]]|[;&|(][[:space:]]*($hw)[[:space:]]|\"($hw)\"" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | head -n 3 | tr '\n' '|')"

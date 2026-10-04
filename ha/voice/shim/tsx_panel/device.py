@@ -3,7 +3,7 @@ from a PanelBackend, and polls it for state changes to push to Home
 Assistant. Shared by tsx-esphome (standalone) and the voice satellite's
 plugin (tsx_lva) so there is exactly one entity list, one poll loop.
 
-LEDLightEntity (light bar, key LEDs) is reused as-is from
+LEDLightEntity (LED bar, key LEDs) is reused as-is from
 linux_voice_assistant.entity: it already implements the full RGB/brightness/
 effects Light protocol. It only tracks state HA has told it about (a
 LightCommandRequest); it does not read hardware back on its own. This module
@@ -94,7 +94,6 @@ class PanelDevice:
     touched_recently: BinarySensorEntity
     update: UpdateEntity
     keys: List[KeyEventEntity]
-    lightbar: Optional[LEDLightEntity] = None
     usb_power: Optional[SwitchEntity] = None
     presence: Optional[BinarySensorEntity] = None
     distance: Optional[SensorEntity] = None
@@ -111,7 +110,6 @@ class PanelDevice:
     camera_time: Optional[TextSensorEntity] = None
     key_leds_screen_off: Optional[NumberEntity] = None
     plugin_entities: List = field(default_factory=list)
-    _last_lightbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar: Optional[tuple] = field(default=None, repr=False)
     _last_ledbar_fx: Optional[str] = field(default=None, repr=False)
     _last_key_leds: Optional[tuple] = field(default=None, repr=False)
@@ -311,25 +309,6 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         )
         entities.append(distance)
 
-    lightbar = None
-    if backend.lightbar_present():
-        lb_on, lb_bri, lb_r, lb_g, lb_b = backend.get_lightbar()
-        lightbar = PanelLight(
-            server, key_for("lightbar"), "Light bar", "lightbar",
-            supports_rgb=True, supports_brightness=True, icon="mdi:led-strip-variant",
-        )
-        lightbar.is_on, lightbar.brightness = lb_on, lb_bri / 255.0
-        lightbar.red, lightbar.green, lightbar.blue = lb_r / 255.0, lb_g / 255.0, lb_b / 255.0
-
-        def lightbar_changed(_lightbar=lightbar):
-            backend.set_lightbar(
-                _lightbar.is_on, round(_lightbar.brightness * 255),
-                round(_lightbar.red * 255), round(_lightbar.green * 255), round(_lightbar.blue * 255),
-            )
-
-        lightbar.update_on_changed(lightbar_changed)
-        entities.append(lightbar)
-
     usb_power = None
     if backend.usb_power_present():
         usb_power = SwitchEntity(
@@ -399,7 +378,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         verbose_boot=verbose_boot, kiosk_url=kiosk_url, reload_button=reload_button, reboot_button=reboot_button,
         cpu_temp=cpu_temp, uptime=uptime, ip_address=ip_address, touched_recently=touched_recently,
         update=update, keys=keys, orientation=orientation, _pulse_since=time.time(),
-        lightbar=lightbar, usb_power=usb_power, presence=presence, distance=distance, poe_class=poe_class,
+        usb_power=usb_power, presence=presence, distance=distance, poe_class=poe_class,
         emmc_life_a=emmc_life_a, emmc_life_b=emmc_life_b, emmc_eol=emmc_eol, nfc=backend.nfc_present(),
         ledbar_fx=ledbar_fx, ledbar_leds=ledbar_leds, ledbar_actions=ledbar_actions, camera_entity=camera_entity,
         camera_button=camera_button, camera_time=camera_time, key_leds_screen_off=key_leds_screen_off,
@@ -482,15 +461,6 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
             device._last_key_leds = kl_cur
             device.key_leds.is_on, device.key_leds.brightness = kl_on, kl_bri / 255.0
             msgs.append(device.key_leds._state_response())  # pylint: disable=protected-access
-
-    if device.lightbar is not None:
-        lb_on, lb_bri, lb_r, lb_g, lb_b = backend.get_lightbar()
-        lb_cur = (lb_on, round(lb_bri / 255.0, 3), round(lb_r / 255.0, 3), round(lb_g / 255.0, 3), round(lb_b / 255.0, 3))
-        if lb_cur != device._last_lightbar:
-            device._last_lightbar = lb_cur
-            device.lightbar.is_on, device.lightbar.brightness = lb_on, lb_bri / 255.0
-            device.lightbar.red, device.lightbar.green, device.lightbar.blue = lb_r / 255.0, lb_g / 255.0, lb_b / 255.0
-            msgs.append(device.lightbar._state_response())  # pylint: disable=protected-access
 
     for entity in (device.screen, device.backlight, device.blank_timeout, device.als_auto, device.illuminance,
                    device.volume, device.verbose_boot, device.cpu_temp, device.uptime, device.ip_address,

@@ -1,17 +1,17 @@
 #!/bin/sh
-# Host test of the sensor parts of tsx_panel/backend.py: presence, light bar,
+# Host test of the sensor parts of tsx_panel/backend.py: presence,
 # USB power, PoE class, NFC tags and the backlight range. Each part exists only
 # when its state file is there. No network and no aioesphomeapi needed.
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/run" "$T/state" "$T/bl/x"
+mkdir -p "$T/run" "$T/bl/x"
 export PYTHONDONTWRITEBYTECODE=1
 python3 - "$HERE/ha/voice/shim" "$T" <<'PY'
 import os, sys
 shim, t = sys.argv[1:3]
 sys.path.insert(0, shim)
-os.environ.update(TSX_RUN_DIR=t + "/run", TSX_STATE_DIR=t + "/state", TSX_BACKLIGHT_DIR=t + "/bl",
+os.environ.update(TSX_RUN_DIR=t + "/run", TSX_BACKLIGHT_DIR=t + "/bl",
                   TSX_KIOSK_CONF=t + "/none", TSX_PANELCTL_BIN="/nonexistent")
 from tsx_panel.backend import PanelBackend, esphome_model
 def w(name, text):
@@ -30,9 +30,6 @@ assert b.get_presence() is False and b.get_distance() is None
 w("usb-power.state", "power on\n"); assert b.usb_power_present() and b.get_usb_power() is True
 w("poe.state", "class plus\n"); assert b.get_poe_class() == "PoE+ (802.3at)"
 w("poe.state", "class standard\n"); assert b.get_poe_class() == "PoE (802.3af)"
-assert b.get_lightbar() == (False, 255, 255, 255, 255)
-open(t + "/state/lightbar", "w").write("on 10 20 30 128\n")
-assert b.get_lightbar() == (True, 128, 10, 20, 30)
 w("nfc.state", "count 1\nlast 04:A1\n")
 assert b.poll_nfc_tag() is None          # the first read is no scan
 assert b.poll_nfc_tag() is None

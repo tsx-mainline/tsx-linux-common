@@ -159,7 +159,7 @@ check("the keys do not depend on the order", len(orders), 1)
 KEY_NAMES = [line.split()[1] for line in open(board_keys) if line.startswith("button ")]
 check("the keys of the board layer of the made-up board", KEY_NAMES,
       ["prog1", "prog2", "prog3", "prog4", "extra1", "extra2", "extra3"])
-PARTS = ("ledbar", "ledbar_fx", "ledbar_leds", "key_leds", "als", "sound_card", "presence", "lightbar",
+PARTS = ("ledbar", "ledbar_fx", "ledbar_leds", "key_leds", "als", "sound_card", "presence",
          "usb_power", "poe", "emmc", "nfc")
 
 class Backend:
@@ -170,7 +170,7 @@ class Backend:
     def __getattr__(self, name):
         if name.endswith("_present"):
             return lambda: self.parts[name[:-len("_present")]]
-        values = {"get_ledbar": (False, 255, 255, 255, 255), "get_lightbar": (False, 255, 255, 255, 255),
+        values = {"get_ledbar": (False, 255, 255, 255, 255),
                   "get_keypad": (False, 0), "get_screen": (True, 10), "get_backlight_max": 255,
                   "get_orientation": "landscape", "get_ledbar_effect": "None", "key_names": list(self.keys),
                   "get_update_status": {}, "poll_key_event": None, "poll_nfc_tag": None}
@@ -225,7 +225,7 @@ set_bt(False)
 ALL = dict.fromkeys(PARTS, True)
 d = standalone(ALL)
 REF = listed(d.entities)
-check("all parts: the entity count (with the actions)", len(REF), 42)
+check("all parts: the entity count (with the actions)", len(REF), 41)
 check("all parts: the key LED entities have the new ids, the old ids are gone",
       sorted(i for i in REF if "key_leds" in i or i in ("keypad", "key_led_blank")),
       ["key_leds", "key_leds_screen_off"])
