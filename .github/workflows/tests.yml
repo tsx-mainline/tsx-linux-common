@@ -6,7 +6,8 @@ on:
 jobs:
   lint:
     name: lint
-    runs-on: ubuntu-latest
+    # An arm64 runner. busybox exists for arm64.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: install busybox
@@ -16,7 +17,11 @@ jobs:
 
   host-tests:
     name: host tests
-    runs-on: ubuntu-latest
+    # An arm64 runner. gcc, busybox, jq, libmpv2 and python3-venv all exist for
+    # arm64. The C tests build and run natively on it. The tests of the
+    # ESPHome shim install only wheels (pip --only-binary), and the wheels
+    # that they need exist for aarch64.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: install the tools of the tests
