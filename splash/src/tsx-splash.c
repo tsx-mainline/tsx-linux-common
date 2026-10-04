@@ -1,5 +1,5 @@
 /*
- * tsx-splash: the xx60 boot splash on the Linux framebuffer (/dev/fb0).
+ * tsx-splash: the boot splash on the Linux framebuffer (/dev/fb0).
  *
  * The kernel command line maps the framebuffer console to a framebuffer
  * that never exists (fbcon=map:1). So no kernel text reaches the LCD, and
@@ -22,10 +22,14 @@
  *                                           orientation), as a PNG, for tests
  *
  * Options:
- * -d DIR (default /usr/share/tsx/splash) holds splash-WxH.ppm (binary PPM,
- * one per panel size, and the tool centers another size on black) and
- * font-16.psf and font-24.psf (PSF1 or PSF2 console fonts, 24 on screens at
- * least 720 lines high).
+ * -d DIR (default /usr/share/tsx/splash) holds the images splash-WxH.ppm
+ * (binary PPM, one for each panel size) and the fonts font-16.psf and
+ * font-24.psf (PSF1 or PSF2 console fonts, 24 on screens at least 720 lines
+ * high). The tool reads the file names in DIR. It has no list of sizes. It
+ * draws the image with the largest area that fits in the frame, centered on
+ * black. If two images have the same area, it draws the wider one. An image
+ * of the exact frame size always wins. The tool skips a file that is not a
+ * valid PPM. If no image fits, the frame stays black.
  * -f FB (default /dev/fb0).
  * -p -1 means no bar.
  * -g WxH sets the framebuffer size for "png", "fbpng" and "size" without
@@ -34,11 +38,12 @@
  * portrait-flipped. The default is the name in /etc/tsx/orientation (env
  * TSX_ORIENTATION_FILE), else landscape (docs/rootfs.md "Orientation").
  *
- * The tool composes the frame upright for the viewer (800x1280 on the 1280x800
- * LCD in portrait, from splash-800x1280.ppm). It turns the frame onto the
- * framebuffer by ROTATE quarter turns clockwise (portrait 3, portrait-flipped
- * 1, landscape-flipped 2, the table of tsx-orientation). "png" writes the
- * upright frame, because the compositor turns its output itself.
+ * The tool composes the frame upright for the viewer (for example 800x1280
+ * on a 1280x800 LCD in portrait, from splash-800x1280.ppm). It turns the
+ * frame onto the framebuffer by ROTATE quarter turns clockwise (portrait 3,
+ * portrait-flipped 1, landscape-flipped 2, the table of tsx-orientation).
+ * "png" writes the upright frame, because the compositor turns its output
+ * itself.
  * An LCD that is mounted turned in its housing (a portrait LCD in a landscape
  * panel) adds its mounting: the quarter turns clockwise of fbcon=rotate:N on
  * the kernel command line (the number that turns the text console upright).
@@ -404,20 +409,52 @@ static int png_write(const char *path, const uint8_t *img, int iw, int ih)
 	return 0;
 }
 
+struct size { int w, h; };
+
+/* True if image size a comes before b: the larger area, then the larger width. */
+static int ranks_before(const struct size *a, const struct size *b)
+{
+	long long aa = (long long)a->w * a->h, ab = (long long)b->w * b->h;
+	return aa != ab ? aa > ab : a->w > b->w;
+}
+
+/* Find the next image in the splash folder. Only a file named exactly
+ * splash-WxH.ppm counts (W and H in decimal, no leading zero), and only if
+ * it fits in the frame. Return the best one that ranks after "prev" (NULL:
+ * the best of all) in *out. Return 0 if there is none. */
+static int next_image(const struct size *prev, struct size *out)
+{
+	DIR *d = opendir(dir);
+	struct dirent *e;
+	int found = 0;
+	if (!d) return 0;
+	while ((e = readdir(d))) {
+		struct size s;
+		char name[64];
+		if (sscanf(e->d_name, "splash-%dx%d.ppm", &s.w, &s.h) != 2 || s.w < 1 || s.h < 1) continue;
+		snprintf(name, sizeof name, "splash-%dx%d.ppm", s.w, s.h);
+		if (strcmp(name, e->d_name)) continue;
+		if (s.w > W || s.h > H) continue;
+		if (prev && !ranks_before(prev, &s)) continue;
+		if (!found || ranks_before(&s, out)) { *out = s; found = 1; }
+	}
+	closedir(d);
+	return found;
+}
+
 static void compose(const char *status, int pct)
 {
+	struct size img, prev = { 0, 0 };
+	int have_prev = 0;
 	char path[512];
 	rgb = calloc((size_t)W * H, 3);
 	if (!rgb) die("calloc");
-	snprintf(path, sizeof path, "%s/splash-%dx%d.ppm", dir, W, H);
-	if (ppm_blit(path)) {
-		/* Another panel size: use the largest image that fits, centered. */
-		static const int sz[][2] = { { 1280, 800 }, { 800, 1280 }, { 1024, 600 }, { 600, 1024 } };
-		for (unsigned i = 0; i < sizeof sz / sizeof sz[0]; i++) {
-			if (sz[i][0] > W || sz[i][1] > H) continue;
-			snprintf(path, sizeof path, "%s/splash-%dx%d.ppm", dir, sz[i][0], sz[i][1]);
-			if (!ppm_blit(path)) break;
-		}
+	/* Try the images from the largest one that fits. Skip an invalid file. */
+	while (next_image(have_prev ? &prev : NULL, &img)) {
+		snprintf(path, sizeof path, "%s/splash-%dx%d.ppm", dir, img.w, img.h);
+		if (!ppm_blit(path)) break;
+		prev = img;
+		have_prev = 1;
 	}
 	draw_status(status, pct);
 }
