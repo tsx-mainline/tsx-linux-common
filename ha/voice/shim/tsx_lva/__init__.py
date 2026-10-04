@@ -240,7 +240,7 @@ def _patch_panel():
         ExecuteServiceRequest,
         SubscribeHomeassistantServicesRequest,
     )
-    from tsx_panel import bluetooth, camera, deviceinfo, plugins  # noqa: WPS433
+    from tsx_panel import bluetooth, deviceinfo, plugins  # noqa: WPS433
 
     deviceinfo.model()   # reads the board file once, before the server starts
     plugin_names = plugins.names()   # loads the plugins of esphome.d once (tsx_panel/plugins.py)
@@ -266,8 +266,6 @@ def _patch_panel():
             return
         if bluetooth.handle_message(self, msg):
             return
-        if camera.handle_message(self, msg):
-            return
         if plugins.handle_message(self, msg):
             return
         for out in orig_handle(self, msg):
@@ -284,7 +282,6 @@ def _patch_panel():
 
     def connection_lost(self, exc):
         bluetooth.PROXY.connection_lost(self)
-        camera.connection_lost(self)
         plugins.connection_lost(self)
         orig_lost(self, exc)
 

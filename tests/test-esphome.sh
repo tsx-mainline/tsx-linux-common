@@ -381,7 +381,7 @@ wait "$SLOTS_PID" && echo "OK: a restart of tsx-btscan: 0 slots while it is away
 # and no voice features. The voice satellite does not start. The entity
 # list is the same as on a panel with all parts (no entity goes away).
 echo "== government=1 (hw.conf): no Bluetooth proxy, no voice features, the same entities =="
-printf 'GOVERNMENT=1\nMIC=no\nBT=no\nCAMERA=no\nREASON=government=1 (TSW-760-NC): no microphone, no camera, no Bluetooth module\n' > "$F/run/tsx/hw-gov.conf"
+printf 'GOVERNMENT=1\nMIC=no\nBT=no\nREASON=government=1 (TSW-760-NC): no microphone, no camera, no Bluetooth module\n' > "$F/run/tsx/hw-gov.conf"
 GOV_PORT=$((API_PORT + 55))
 TSX_TEST_SERVER_ARGS=--no-zeroconf start_server standalone "$T/server-gov.log" "$GOV_PORT" Gov-Panel TSX_HA_API_KEY= \
 	TSX_BT_CONF="$F/run/tsx/bt-active.conf" TSX_HW_CONF="$F/run/tsx/hw-gov.conf"

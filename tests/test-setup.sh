@@ -471,7 +471,7 @@ print(json.dumps({
 	'ORIENTATION': 'portrait', 'AUTO_BRIGHTNESS': 'off', 'ALS_SCALE': '2.5',
 	'ROOT_PASSWORD': '$ROOTPW', 'SSH_AUTHORIZED_KEY': '$SSHKEY',
 	# fields that the user emptied
-	'MQTT_HOST': '', 'MQTT_PORT': '', 'MQTT_USER': '', 'MQTT_PASSWORD': '', 'BT_PROXY': 'off', 'CAMERA': 'snapshot',
+	'MQTT_HOST': '', 'MQTT_PORT': '', 'MQTT_USER': '', 'MQTT_PASSWORD': '', 'BT_PROXY': 'off',
 	'KERNEL_FLAVOR': '', 'BLANK_TIMEOUT': ''
 }))
 ")
@@ -484,7 +484,6 @@ grep -q '^AUTO_BRIGHTNESS="off"$' "$CONF" && grep -q '^ALS_SCALE="2.5"$' "$CONF"
 grep -q '^ALS_AUTO="0"$' "$T/prefix/run/tsx/als.panel" "$RUNDIR/als.panel" 2>/dev/null && ok "apply wrote ALS_AUTO to als.panel" || echo "  (als.panel not checked: apply run dir differs)"
 [ "$(cat "$T/prefix/etc/tsx/orientation" 2>/dev/null)" = portrait ] && ok "apply left /etc/tsx/orientation (portrait) in the prefix" || bad "no orientation file after apply"
 grep -q '^BT_PROXY="off"$' "$CONF" && ok "BT_PROXY landed in panel.conf" || bad "BT_PROXY missing from panel.conf"
-grep -q '^CAMERA="snapshot"$' "$CONF" && ok "CAMERA landed in panel.conf" || bad "CAMERA missing from panel.conf"
 grep -q '^HA_TOKEN=' "$CONF" && ok "HA_TOKEN was written" || bad "HA_TOKEN missing"
 grep -Eq '^MQTT_(HOST|PORT|USER)=' "$CONF" && bad "cleared MQTT fields were written as KEY=\"\" instead of removed" || ok "cleared MQTT host/port/user are removed from panel.conf"
 [ "$(TSX_CONF="$CONF" busybox sh "$TSXCONFIG" get MQTT_PASSWORD)" = "$PAYLOAD" ] && ok "an empty MQTT password field keeps the stored one (leave blank to keep)" || bad "an empty MQTT password field changed the stored password"
@@ -586,24 +585,24 @@ R2=$(rev_now); F2=$(body_of "$(call GET /setup/api/state)" | jget fields)
 [ "$F1" = "$F2" ] && [ "$R" != "$R2" ] && ok "a new MQTT_PASSWORD (masked in the state) gives a new revision" || bad "secret change: same fields $([ "$F1" = "$F2" ] && echo yes), $R / $R2"
 
 echo "== the plugin of tsx-ha: only the changed fields =="
-tcfg set VOICE off; tcfg set CAMERA snapshot; tcfg set BT_PROXY on; tcfg set MQTT_HOST mq.example; tcfg set MQTT_PORT 1884
+tcfg set VOICE off; tcfg set BT_PROXY on; tcfg set MQTT_HOST mq.example; tcfg set MQTT_PORT 1884
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget fields.VOICE <<<"$body")" = off ] && ok "the state reports VOICE=off (the page unchecks the box)" || bad "state VOICE: $(jget fields.VOICE <<<"$body")"
 R=$(jget revision <<<"$body"); cp "$CONF" "$T/conf.before"; M=$(hlog_mark)
 out=$(submit '{"VOICE":"on"}' "$R"); body=$(body_of "$out")
 [ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "['VOICE']" ] && grep -q '^VOICE="on"$' "$CONF" \
 	&& [ "$(grep -v '^VOICE=' "$T/conf.before")" = "$(conf_except VOICE)" ] \
-	&& ok "a save of the voice switch writes VOICE only (CAMERA, BT_PROXY, WAKE_WORD, MQTT stay)" || bad "VOICE save: $out / $(diff "$T/conf.before" "$CONF")"
+	&& ok "a save of the voice switch writes VOICE only (BT_PROXY, WAKE_WORD, MQTT stay)" || bad "VOICE save: $out / $(diff "$T/conf.before" "$CONF")"
 [ "$(hlog_writes "$M")" = "set VOICE apply" ] && ok "the helper got set VOICE and apply only" || bad "helper writes: $(hlog_writes "$M")"
 R=$(rev_now); cp "$CONF" "$T/conf.before"
 out=$(submit '{"VOICE":"off"}' "$R")
 [ "$(status_of "$out")" = 200 ] && grep -q '^VOICE="off"$' "$CONF" && [ "$(grep -v '^VOICE=' "$T/conf.before")" = "$(conf_except VOICE)" ] \
 	&& ok "a save of the switch turned off writes VOICE=off only" || bad "VOICE off save: $out"
 R=$(rev_now); cp "$CONF" "$T/conf.before"
-out=$(submit '{"CAMERA":"live","MQTT_PORT":""}' "$R"); body=$(body_of "$out")
-[ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "['CAMERA', 'MQTT_PORT']" ] && grep -q '^CAMERA="live"$' "$CONF" && ! grep -q '^MQTT_PORT=' "$CONF" \
-	&& [ "$(grep -Ev '^(CAMERA|MQTT_PORT)=' "$T/conf.before")" = "$(conf_except CAMERA MQTT_PORT)" ] \
-	&& ok "CAMERA set and a cleared MQTT_PORT removed, MQTT_HOST stays" || bad "CAMERA and MQTT_PORT save: $out"
+out=$(submit '{"WAKE_WORD":"hey_jarvis","MQTT_PORT":""}' "$R"); body=$(body_of "$out")
+[ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "['MQTT_PORT', 'WAKE_WORD']" ] && grep -q '^WAKE_WORD="hey_jarvis"$' "$CONF" && ! grep -q '^MQTT_PORT=' "$CONF" \
+	&& [ "$(grep -Ev '^(WAKE_WORD|MQTT_PORT)=' "$T/conf.before")" = "$(conf_except WAKE_WORD MQTT_PORT)" ] \
+	&& ok "WAKE_WORD set and a cleared MQTT_PORT removed, MQTT_HOST stays" || bad "WAKE_WORD and MQTT_PORT save: $out"
 NEWTOK="zyxwvutsrqponmlkjihgfedcba9876543210ZYXWVU"
 R=$(rev_now); cp "$CONF" "$T/conf.before"
 out=$(submit "{\"HA_TOKEN\":\"$NEWTOK\"}" "$R"); body=$(body_of "$out")
@@ -618,12 +617,12 @@ out=$(submit '{"HA_LOGIN_METHOD":"token"}')
 out=$(submit "{\"HA_LOGIN_METHOD\":\"token\",\"HA_TOKEN\":\"$TOKEN_VAL\"}")
 [ "$(status_of "$out")" = 200 ] && grep -q '^HA_LOGIN_METHOD="token"$' "$CONF" && ok "the token method with a token is saved" || bad "token save: $out"
 R=$(rev_now)
-tcfg set CAMERA snapshot   # a change elsewhere
+tcfg set WAKE_WORD okay_nabu   # a change elsewhere
 cp "$CONF" "$T/conf.before"
 out=$(submit '{"VOICE":"on"}' "$R")
 [ "$(status_of "$out")" = 409 ] && cmp -s "$T/conf.before" "$CONF" && ok "a plugin field with an old revision is refused too, nothing changes" || bad "stale plugin save: $out"
 # back to the values that the later sections expect
-tcfg set VOICE on; tcfg set BT_PROXY off; tcfg set CAMERA snapshot; tcfg unset MQTT_HOST
+tcfg set VOICE on; tcfg set BT_PROXY off; tcfg unset MQTT_HOST
 
 echo "== the page script: the form is filled once, the refresh reads only the status =="
 out=$(call GET /setup); page=$(body_of "$out")
@@ -711,27 +710,25 @@ if [ -n "$LANIP" ]; then
 fi
 
 # ---- 5b. a panel without a microphone or a Bluetooth module (hw.conf, REASON)
-echo "== no microphone, no Bluetooth module, no camera (hw.conf): the page says why =="
+echo "== no microphone, no Bluetooth module (hw.conf): the page says why =="
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable <<<"$body")" = "{}" ] && ok "no hw.conf: nothing is marked not available" || bad "no hw.conf: unavailable = $(jget unavailable <<<"$body")"
-printf 'MIC=no\nBT=no\nCAMERA=no\nREASON=FAKE-100 NC variant\n' > "$RUNDIR/hw.conf"
+printf 'MIC=no\nBT=no\nREASON=FAKE-100 NC variant\n' > "$RUNDIR/hw.conf"
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.VOICE <<<"$body")" = "no microphone on this panel (FAKE-100 NC variant)" ] \
 	&& [ "$(jget unavailable.BT_PROXY <<<"$body")" = "no Bluetooth module on this panel (FAKE-100 NC variant)" ] \
-	&& [ "$(jget unavailable.CAMERA <<<"$body")" = "no camera on this panel (FAKE-100 NC variant)" ] \
-	&& ok "state: VOICE, BT_PROXY and CAMERA not available, with the REASON text of hw.conf" || bad "state unavailable: $(jget unavailable <<<"$body")"
+	&& ok "state: VOICE and BT_PROXY not available, with the REASON text of hw.conf" || bad "state unavailable: $(jget unavailable <<<"$body")"
 out=$(call GET /setup); page=$(body_of "$out")
 case "$page" in *'id="hw-hint"'*"function applyUnavailable"*) ok "the page has the not-available hint and disables the voice switch";; *) bad "the page has no not-available hint";; esac
-GSUBMIT='{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","VOICE":"off","WAKE_WORD":"hey_jarvis","BT_PROXY":"on","CAMERA":"live"}'
+GSUBMIT='{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD":"token","VOICE":"off","WAKE_WORD":"hey_jarvis","BT_PROXY":"on"}'
 out=$(submit "$GSUBMIT")
 [ "$(status_of "$out")" = 200 ] && grep -q '^VOICE="on"$' "$CONF" && grep -q '^WAKE_WORD="okay_nabu"$' "$CONF" \
-	&& grep -q '^BT_PROXY="off"$' "$CONF" && grep -q '^CAMERA="snapshot"$' "$CONF" \
-	&& ok "a submit leaves VOICE, WAKE_WORD, BT_PROXY and CAMERA as they are (a panel.conf from another panel keeps them)" \
-	|| bad "submit on a panel without the parts: $(status_of "$out"), $(grep -E '^(VOICE|WAKE_WORD|BT_PROXY|CAMERA)=' "$CONF" | tr '\n' ' ')"
+	&& grep -q '^BT_PROXY="off"$' "$CONF" \
+	&& ok "a submit leaves VOICE, WAKE_WORD and BT_PROXY as they are (a panel.conf from another panel keeps them)" \
+	|| bad "submit on a panel without the parts: $(status_of "$out"), $(grep -E '^(VOICE|WAKE_WORD|BT_PROXY)=' "$CONF" | tr '\n' ' ')"
 case "$page" in *'name="BT_PROXY"'*'id="bt-wrap"'*|*'id="bt-wrap"'*'name="BT_PROXY"'*) ok "the page has the Bluetooth proxy field and hides it when unavailable";; *) bad "the page has no Bluetooth proxy field";; esac
 case "$page" in *'(default: off)'*) ok "the Bluetooth proxy field names the default of the board (off)";; *) bad "the Bluetooth proxy field does not name the board default";; esac
-case "$page" in *'id="camera-wrap"'*'name="CAMERA"'*'value="off"'*'value="snapshot"'*'value="live"'*) ok "the page has the camera field with the three modes, and hides it when unavailable";; *) bad "the page has no camera field with off, snapshot and live";; esac
-case "$page" in *'if (el.disabled) return;'*) case "$page" in *'u.CAMERA'*'$("f-camera").disabled = true'*) ok "the page sends no CAMERA when the panel has no camera (a disabled field is not sent)";; *) bad "the page does not disable CAMERA on a panel without a camera";; esac;; *) bad "the page sends disabled fields";; esac
+case "$page" in *'if (el.disabled) return;'*) ok "the page sends no disabled field";; *) bad "the page sends disabled fields";; esac
 rm -f "$RUNDIR/hw.conf"
 
 echo "== a panel with no REASON in hw.conf, and a missing voice service =="
@@ -774,7 +771,7 @@ case "$page" in *'id="presence-wrap"'*'name="PRESENCE_WAKE"'*'name="PRESENCE_DIS
 printf 'MIC=yes\nBT=yes\nPRESENCE=yes\n' > "$RUNDIR/hw.conf"
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.PRESENCE_WAKE <<<"$body")" = "" ] && ok "PRESENCE=yes: the presence fields are available" || bad "PRESENCE=yes: unavailable = $(jget unavailable <<<"$body")"
-printf 'MIC=yes\nBT=yes\nCAMERA=yes\nPRESENCE=no\nREASON=\n' > "$RUNDIR/hw.conf"
+printf 'MIC=yes\nBT=yes\nPRESENCE=no\nREASON=\n' > "$RUNDIR/hw.conf"
 TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set PRESENCE_WAKE on >/dev/null 2>&1; TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set PRESENCE_HOLD_S 45 >/dev/null 2>&1
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.PRESENCE_WAKE <<<"$body")" = "no distance sensor on this panel" ] && ok "PRESENCE=no: the presence fields are not available, with the reason" || bad "PRESENCE=no: unavailable = $(jget unavailable <<<"$body")"
@@ -821,7 +818,7 @@ out=$(call GET /setup); page=$(body_of "$out")
 for want in 'name="KIOSK_URL"' 'name="PANEL_NAME"' 'name="TZ_NAME"' 'name="ORIENTATION"' 'name="BLANK_TIMEOUT"' 'name="AUTO_BRIGHTNESS"' 'name="ALS_SCALE"' 'name="ROOT_PASSWORD"' 'name="SSH_AUTHORIZED_KEY"' 'name="KERNEL_FLAVOR"' '<h2>Network</h2>' '<h2>Display</h2>' '<summary>Updates</summary>'; do
 	case "$page" in *"$want"*) ok "base page has $want";; *) bad "base page lacks $want";; esac
 done
-for nope in HA_LOGIN_METHOD HA_TOKEN '"VOICE"' '"CAMERA"' WAKE_WORD MQTT_ 'Home Assistant' homeassistant 'Voice assistant' 'discover' 'check-url' '@@' 'SLOT'; do
+for nope in HA_LOGIN_METHOD HA_TOKEN '"VOICE"' WAKE_WORD MQTT_ 'Home Assistant' homeassistant 'Voice assistant' 'discover' 'check-url' '@@' 'SLOT'; do
 	case "$page" in *"$nope"*) bad "base page has $nope";; *) ok "base page has no $nope";; esac
 done
 case "$page" in *'id="submit-btn" type="submit">Save</button>'*) ok "base page: the button says Save";; *) bad "base page: button text";; esac

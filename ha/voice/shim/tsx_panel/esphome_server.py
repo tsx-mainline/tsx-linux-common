@@ -44,7 +44,7 @@ from linux_voice_assistant.api_server import APIServer
 from linux_voice_assistant.util import get_default_interface, get_default_ipv4
 from linux_voice_assistant.zeroconf import HomeAssistantZeroconf
 
-from . import bluetooth, camera, deviceinfo, hw, naming, plugins, security
+from . import bluetooth, deviceinfo, hw, naming, plugins, security
 from .backend import PanelBackend
 from .device import build_entities, poll
 
@@ -116,7 +116,6 @@ class PanelAPIServer(APIServer):
     def connection_lost(self, exc) -> None:
         super().connection_lost(exc)
         bluetooth.PROXY.connection_lost(self)
-        camera.connection_lost(self)
         plugins.connection_lost(self)
         if self in PanelAPIServer.connections:
             PanelAPIServer.connections.remove(self)
@@ -157,8 +156,6 @@ class PanelAPIServer(APIServer):
         if isinstance(msg, SubscribeVoiceAssistantRequest):
             return    # Home Assistant subscribes for the assist satellite. No voice runs here.
         if bluetooth.handle_message(self, msg):
-            return
-        if camera.handle_message(self, msg):
             return
         if plugins.handle_message(self, msg):
             return

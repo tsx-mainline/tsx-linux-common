@@ -4,7 +4,8 @@
 # unique id does not decide. So an entity must keep its key:
 #  - in tsx-esphome (VOICE=off) and in the voice satellite (VOICE=on)
 #  - with each set of optional entities (LED bar, key LEDs, sensors, front
-#    keys, camera modes, Bluetooth proxy on or off) and in each order
+#    keys, the entities of a plugin of esphome.d, Bluetooth proxy on or off)
+#    and in each order
 #  - for the own entities of the satellite, also when a new version of
 #    linux-voice-assistant adds entities or changes their order
 # No two known entities can have the same key, and the key values never change
@@ -14,7 +15,7 @@
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/run" "$T/state" "$T/stub/aioesphomeapi" "$T/stub/google/protobuf" "$T/stub/linux_voice_assistant"
+mkdir -p "$T/run" "$T/state" "$T/pd/on" "$T/pd/off" "$T/stub/aioesphomeapi" "$T/stub/google/protobuf" "$T/stub/linux_voice_assistant"
 export PYTHONDONTWRITEBYTECODE=1
 # the stand-ins: every protobuf name is a class that keeps its keyword arguments
 : > "$T/stub/aioesphomeapi/__init__.py"
@@ -108,16 +109,20 @@ class ServerState:
     def broadcast(self, msgs):
         pass
 PY
+# the plugin folders: the fake plugin of the made-up board, and an empty folder
+cp "$HERE/tests/boards/fake/esphome.d/fakeent.py" "$T/pd/on/"
+chmod 755 "$T/pd" "$T/pd/on" "$T/pd/off"; chmod 644 "$T/pd/on/fakeent.py"
 python3 - "$HERE/ha/voice/shim" "$T" "$HERE/tests/boards/fake/buttons-board.conf" <<'PY'
 import itertools, logging, os, random, sys
 shim, t, board_keys = sys.argv[1:4]
 sys.path[:0] = [t + "/stub", shim]
 os.environ.update(TSX_RUN_DIR=t + "/run", TSX_STATE_DIR=t + "/state", TSX_HA_TRANSPORT="esphome",
-                  TSX_PANELCTL_BIN="/nonexistent")
+                  TSX_PANELCTL_BIN="/nonexistent", TSX_ESPHOME_PLUGIN_DIR=t + "/pd/off",
+                  TSX_PLUGIN_OWNER_UID=str(os.getuid()))
 logging.basicConfig(level=logging.ERROR)
 from aioesphomeapi import api_pb2 as pb
 from linux_voice_assistant import satellite as lva
-from tsx_panel import backend as backend_mod, bluetooth, camera, device as dev, keys
+from tsx_panel import backend as backend_mod, bluetooth, device as dev, keys, plugins
 
 fails = 0
 def check(name, got, want):
@@ -147,7 +152,7 @@ check("a hash below MIN_KEY is not a key", (first >= keys.MIN_KEY, first == keys
 k = keys.Keys(taken=[keys.stable_key("screen")])
 check("a taken key moves to the hash of <text>#1", k("screen"), keys.fnv1a32("tsx:screen#1"))
 check("the same identity keeps its key", k("screen"), keys.fnv1a32("tsx:screen#1"))
-idents = ["screen", "backlight", "volume", "camera", "key_prog2", "action:ledbar_clear"]
+idents = ["screen", "backlight", "volume", "fake_frame", "key_prog2", "action:ledbar_clear"]
 orders = set()
 for seed in range(20):
     random.Random(seed).shuffle(idents)
@@ -176,26 +181,11 @@ class Backend:
                   "get_update_status": {}, "poll_key_event": None, "poll_nfc_tag": None}
         return lambda *args, **kwargs: values.get(name, 0)
 
-class Camera:
-    """camera.service() in a mode: off, live or snapshot."""
-    def __init__(self, mode):
-        self.mode, self.key = mode, None
-    def enabled(self):
-        return self.mode != "off"
-    def why_off(self):
-        return "" if self.enabled() else "off in the test"
-    def press(self):
-        pass
-    def last_snapshot_time(self):
-        return None
-    def request(self, *args, **kwargs):
-        pass
-    def connection_lost(self, conn):
-        pass
-
-def set_camera(mode):
-    svc = Camera(mode)
-    camera.service = lambda: svc
+def set_plugin(mode):
+    """The plugins of esphome.d: "on" is the fake plugin (three entities), "off" is
+    an empty folder. The next call of plugins.loaded() loads the folder again."""
+    os.environ["TSX_ESPHOME_PLUGIN_DIR"] = t + "/pd/" + mode
+    plugins.reset()
 
 def set_bt(on):
     open(t + "/run/hw.conf", "w").write("BT=yes\n" if on else "BT=no\n")
@@ -215,9 +205,9 @@ def check_unique(out, ident):
     if ident in out:
         check("one entity per object id: " + ident, True, False)
 
-def standalone(parts, mode="snapshot", key_names=KEY_NAMES):
+def standalone(parts, mode="on", key_names=KEY_NAMES):
     Backend.parts, Backend.keys = dict(parts), key_names
-    set_camera(mode)
+    set_plugin(mode)
     return dev.build_entities(None, Backend())
 
 # ---- standalone: all parts on, the reference ---------------------------------------
@@ -244,7 +234,7 @@ def part_sets():
 
 moved, sets = {}, 0
 for parts in part_sets():
-    for mode in ("off", "live", "snapshot"):
+    for mode in ("off", "on"):
         for names in (KEY_NAMES, [], KEY_NAMES[::-1]):
             sets += 1
             for ident, key in listed(standalone(parts, mode, names).entities).items():
@@ -280,9 +270,9 @@ check("satellite alone (HA_TRANSPORT=mqtt): the fixed keys", {e.object_id: e.key
       {oid: keys.stable_key(oid, keys.SATELLITE) for _, oid in lva.LVA_ENTITIES})
 tsx_lva._patch_panel()
 
-def voice(parts, mode="snapshot", lva_entities=lva.LVA_ENTITIES, lights=(), button=False):
+def voice(parts, mode="on", lva_entities=lva.LVA_ENTITIES, lights=(), button=False):
     Backend.parts, Backend.keys = dict(parts), KEY_NAMES
-    set_camera(mode)
+    set_plugin(mode)
     state = lva.ServerState(lva_entities)
     state.pending_lights, state.pending_button = list(lights), button
     sat = lva.VoiceSatelliteProtocol(state)
@@ -325,7 +315,7 @@ check("another satellite version: the new entity has its fixed key", got2["new_t
 
 moved = {}
 for parts in part_sets():
-    for mode in ("off", "live", "snapshot"):
+    for mode in ("off", "on"):
         for bt in (False, True):
             set_bt(bt)
             for ident, key in voice_list(voice(parts, mode)[1]).items():

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Host test of the texts about a missing part (no microphone, no Bluetooth
-# module, no camera) outside tsx-config and the setup page. They end with the
+# module) outside tsx-config and the setup page. They end with the
 # REASON text of hw.conf in brackets. A panel with no REASON gets the short
 # text with no brackets. The files are:
 #   - ha/usr/local/bin/tsx-voice (status)

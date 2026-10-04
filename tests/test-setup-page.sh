@@ -226,7 +226,7 @@ function stateWith(fields, extra) {
 }
 const STORED = {
   KIOSK_URL: "https://ha.example.org", PANEL_NAME: "panel-b", TZ_NAME: "America/Denver", VOICE: "off",
-  WAKE_WORD: "okay_nabu", CAMERA: "snapshot", BT_PROXY: "on", BLANK_TIMEOUT: "300", KERNEL_FLAVOR: "stable",
+  WAKE_WORD: "okay_nabu", BT_PROXY: "on", BLANK_TIMEOUT: "300", KERNEL_FLAVOR: "stable",
   HA_LOGIN_METHOD: "token", HA_TOKEN: null, HA_TOKEN__set: true, MQTT_HOST: "mq.example",
 };
 
@@ -242,7 +242,7 @@ const STORED = {
   ok($("f-blank").value === "300", "the blank timeout shows (300)");
   ok($("f-orient").value === "landscape", "no ORIENTATION: landscape shows");
   ok($("f-kernel").value === "stable" && $("f-tz").value === "America/Denver", "the kernel flavor and the time zone show");
-  ok($("f-camera").value === "snapshot" && $("f-btproxy").value === "on", "CAMERA and BT_PROXY show");
+  ok($("f-btproxy").value === "on", "BT_PROXY shows");
   ok($("f-mqtt-host").value === "mq.example" && $("f-mqtt-port").value === "", "MQTT host shows, the empty MQTT port is empty");
   ok(p.$("token-wrap").style.display === "block" && p.server && document_checked(p, "token"), "the token login method is checked");
 
@@ -307,10 +307,10 @@ const STORED = {
   ok(same(p.lastSubmit().fields, {}), "no change: no field is sent");
 
   console.log("== a setting that the panel cannot use is never sent ==");
-  p = load({ state: stateWith(STORED, { unavailable: { CAMERA: "no camera on this panel", VOICE: "no microphone on this panel", AUTO_BRIGHTNESS: "no ambient light sensor on this panel" } }), status: {} });
+  p = load({ state: stateWith(STORED, { unavailable: { VOICE: "no microphone on this panel", AUTO_BRIGHTNESS: "no ambient light sensor on this panel" } }), status: {} });
   await flush();
-  ok(p.$("f-camera").disabled && p.$("f-voice").disabled && p.$("f-wake").disabled && p.$("f-autobri").disabled, "CAMERA, VOICE, WAKE_WORD and AUTO_BRIGHTNESS are disabled");
-  p.$("f-camera").value = "live"; p.$("f-wake").value = "hey_jarvis"; p.$("f-autobri").value = "off";
+  ok(p.$("f-voice").disabled && p.$("f-wake").disabled && p.$("f-autobri").disabled, "VOICE, WAKE_WORD and AUTO_BRIGHTNESS are disabled");
+  p.$("f-wake").value = "hey_jarvis"; p.$("f-autobri").value = "off";
   p.submit(); await flush();
   ok(same(p.lastSubmit().fields, {}), "changed values in disabled fields are not sent: " + JSON.stringify(p.lastSubmit().fields));
 
@@ -318,7 +318,7 @@ const STORED = {
   p = load({ state: stateWith({}, { configured: false, revision: "rev-new" }), status: {} });
   await flush();
   ok(p.$("f-url").value === "" && document_checked(p, "form"), "empty URL, the login form is checked");
-  ok(p.$("f-camera").value === "off" && p.$("f-btproxy").value === "", "CAMERA shows off, BT_PROXY the board default");
+  ok(p.$("f-btproxy").value === "", "BT_PROXY shows the board default");
   p.$("f-url").value = "https://ha.example.org ";
   p.$("f-rootpw").value = "a-long-password";
   p.submit(); await flush();

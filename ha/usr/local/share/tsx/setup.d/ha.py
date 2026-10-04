@@ -10,13 +10,13 @@ adds these fields:
   * how the panel logs in (login form, long-lived token, trusted network)
   * the voice assistant and its wake word
   * the Bluetooth proxy (on, off or the default of the board)
-  * the camera (off, snapshot or live)
   * MQTT (broker, port, user, password)
 
 and these checks: the settings that this panel cannot use (no microphone, no
-voice service, no Bluetooth module, no camera), and the Home Assistant URL
-check. The page code of
-tsx-setupd never names Home Assistant, MQTT or voice.
+voice service, no Bluetooth module), and the Home Assistant URL check. A board
+can add more fields with its own plugin file in the same folder, for example
+a camera field. The page code of tsx-setupd never names Home Assistant, MQTT
+or voice.
 
 What a plugin gives to tsx-setupd (all names are optional except NAME):
 
@@ -74,14 +74,14 @@ def init(ctx):
     _ctx = ctx
 
 
-SIMPLE_KEYS = ["VOICE", "WAKE_WORD", "MQTT_HOST", "MQTT_PORT", "MQTT_USER", "MQTT_PASSWORD", "BT_PROXY", "CAMERA"]
+SIMPLE_KEYS = ["VOICE", "WAKE_WORD", "MQTT_HOST", "MQTT_PORT", "MQTT_USER", "MQTT_PASSWORD", "BT_PROXY"]
 # Empty = cleared. The page pre-fills these keys and sends one only when the
 # user changed it, so an empty one was cleared on purpose. MQTT_PASSWORD is
 # not one of them: the page never pre-fills it, and an empty field keeps it.
 # An empty BT_PROXY is the default of the board.
 CLEARABLE_BLANK = {"MQTT_HOST", "MQTT_PORT", "MQTT_USER", "BT_PROXY"}
 STATE_KEYS = SIMPLE_KEYS + ["HA_LOGIN_METHOD", "HA_TOKEN"]
-UNAVAILABLE_DROPS = {"VOICE": ("VOICE", "WAKE_WORD"), "BT_PROXY": ("BT_PROXY",), "CAMERA": ("CAMERA",)}
+UNAVAILABLE_DROPS = {"VOICE": ("VOICE", "WAKE_WORD"), "BT_PROXY": ("BT_PROXY",)}
 
 TEXT = {
     "url_label": "Home Assistant URL",
@@ -106,8 +106,6 @@ def unavailable(hw):
         out["VOICE"] = "no microphone on this panel" + tail
     if hw.get("BT") == "no":
         out["BT_PROXY"] = "no Bluetooth module on this panel" + tail
-    if hw.get("CAMERA") == "no":
-        out["CAMERA"] = "no camera on this panel" + tail
     return out
 
 
@@ -211,17 +209,6 @@ HTML = {
         <div class="hint">Home Assistant uses the Bluetooth controller of the panel to scan for devices and to connect to them.</div>
       </div>
     </details>
-    <details id="camera-wrap"><summary>Camera</summary>
-      <div class="card">
-        <label for="f-camera">Camera for Home Assistant</label>
-        <select id="f-camera" name="CAMERA">
-          <option value="off">Off (default)</option>
-          <option value="snapshot">Snapshot: one image for each press of a button in Home Assistant</option>
-          <option value="live">Live: a live image while Home Assistant shows it</option>
-        </select>
-        <div class="hint">Off: the camera stays closed and Home Assistant has no camera. Only this panel can change this setting.</div>
-      </div>
-    </details>
 """,
 }
 _d = _bt_default()
@@ -233,7 +220,6 @@ JS = {
     $("wake-wrap").style.display = $("f-voice").checked ? "block" : "none";
     $("f-wake").value = fields.WAKE_WORD || "";
     $("f-btproxy").value = fields.BT_PROXY || "";
-    $("f-camera").value = fields.CAMERA === "on" ? "live" : (fields.CAMERA || "off");
     $("f-mqtt-host").value = fields.MQTT_HOST || "";
     $("f-mqtt-port").value = fields.MQTT_PORT || "";
     $("f-mqtt-user").value = fields.MQTT_USER || "";
@@ -255,10 +241,6 @@ JS = {
     if (u.BT_PROXY) {
       $("f-btproxy").disabled = true; $("bt-wrap").style.display = "none";
       notes.push("Bluetooth proxy: not available, " + u.BT_PROXY + ".");
-    }
-    if (u.CAMERA) {
-      $("f-camera").disabled = true; $("camera-wrap").style.display = "none";
-      notes.push("Camera: not available, " + u.CAMERA + ".");
     }
     if (notes.length) { $("hw-hint").textContent = notes.join(" "); $("hw-hint").style.display = "block"; }
 """,
