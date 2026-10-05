@@ -170,7 +170,7 @@ def _patch_panel():
     )
     from linux_voice_assistant.satellite import VoiceSatelliteProtocol  # noqa: WPS433
     from tsx_panel import device as panel_device  # noqa: WPS433
-    from tsx_panel import keys  # noqa: WPS433
+    from tsx_panel import keys, reconnect  # noqa: WPS433
     from tsx_panel.backend import PanelBackend  # noqa: WPS433
 
     poll_started = threading.Event()
@@ -181,10 +181,30 @@ def _patch_panel():
             if msgs and getattr(conn, "_tsx_services", False):
                 conn.send_messages(msgs)
 
+    def _entities_changed(state, removed, added):
+        # The LED bar came or went (device.sync_ledbar). state.entities is the
+        # list that the satellite sends to Home Assistant. Change it in the
+        # thread of the connections, then ask the clients to reconnect:
+        # Home Assistant reads the list only when it connects.
+        def apply():
+            for entity in removed:
+                if entity in state.entities:
+                    state.entities.remove(entity)
+            state.entities.extend(added)
+
+        conns = list(state.connections)
+        loop = next((c._loop for c in conns if getattr(c, "_loop", None) is not None), None)  # pylint: disable=protected-access
+        if loop is not None:
+            loop.call_soon_threadsafe(apply)
+        else:
+            apply()
+        reconnect.ask(conns)
+
     def _poll_loop(state, device):
         while True:
             try:
-                panel_device.poll(device, state.broadcast, lambda msgs: _broadcast_actions(state, msgs))
+                panel_device.poll(device, state.broadcast, lambda msgs: _broadcast_actions(state, msgs),
+                                  lambda removed, added: _entities_changed(state, removed, added))
             except Exception:  # noqa: BLE001 - one bad read must not kill the loop
                 _LOGGER.warning("tsx_panel: poll failed", exc_info=True)
             time.sleep(panel_device.POLL_INTERVAL)
@@ -259,6 +279,8 @@ def _patch_panel():
                 if msg.key in getattr(entity, "service_keys", ()):
                     yield from entity.handle_message(msg)
             return
+        if reconnect.handle_response(self, msg):
+            return   # the answer of a client to the request to reconnect (tsx_panel/reconnect.py)
         if isinstance(msg, SubscribeHomeassistantServicesRequest):
             # Service calls for Home Assistant (a scanned NFC tag) go only to
             # the clients that asked for them. No reply.

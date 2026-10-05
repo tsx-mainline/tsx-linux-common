@@ -44,7 +44,7 @@ from linux_voice_assistant.api_server import APIServer
 from linux_voice_assistant.util import get_default_interface, get_default_ipv4
 from linux_voice_assistant.zeroconf import HomeAssistantZeroconf
 
-from . import bluetooth, deviceinfo, hw, naming, plugins, security
+from . import bluetooth, deviceinfo, hw, naming, plugins, reconnect, security
 from .backend import PanelBackend
 from .device import build_entities, poll
 
@@ -123,6 +123,13 @@ class PanelAPIServer(APIServer):
                          "encrypted" if security.encryption_enabled() else "plaintext")
 
     @classmethod
+    def entities_changed(cls, _removed, _added) -> None:
+        """The entity list of the device changed (device.sync_ledbar replaced
+        device.entities). Home Assistant reads the list when it connects, so
+        the clients must reconnect."""
+        reconnect.ask(cls.connections)
+
+    @classmethod
     def broadcast_actions(cls, msgs: Iterable[message.Message]) -> None:
         """Service calls and events for Home Assistant (a scanned NFC tag),
         only to the clients that subscribed to them."""
@@ -153,6 +160,8 @@ class PanelAPIServer(APIServer):
                 voice_assistant_feature_flags=voice_feature_flags(),
             )))
             return
+        if reconnect.handle_response(self, msg):
+            return    # the answer of a client to the request to reconnect
         if isinstance(msg, SubscribeVoiceAssistantRequest):
             return    # Home Assistant subscribes for the assist satellite. No voice runs here.
         if bluetooth.handle_message(self, msg):
@@ -184,7 +193,7 @@ class PanelAPIServer(APIServer):
 def _poll_loop(device, interval: float) -> None:
     while True:
         try:
-            poll(device, PanelAPIServer.broadcast, PanelAPIServer.broadcast_actions)
+            poll(device, PanelAPIServer.broadcast, PanelAPIServer.broadcast_actions, PanelAPIServer.entities_changed)
         except Exception:  # noqa: BLE001 - one bad read must not kill the loop
             _LOGGER.warning("poll failed", exc_info=True)
         time.sleep(interval)

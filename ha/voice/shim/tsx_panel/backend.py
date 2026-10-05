@@ -98,6 +98,14 @@ def _read_first_line(path) -> Optional[str]:
         return None
 
 
+def _read_all(path) -> Optional[str]:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fobj:
+            return fobj.read(4096)
+    except OSError:
+        return None
+
+
 def _field(path, key) -> Optional[str]:
     """The rest of the first line "KEY ..." of a tsx-mqtt-style state file."""
     try:
@@ -210,8 +218,16 @@ class PanelBackend:
 
     # ---- LED bar -------------------------------------------------------------
     def ledbar_present(self) -> bool:
-        """The panel has a USB LED bar (tsx-panelctl has ledbar)."""
+        """A USB LED bar with its application is attached now (tsx-panelctl
+        has ledbar: tsx-ledbard says so, and hw.conf does not say LEDBAR=no)."""
         return self._panelctl("has", "ledbar")[0]
+
+    def ledbar_stamp(self) -> tuple:
+        """What tells a change of the LED bar: the attached file ledbar.usb and
+        the firmware file ledbar.fw of tsx-ledbard (two small reads). The
+        poll compares it with the last value, and asks tsx-panelctl only when
+        it changed."""
+        return (_read_first_line(self.run_dir / "ledbar.usb"), _read_all(self.run_dir / "ledbar.fw"))
 
     def _ledbar_fx_record(self):
         """The running effect of ledbar.state ("fx NAME N... [WORD]"): (name, [numbers]), else None."""

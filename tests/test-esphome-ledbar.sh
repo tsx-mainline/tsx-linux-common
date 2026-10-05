@@ -8,6 +8,14 @@
 # commands. A fake tsx-ledbar stands in for the bar: "fw" prints the file
 # $F/fw, and every other command goes to $F/cmds.log. A third server with
 # firmware 0.1.2 must list no actions and no zone effects.
+# The last parts follow the bar while the device runs (esphome-ledbar-live-check.py,
+# on both front ends): the check plays Home Assistant (one connection, it reads the
+# entity list again after each end of the connection) and tsx-ledbard (it writes
+# /run/tsx/ledbar.usb and ledbar.fw). A bar that is attached at the start, a bar that
+# goes and comes back, no bar at the start and a bar that comes later, a bar in the
+# bootloader, a new bar firmware, and LEDBAR=no. Each change of the entity list must
+# end the connection with an expected disconnect, and the device information must
+# stay the same.
 # The test needs the network only to fetch pinned, public packages (as
 # test-esphome.sh, also the system libmpv). The test compiles nothing.
 set -euo pipefail
@@ -119,6 +127,35 @@ echo "== tsx-esphome, firmware 0.1.2 =="
 start_server standalone "$T/server12.log" "$((API_PORT + 2))" Old-Panel TSX_TEST_FW="$F/fw12"
 wait_listening "$T/server12.log"
 "$T/venv/bin/python3" "$HERE/esphome-ledbar-check.py" "$((API_PORT + 2))" old-panel --no-leds || rc=1
+
+# live_run KIND LOG PORT NAME MODE [HW.CONF text]: a server with its own run dir (the state
+# files of the LED bar in it), and the same panelctl daemon for the commands
+live_run() {
+	local kind=$1 log=$2 port=$3 pname=$4 mode=$5 d="$F/live-$4/tsx"
+	rm -rf "$F/live-$4"; mkdir -p "$d"
+	cp "$F/run/tsx/ledbar.state" "$d/"
+	[ "$mode" = later ] || echo app > "$d/ledbar.usb"
+	[ -z "${6:-}" ] || printf '%b' "$6" > "$d/hw.conf"
+	start_server "$kind" "$log" "$port" "$pname" TSX_RUN_DIR="$d" TSX_PANELCTL="$F/run/tsx/panelctl"
+	wait_listening "$log"
+	: > "$F/cmds.log"
+	"$T/venv/bin/python3" "$HERE/esphome-ledbar-live-check.py" "$port" "$(echo "$pname" | tr 'A-Z' 'a-z')" "$d" --mode "$mode" || rc=1
+}
+n=$((API_PORT + 10))
+for kind in standalone voice; do
+	echo "== $kind: a bar at the start, then it goes and comes back =="
+	live_run $kind "$T/live-follow-$kind.log" $n Live-Follow-$kind follow; n=$((n + 1))
+	grep -q "tsx-ledbar set 100 0 0" "$F/cmds.log" && echo "OK: $kind: a light command reaches the bar after the bar came back" || { echo "FAIL: $kind: the light command did not reach the bar"; rc=1; }
+	echo "== $kind: no bar at the start, a bar comes later =="
+	live_run $kind "$T/live-later-$kind.log" $n Live-Later-$kind later; n=$((n + 1))
+	grep -q "tsx-ledbar set 0 100 0" "$F/cmds.log" && echo "OK: $kind: a light command reaches a bar that came later" || { echo "FAIL: $kind: the light command did not reach the bar"; rc=1; }
+	echo "== $kind: LEDBAR=no with a bar attached =="
+	live_run $kind "$T/live-off-$kind.log" $n Live-Off-$kind hardoff 'LEDBAR=no\n'; n=$((n + 1))
+	for l in "$T/live-follow-$kind.log" "$T/live-later-$kind.log" "$T/live-off-$kind.log"; do
+		grep -q 'Traceback' "$l" && { echo "FAIL: $kind: Traceback in $l"; tail -n 30 "$l"; rc=1; }
+		grep -q 'Unknown message type\|unhandled message' "$l" && { echo "FAIL: $kind: an unhandled message in $l"; grep 'Unknown message type\|unhandled message' "$l" | head -3; rc=1; }
+	done
+done
 
 [ $rc = 0 ] && echo "PASS test-esphome-ledbar" || echo "FAIL test-esphome-ledbar"
 exit $rc

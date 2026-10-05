@@ -383,6 +383,8 @@ class RealBackend(PanelBackend):
         return True
 
 os.environ["TSX_PANELCTL_BIN"] = t + "/tsx-panelctl"
+with open(t + "/run/ledbar.usb", "w") as f:
+    f.write("app\n")      # tsx-ledbard: a bar with its application is attached
 fwfile, calls = t + "/run/ledbar.fw", t + "/ledbar-calls"
 def fw(text):
     with open(fwfile, "w") as f:
@@ -417,6 +419,71 @@ d = dev.build_entities(None, RealBackend())
 check("no root, ledbar.fw of the stock firmware: no bar effects", (d.ledbar.effects_list, services(d)),
       (["None", "Pulse"], []))
 os.remove(fwfile)
+# ---- the bar comes and goes while the device runs (sync_ledbar) ---------------
+class Dyn(Backend):
+    """The bar can be there or not. The stamp is what ledbar.usb and ledbar.fw say: a counter here."""
+    present = True
+    stamp = 0
+    def _panelctl(self, *args, timeout=5):
+        if args == ("has", "ledbar"):
+            return self.present, ""
+        return super()._panelctl(*args, timeout=timeout)
+    def ledbar_stamp(self):
+        return self.stamp
+
+def parts(d):
+    return [e for e in d.entities if e is d.ledbar or e is d.ledbar_actions]
+
+state("want 10 20 30\nfx none\n")
+b = Dyn(); b.present = False; b.fx_firmware = b.leds_firmware = True
+d = dev.build_entities(None, b)
+check("no bar: no light, no actions, no entity of the bar", (d.ledbar, d.ledbar_actions, parts(d)), (None, None, []))
+check("no bar: the other entities are there", d.screen in d.entities and d.backlight in d.entities, True)
+removed, added = dev.sync_ledbar(d)
+check("no bar, nothing changed: no change", (removed, added), ([], []))
+b.present, b.stamp = True, 1
+removed, added = dev.sync_ledbar(d)
+check("bar comes: no entity removed, light and actions added", (removed, [type(e).__name__ for e in added]),
+      ([], ["PanelLight", "ActionsEntity"]))
+check("bar comes: device.entities, ledbar and ledbar_actions follow", (d.ledbar is added[0], d.ledbar_actions is added[1],
+      added[0] in d.entities, added[1] in d.entities), (True, True, True, True))
+check("bar comes: effects", d.ledbar.effects_list, ["None", "Pulse", "Breathe", "Blink", "Rainbow", "Chase", "Fill", "Spectrum"])
+check("bar comes: fx and leds", (d.ledbar_fx, d.ledbar_leds), (True, True))
+check("bar comes: the fixed key", d.ledbar.key, stable_key("ledbar"))
+light = d.ledbar
+check("the same stamp: no change", dev.sync_ledbar(d), ([], []))
+b.stamp = 2
+check("a new stamp, the same bar: no change, the same entities", (dev.sync_ledbar(d), d.ledbar is light), (([], []), True))
+# a poll with the callback: the bar goes
+old_list = d.entities
+calls = []
+b.present, b.stamp = False, 3
+dev.poll(d, lambda m: None, None, lambda r, a: calls.append((r, a)))
+check("bar goes: the callback gets the two old entities, no new entity", [(len(r), len(a)) for r, a in calls], [(2, 0)])
+check("bar goes: the old list is not changed, device.entities is a new list", (light in old_list, light in d.entities, d.entities is old_list), (True, False, False))
+check("bar goes: no light, no actions", (d.ledbar, d.ledbar_actions, parts(d)), (None, None, []))
+dev.poll(d, lambda m: None, None, lambda r, a: calls.append((r, a)))
+check("bar gone, the next poll: no new callback", len(calls), 1)
+# a bar with the firmware without the 16 LEDs: the light, no actions
+b.present, b.stamp, b.leds_firmware = True, 4, False
+dev.poll(d, lambda m: None, None, lambda r, a: calls.append((r, a)))
+check("bar back with firmware 0.1.2: only the light is added", [(len(r), len(a)) for r, a in calls][1:], [(0, 1)])
+check("bar back: the same key as the first time", d.ledbar.key, stable_key("ledbar"))
+check("bar back: no zone effects, no actions", (d.ledbar.effects_list, d.ledbar_actions), (["None", "Pulse", "Breathe", "Blink", "Rainbow"], None))
+# the firmware changes under the bar: the actions come
+b.stamp, b.leds_firmware = 5, True
+removed, added = dev.sync_ledbar(d)
+check("new firmware with the 16 LEDs: the light is replaced, the actions come", ([type(e).__name__ for e in removed], [type(e).__name__ for e in added]),
+      (["PanelLight"], ["PanelLight", "ActionsEntity"]))
+# the light that Home Assistant uses is the new one, and its command reaches the backend
+b.sent.clear()
+d.ledbar.command(is_on=True, brightness=1.0, red=1.0, green=0.0, blue=0.0)
+check("the new light: a command reaches the bar", b.sent, ["ledbar set 100 0 0"])
+# the state of the new light goes out in the next poll
+out = []
+dev.poll(d, out.extend)
+check("a new light sends its state in the next poll", len(light_msgs(out)), 1)
+
 if fails:
     sys.exit(1)
 print("PASS test-shim-ledbar")
