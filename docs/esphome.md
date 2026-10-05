@@ -56,6 +56,23 @@ An entity has the same key with `VOICE` on or off. The order of the entities doe
 - Do not change the object id of an existing entity. Its key then changes, and Home Assistant sees a new entity. The entity loses its settings in Home Assistant, for example its name and its area.
 - Run `tests/test-shim-keys.sh`. The test fails when two known entities have the same key.
 
+## LED bar entities
+
+The device lists the LED bar light, its effects and its LED bar actions only while a USB LED bar with its application is attached. `tsx-panelctl has ledbar` gives the answer (see [LED bar](ledbar.md) "When Home Assistant shows the LED bar"). A bar in the bootloader has no light, so the device lists no LED bar entity then. `LEDBAR=no` in `hw.conf` keeps the entities away, also with a bar attached.
+
+Home Assistant reads the entity list only when it connects. The API has no message for a changed list. So the device uses the same method as a device that restarts after a firmware change:
+
+1. Each poll (once a second), the device reads `/run/tsx/ledbar.usb` and `/run/tsx/ledbar.fw`. It does the work of the next steps only when one of them changed and the entities would differ.
+2. The device makes the light and the actions, or removes them. The keys do not change (see "Entity keys"), so a bar that comes back gets the same entities.
+3. The device sends a `DisconnectRequest` to each client. The client library (aioesphomeapi) treats this as an expected disconnect. Home Assistant logs no error. The device closes the connection after 2 seconds if the client does not answer.
+4. Home Assistant connects again after about 5 seconds. It reads the new list, adds the new entities and removes the entities that are gone from the entity registry.
+
+The device information stays the same, so Home Assistant keeps the device. The other entities, the voice satellite and its media player come back with the new connection. A command in the 5 seconds between the two connections gets no answer.
+
+A removed LED bar light loses the name, the area and the settings that you gave it in Home Assistant. A bar that comes back gets a light with the same unique id and the same key. A change of the bar firmware (for example from TSX-LEDBAR 0.1.2 to 0.1.3) changes the effects and the actions. It gives one reconnect too. A bar that goes to the bootloader and the removal of a bar in the bootloader give no reconnect, because the list stays without LED bar entities.
+
+The code is `sync_ledbar` in `ha/voice/shim/tsx_panel/device.py` and `ha/voice/shim/tsx_panel/reconnect.py`. Both services use it. `tsx-esphome` replaces `device.entities`. The voice satellite also changes `state.entities`, in the thread of the connections. The tests are `tests/test-shim-ledbar.sh` and `tests/test-esphome-ledbar.sh`.
+
 ## Plugins
 
 A board can add entities and API messages to the device. The board package ships one Python file in `/usr/local/share/tsx/esphome.d`. A board with a part that has no shared code, for example a camera, ships the code for it there. Both services load the same files, so the device is the same with `VOICE` on or off. The code is `ha/voice/shim/tsx_panel/plugins.py`.

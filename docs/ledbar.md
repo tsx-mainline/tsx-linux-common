@@ -14,6 +14,7 @@ The bar is one USB device (`14be:001b`) with an STM32 controller. The stock firm
 | `/etc/tsx/ledbar.conf` | The settings. Run `rc-service tsx-ledbar restart` after a change. |
 | `/run/tsx/ledbar.state` | The wanted color, the pattern and the effect. |
 | `/run/tsx/ledbar.fw` | The firmware lines of the bar, for users without root. |
+| `/run/tsx/ledbar.usb` | One word that tells whether a bar is attached: `app` or `bootloader`. |
 | `/var/log/tsx-ledbar.log` | The log of the service. |
 
 `tsx-ledbar` has two back ends:
@@ -55,19 +56,41 @@ A new color (`set`, `on`, `off`, `boot`) ends the running effect and the LED pat
 
 The keys `BLANK` and `BLANK_DIM` of an old file have no effect. The service logs one line when it finds them.
 
-## Panels without a bar
+## When Home Assistant shows the LED bar
 
-The `tsx-hw` program of the board writes the facts of the panel to `/run/tsx/hw.conf`. The key `LEDBAR` tells whether the panel model has a LED bar. The key is optional.
+Home Assistant shows the LED bar light, its effects and its actions only while a bar with its application is attached. The light appears when you plug in the bar. It goes when you remove the bar.
 
-| `hw.conf` | `tsx-panelctl has ledbar` |
+One file tells whether a bar is attached: `/run/tsx/ledbar.usb`. The service `tsx-ledbard` writes it. It has one word:
+
+| Content | Meaning | LED bar light |
+|---|---|---|
+| `app` | The bar runs its application (USB `14be:001b`). The check and the settings are done. | Yes |
+| `bootloader` | The bar is in recovery (USB `14be:001a`). It is attached and has no light. | No |
+| No file | No bar is attached, or the service is not running. | No |
+
+- The daemon writes `app` after the check, the settings and the firmware file. A reader that sees `app` can also read `/run/tsx/ledbar.fw`.
+- The daemon removes the file `TSX_LEDBAR_GONE` seconds after the bar goes (default 5). A short USB reset of the bar does not remove the light. During a restart of the controller by the daemon itself, the file stays unchanged.
+- The daemon removes a file of an earlier run when it starts, and it removes the file when it stops. `tsx-ledbard check` does not change the file.
+- A USB device with `authorized` 0 in sysfs does not count. The kernel does not use such a device. Use this to remove a bar without a person: `echo 0 > /sys/bus/usb/devices/<device>/authorized`. Write `1` to bring it back.
+- A bar in the bootloader gives no light. The bar has no application then, and it shows nothing. The light comes back when the application runs again, for example after the recovery in "Bootloader mode".
+
+`tsx-panelctl has ledbar` is the one question that all programs ask. The answer is yes when all of these are true:
+
+1. The tool `tsx-ledbar` is installed.
+2. `hw.conf` does not say `LEDBAR=no`.
+3. `/run/tsx/ledbar.usb` says `app`.
+
+The `tsx-hw` program of the board writes the facts of the panel to `/run/tsx/hw.conf`. The key `LEDBAR` is optional. `LEDBAR=no` is the hard off: the light stays away also when a bar is attached. A missing file, a missing key and `LEDBAR=yes` do not change the answer. The last `LEDBAR` line of the file counts. The environment variable `TSX_HW_CONF` names another file, for tests.
+
+| Part | What it does when the bar comes or goes |
 |---|---|
-| No file, or no `LEDBAR` line | Yes, when the tool `tsx-ledbar` is installed. |
-| `LEDBAR=yes` | Yes, when the tool `tsx-ledbar` is installed. |
-| `LEDBAR=no` | No. |
+| `tsx-esphome` and the voice satellite | They change the entity list and ask Home Assistant to reconnect. See "LED bar entities" in `esphome.md`. |
+| `tsx-mqtt` | It publishes the discovery topic of the LED bar light when the bar comes. It publishes an empty retained payload when the bar goes. It also clears the retained state topics of the light. |
+| `tsx-voice-hook` | It sets the LED bar color only while `has ledbar` is yes. |
 
-`has ledbar` is also no when the tool is not installed. The last `LEDBAR` line of the file counts. The environment variable `TSX_HW_CONF` names another file, for tests.
+`tsx-mqtt` also follows `LEDBAR=no`. It publishes no LED bar state topic and ignores each LED bar command. It logs one line for each ignored command. The same holds for a panel without a bar.
 
-`tsx-esphome`, the voice satellite and `tsx-mqtt` ask `has ledbar` when they start. When the answer is no, Home Assistant gets no LED bar light, no effects and no LED bar actions. `tsx-mqtt` also clears the discovery topic of the LED bar light.
+Home Assistant removes an entity that the device does not list. A removed light also loses the name, the area and the settings that you gave it in Home Assistant. A bar that comes back gets the same entity again, with the same unique id. The entity key does not change.
 
 ## Start check
 
@@ -186,10 +209,17 @@ tsx_board_ledbar_map() {
 | The log says `LED bar not found yet (USB 14be:001b)` | The bar is not plugged in. | Plug in the bar. |
 | The bar stays dark. The log says `LED drivers did not start after 3 restarts`. | The LED driver chips do not start. | Unplug the bar and plug it in again. |
 | The bar stays dark. The log says `bootloader mode (USB 14be:001a)`. | The controller runs the bootloader only. | Follow the log line. See "Bootloader mode". |
+| Home Assistant shows no LED bar light. | No bar with its application is attached, or `LEDBAR=no`. | Run `cat /run/tsx/ledbar.usb` and `tsx-panelctl has ledbar; echo $?`. The file must say `app`. |
 | `tsx-ledbar fx` refuses | The bar has the stock firmware. | Load the TSX-LEDBAR firmware with the package `tsx-ledbar-fw`. |
 | The log says `LEDMAP=... needs the LED bar firmware TSX-LEDBAR 0.1.5 or later` | The bar firmware has no LED maps. | Upgrade the package `tsx-ledbar-fw`, or empty the `LEDMAP` key. |
 | The log says `the bar has no map NAME` | The firmware has no map with this name. | Use a name from the `maps` list in the log line. The bar keeps its map. |
 
 ## Tests
 
-`tests/ledbar-host-test.sh` builds `tsx-ledbar` without libusb and checks the packets, the kernel back end, the state file, the effects and the 16 LEDs. `tests/test-ledbard.sh` runs `tsx-ledbard` against a fake bar, a fake console and the made-up test board. `tests/test-panelctl.sh` checks `has ledbar` with each form of `LEDBAR`. `tests/mqtt-dry.sh` checks the LED bar light of `tsx-mqtt` with the real `tsx-panelctl`. The libusb back end needs a bar.
+- `tests/ledbar-host-test.sh` builds `tsx-ledbar` without libusb. It checks the packets, the kernel back end, the state file, the effects and the 16 LEDs.
+- `tests/test-ledbard.sh` runs `tsx-ledbard` against a fake bar, a fake console and the made-up test board. It also checks the file `ledbar.usb`: a bar at the start, a plug-in, a removal, a short reset, the bootloader and a stop of the service.
+- `tests/test-panelctl.sh` checks `has ledbar` with each form of the file and of `LEDBAR`.
+- `tests/mqtt-dry.sh` checks the LED bar light of `tsx-mqtt` with the real `tsx-panelctl`. `tests/mqtt-ledbar-live.sh` runs `tsx-mqtt` and changes the file while it runs.
+- `tests/test-shim-ledbar.sh` and `tests/test-esphome-ledbar.sh` check the entities of the ESPHome device, also while the bar comes and goes.
+
+The libusb back end needs a bar.
