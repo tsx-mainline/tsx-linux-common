@@ -556,5 +556,93 @@ $SH "$D" check >/dev/null 2>&1
 [ "$(cat "$FWF")" = kept ] && ok "fw file: check without a bar keeps the file of the service" || bad "fw file: check changed the file"
 rm -f "$FWF"
 
+# 12. the attached file $T/run/ledbar.usb: "app" while a bar with its
+# application is attached, "bootloader" for a bar in recovery, no file
+# otherwise. tsx-panelctl has ledbar reads it. The file goes TSX_LEDBAR_GONE
+# seconds after the bar, so a short USB reset does not remove the entities of
+# Home Assistant. Only the service writes it.
+USBF=$T/run/ledbar.usb
+usb_is() { [ -f "$USBF" ] && [ "$(cat "$USBF")" = "$1" ]; }
+export TSX_LEDBAR_GONE=4
+
+# 12a. no bar at the start: no file. A stale file of an earlier run goes at the start.
+unplug; reset 0; fwi_off; echo "$OWN15L" > "$T/fw"; echo "$CAPS15" > "$T/caps"
+echo app > "$USBF"
+umask 077
+$SH "$D" > "$T/log" 2>&1 &
+DPID=$!
+umask 022
+sleep 2
+[ ! -e "$USBF" ] && ok "attached file: no bar at the start, a stale file is removed" || bad "attached file: stale file kept: $(cat "$USBF")"
+
+# 12b. plug-in: the file says app, after the firmware file and with mode 644
+plug 5
+waitfor 'grep -qx boot "$T/calls"' >/dev/null
+waitfor '[ -e "$USBF" ]' >/dev/null
+usb_is app && ok "attached file: app after the plug-in" || bad "attached file: $(cat "$USBF" 2>&1)"
+[ "$(ls -l "$USBF" | cut -c1-10)" = "-rw-r--r--" ] && ok "attached file: mode 644 (umask 077)" || bad "attached file: mode $(ls -l "$USBF")"
+[ -e "$FWF" ] && ok "attached file: the firmware file is there when the file says app" || bad "attached file: no firmware file"
+ls "$T/run" | grep -q '\.tmp$' && bad "attached file: a temp file is left: $(ls "$T/run")" || ok "attached file: no temp file left"
+
+# 12c. removal: the file stays for GONE seconds, then goes
+unplug
+sleep 2
+usb_is app && ok "attached file: still app 2 s after the removal (GONE=4)" || bad "attached file: gone too early: $(cat "$USBF" 2>&1)"
+waitfor '[ ! -e "$USBF" ]' >/dev/null
+[ ! -e "$USBF" ] && ok "attached file: removed after the bar was gone for GONE seconds" || bad "attached file: kept: $(cat "$USBF")"
+
+# 12d. a short removal (a USB reset, less than GONE): the file never goes
+: > "$T/calls"
+plug 6
+waitfor 'grep -qx apply "$T/calls"' >/dev/null
+usb_is app && ok "attached file: app again after a plug-in" || bad "attached file: $(cat "$USBF" 2>&1)"
+: > "$T/calls"
+unplug; sleep 1; plug 7
+waitfor 'grep -qx apply "$T/calls"' >/dev/null
+gone=0; for _ in 1 2 3 4 5 6; do usb_is app || gone=1; sleep 1; done
+[ $gone = 0 ] && ok "attached file: a removal shorter than GONE keeps app" || bad "attached file: dropped in a short reset"
+
+# 12e. the bar goes to the bootloader: bootloader, no light. It comes back as app.
+plug_btl
+waitfor 'usb_is bootloader' >/dev/null
+usb_is bootloader && ok "attached file: bootloader for a bar in recovery" || bad "attached file: $(cat "$USBF" 2>&1)"
+: > "$T/calls"
+plug 8
+waitfor 'grep -qx apply "$T/calls"' >/dev/null
+usb_is app && ok "attached file: app when the application is back" || bad "attached file: $(cat "$USBF" 2>&1)"
+
+# 12f. the bootloader goes away: the file goes after GONE seconds
+plug_btl; waitfor 'usb_is bootloader' >/dev/null
+unplug
+waitfor '[ ! -e "$USBF" ]' >/dev/null
+[ ! -e "$USBF" ] && ok "attached file: a bar in the bootloader that goes away removes the file" || bad "attached file: $(cat "$USBF")"
+
+# 12f2. a device with authorized 0 (the kernel does not use it) is a removed bar. authorized 1 brings it back.
+plug 12; echo 1 > "$T/usb/2-1/authorized"
+waitfor 'usb_is app' >/dev/null
+echo 0 > "$T/usb/2-1/authorized"
+waitfor '[ ! -e "$USBF" ]' >/dev/null
+[ ! -e "$USBF" ] && ok "attached file: authorized 0 removes the file like a removed bar" || bad "attached file: kept with authorized 0: $(cat "$USBF")"
+: > "$T/calls"; echo 1 > "$T/usb/2-1/authorized"
+waitfor 'usb_is app' >/dev/null
+usb_is app && ok "attached file: authorized 1 brings the bar back" || bad "attached file: $(cat "$USBF" 2>&1)"
+unplug
+
+# 12g. the service stops: no file
+plug 9
+waitfor '[ -e "$USBF" ]' >/dev/null
+kill "$DPID"; wait "$DPID" 2>/dev/null; DPID=
+[ ! -e "$USBF" ] && ok "attached file: removed when the service stops" || bad "attached file: kept after the stop"
+
+# 12h. "tsx-ledbard check" writes no file and keeps the file of the service
+reset 0; echo "$OWN15L" > "$T/fw"
+$SH "$D" check >/dev/null 2>&1
+[ ! -e "$USBF" ] && ok "attached file: check writes no file" || bad "attached file: check wrote $(cat "$USBF")"
+echo kept > "$USBF"; unplug
+$SH "$D" check >/dev/null 2>&1
+[ "$(cat "$USBF")" = kept ] && ok "attached file: check without a bar keeps the file" || bad "attached file: check changed the file"
+rm -f "$USBF"
+unset TSX_LEDBAR_GONE
+
 [ $fail = 0 ] && echo "PASS tsx-ledbard host test"
 exit $fail

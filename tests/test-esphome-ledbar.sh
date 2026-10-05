@@ -37,6 +37,7 @@ python3 -m venv "$T/venv"
 F=$T/fixture
 mkdir -p "$F/run/tsx" "$F/etc/tsx" "$F/sys/thermal" "$F/proc/asound" "$F/bin"
 echo "want 10 20 30" > "$F/run/tsx/ledbar.state"
+echo app > "$F/run/tsx/ledbar.usb"   # tsx-ledbard: a bar with its application is attached
 echo "on 11" > "$F/run/tsx-idled.state"
 echo 40000 > "$F/sys/thermal/temp"
 printf 'BACKLIGHT_MAX=15\nKIOSK_URL="https://ha.example.org/"\n' > "$F/etc/kiosk.conf"

@@ -3,8 +3,13 @@
 #
 # It publishes HA MQTT discovery (retained) for one device with:
 #   light  "LED bar"      RGB (tsx-ledbar. HA 0..255 <-> bar 0..100 per channel.
-#                         Only where tsx-ledbar is installed and hw.conf does not
-#                         say LEDBAR=no: tsx-panelctl has ledbar)
+#                         Only while a LED bar with its application is attached
+#                         (tsx-panelctl has ledbar). The light appears when the
+#                         bar is plugged in and goes when the bar is removed:
+#                         the script publishes the discovery topic, or clears it
+#                         with an empty retained payload. Without a bar it
+#                         publishes no LED bar state and ignores LED bar
+#                         commands)
 #   light  "Key LEDs"     brightness 0..255 (tsx-keypad led N|off. Only where the
 #                         keys have LEDs: tsx-panelctl has keyleds)
 #   switch "Screen"       ON = lit, OFF = blanked (tsx-blank)
@@ -152,9 +157,21 @@ MODEL=; type tsx_board_ha_model >/dev/null 2>&1 && MODEL=$(tsx_board_ha_model)
 DEV="\"dev\":{\"ids\":[\"tsx_$NODE\"],\"name\":\"$DNAME\",\"mf\":\"Crestron\",\"mdl\":\"${MODEL:-$TSX_HA_MODEL} (mainline Linux)\"}"
 AV="\"avty_t\":\"$BASE/availability\""
 
+# The LED bar light: announced while a bar is attached (has_ledbar), cleared
+# otherwise. P_BAR is yes or no: what Home Assistant has now.
+P_BAR=
+ledbar_discovery() {
+	if has_ledbar; then
+		P_BAR=yes
+		pub -r "$DP/light/$NODE/ledbar/config" "{\"name\":\"LED bar\",\"uniq_id\":\"${NODE}_ledbar\",\"cmd_t\":\"$BASE/ledbar/set\",\"stat_t\":\"$BASE/ledbar/state\",\"bri_cmd_t\":\"$BASE/ledbar/brightness/set\",\"bri_stat_t\":\"$BASE/ledbar/brightness\",\"bri_scl\":255,\"rgb_cmd_t\":\"$BASE/ledbar/rgb/set\",\"rgb_stat_t\":\"$BASE/ledbar/rgb\",\"on_cmd_type\":\"last\",\"icon\":\"mdi:led-strip-variant\",$AV,$DEV}"
+	else
+		P_BAR=no
+		pub -r "$DP/light/$NODE/ledbar/config" ""
+	fi
+}
+
 discovery() {
-	if has_ledbar; then pub -r "$DP/light/$NODE/ledbar/config" "{\"name\":\"LED bar\",\"uniq_id\":\"${NODE}_ledbar\",\"cmd_t\":\"$BASE/ledbar/set\",\"stat_t\":\"$BASE/ledbar/state\",\"bri_cmd_t\":\"$BASE/ledbar/brightness/set\",\"bri_stat_t\":\"$BASE/ledbar/brightness\",\"bri_scl\":255,\"rgb_cmd_t\":\"$BASE/ledbar/rgb/set\",\"rgb_stat_t\":\"$BASE/ledbar/rgb\",\"on_cmd_type\":\"last\",\"icon\":\"mdi:led-strip-variant\",$AV,$DEV}"
-	else pub -r "$DP/light/$NODE/ledbar/config" ""; fi
+	ledbar_discovery
 	if has_keyleds; then pub -r "$DP/light/$NODE/key_leds/config" "{\"name\":\"Key LEDs\",\"uniq_id\":\"${NODE}_key_leds\",\"cmd_t\":\"$BASE/key_leds/set\",\"stat_t\":\"$BASE/key_leds/state\",\"bri_cmd_t\":\"$BASE/key_leds/brightness/set\",\"bri_stat_t\":\"$BASE/key_leds/brightness\",\"bri_scl\":255,\"on_cmd_type\":\"brightness\",\"icon\":\"mdi:gesture-tap-button\",$AV,$DEV}"
 	else pub -r "$DP/light/$NODE/key_leds/config" ""; fi
 	pub -r "$DP/switch/$NODE/screen/config" "{\"name\":\"Screen\",\"uniq_id\":\"${NODE}_screen\",\"cmd_t\":\"$BASE/screen/set\",\"stat_t\":\"$BASE/screen/state\",\"icon\":\"mdi:monitor\",$AV,$DEV}"
@@ -270,8 +287,10 @@ update_state() {  # raw HA-ready JSON from tsx-autoupdate (same $R), or a safe d
 P_LED= P_KL= P_SCR= P_BL= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_USB= P_POE= P_EMMC=
 publish_states() {  # $1 = force
 	f=${1:-}
-	v=$(ledbar_state); if [ "$v" != "$P_LED" ] || [ -n "${1:-}" ]; then
-		set -- $v; pub -r "$BASE/ledbar/state" "$1"; pub -r "$BASE/ledbar/brightness" "$2"; pub -r "$BASE/ledbar/rgb" "$3"; P_LED=$v; fi
+	if [ "$P_BAR" = yes ]; then
+		v=$(ledbar_state); if [ "$v" != "$P_LED" ] || [ -n "${1:-}" ]; then
+			set -- $v; pub -r "$BASE/ledbar/state" "$1"; pub -r "$BASE/ledbar/brightness" "$2"; pub -r "$BASE/ledbar/rgb" "$3"; P_LED=$v; fi
+	fi
 	v=$(key_leds_state); if [ "$v" != "$P_KL" ] || [ -n "${1:-}" ]; then
 		set -- $v; pub -r "$BASE/key_leds/state" "$1"; pub -r "$BASE/key_leds/brightness" "$2"; P_KL=$v; fi
 	v=$(screen_state); if [ "$v" != "$P_SCR" ] || [ -n "${1:-}" ]; then
@@ -306,6 +325,27 @@ publish_states() {  # $1 = force
 		pub -r "$BASE/update/state" "$v"; P_UPD=$v; fi
 }
 
+# The bar comes or goes: tsx-ledbard writes /run/tsx/ledbar.usb. When the
+# file changes, ask has_ledbar again. The light is then announced and its state
+# published, or the discovery topic and the retained state are cleared.
+P_USBF=
+check_ledbar() {
+	v=$(head -n 1 "$R/ledbar.usb" 2>/dev/null)
+	[ "$v" != "$P_USBF" ] || return 0
+	P_USBF=$v
+	old=$P_BAR
+	ledbar_discovery
+	[ "$P_BAR" != "$old" ] || return 0
+	if [ "$P_BAR" = yes ]; then
+		log "LED bar attached: light announced"
+		P_LED=; publish_states
+	else
+		log "LED bar gone: light cleared"
+		pub -r "$BASE/ledbar/state" ""; pub -r "$BASE/ledbar/brightness" ""; pub -r "$BASE/ledbar/rgb" ""
+		P_LED=
+	fi
+}
+
 # ---- commands --------------------------------------------------------------
 # HA rgb "r,g,b" 0..255 + brightness 0..255 -> bar 0..100 per channel
 ledbar_set() {  # r g b bri
@@ -317,6 +357,9 @@ led_bri() { b=$(cat "$M/bri" 2>/dev/null); echo "${b:-255}"; }
 
 handle() {  # topic payload
 	t=${1#"$BASE"/}; p=$2
+	# no bar attached, or LEDBAR=no: no LED bar command. This runs in a
+	# subshell of the main loop, so it asks again.
+	case $t in ledbar/*) has_ledbar || { log "ignored $t: no LED bar attached"; return; };; esac
 	case $t in
 	ledbar/set)
 		case $p in
@@ -440,6 +483,7 @@ HANDLER=$!
 
 sleep 1
 kill -0 $SUB 2>/dev/null || { log "cannot connect to $BROKER:$PORT"; exit 1; }
+P_USBF=$(head -n 1 "$R/ledbar.usb" 2>/dev/null)   # before discovery: a change in between is not missed
 discovery
 pub -r "$BASE/availability" online
 publish_states force
@@ -451,6 +495,7 @@ i=0
 while kill -0 $SUB 2>/dev/null; do
 	check_keys
 	check_tag
+	check_ledbar
 	i=$((i + 1))
 	if [ -e "$M/republish" ]; then rm -f "$M/republish"; sleep 1; discovery; pub -r "$BASE/availability" online; publish_states force
 	elif [ -e "$M/poke" ] || [ $i -ge 8 ]; then rm -f "$M/poke"; i=0; publish_states

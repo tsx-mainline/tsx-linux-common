@@ -41,6 +41,7 @@ unduck() {
 
 led() {
 	[ "$LED" = bar ] && command -v tsx-ledbar >/dev/null || return 0
+	tsx-panelctl has ledbar >/dev/null 2>&1 || return 0   # no bar attached now: no light
 	if [ "$1" = on ]; then tsx-ledbar set $LED_COLOR >/dev/null 2>&1
 	else tsx-ledbar apply >/dev/null 2>&1; fi
 	return 0

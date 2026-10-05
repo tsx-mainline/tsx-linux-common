@@ -237,6 +237,7 @@ printf '#!/bin/sh\n[ "${1:-}" = volume ] && [ -z "${2:-}" ] && echo 63\n' > "$T/
 [ "$(env PATH="$T/bin2:$PATH" TSX_RUN_DIR="$T/run" TSX_ASOUND_DIR="$T/asound" busybox sh "$SCRIPT" get volume)" = 63 ] && ok "get volume: the level from tsx-audio" || bad "get volume wrong"
 rm -rf "$T/asound/FakeCard"
 env PATH="$T/bin2:$PATH" TSX_RUN_DIR="$T/run" TSX_ASOUND_DIR="$T/asound" busybox sh "$SCRIPT" get volume >/dev/null 2>&1 && bad "get volume without a sound card succeeded" || ok "get volume without a sound card: nothing, exit 1"
+echo app > "$T/run/ledbar.usb"   # tsx-ledbard: a bar with its application is attached
 printf 'want 10 20 30\n' > "$T/run/ledbar.state"; printf 'leds yes\nled 128 day\nlast home short 12:00:01\n' > "$T/run/buttons.state"; printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T/run/als.state"
 printf 'present on\ndistance 640\nwake on\n' > "$T/run/presence.state"; echo "power on" > "$T/run/usb-power.state"; echo "class plus" > "$T/run/poe.state"
 echo "on 17" > "$T/idled.state"
@@ -344,6 +345,29 @@ printf 'LEDBAR=yes\n' > "$HWC"
 [ "$(env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_LEDBAR="$T/bin/none-such" busybox sh "$SCRIPT" has ledbar >/dev/null 2>&1; echo $?)" = 1 ] \
 	&& ok "has ledbar: no without the tool, also with LEDBAR=yes" || bad "has ledbar with LEDBAR=yes but no tool"
 rm -f "$HWC" "$T/other-hw.conf"
+# has ledbar reads the attached file of tsx-ledbard ($TSX_RUN_DIR/ledbar.usb): "app" is yes. No file
+# (no bar, the service is stopped), "bootloader" (a bar in recovery has no light), an empty file and any
+# other word are no. LEDBAR=no in hw.conf is the hard off, also with a bar attached.
+USBF=$T/run/ledbar.usb
+usbcase() {  # usbcase "file text or NOFILE" "hw.conf text or NOFILE" EXPECTED NAME
+	rm -f "$USBF" "$HWC"
+	[ "$1" = NOFILE ] || printf '%b' "$1" > "$USBF"
+	[ "$2" = NOFILE ] || printf '%b' "$2" > "$HWC"
+	got=$(yesno ledbar); [ "$got" = "$3" ] && ok "has ledbar: $3, $4" || bad "has ledbar: $got, want $3, $4"
+}
+usbcase 'app\n' NOFILE yes "a bar with its application is attached"
+usbcase NOFILE NOFILE no "no bar attached (no attached file)"
+usbcase 'bootloader\n' NOFILE no "a bar in the bootloader has no light"
+usbcase '' NOFILE no "an empty attached file"
+usbcase 'application\n' NOFILE no "an unknown word"
+usbcase 'app' NOFILE yes "app without a final newline"
+usbcase 'app\nbootloader\n' NOFILE yes "only the first line counts"
+usbcase 'app\n' 'LEDBAR=yes\n' yes "a bar is attached and LEDBAR=yes"
+usbcase 'app\n' 'LEDBAR=no\n' no "a bar is attached and LEDBAR=no (the hard off)"
+usbcase NOFILE 'LEDBAR=yes\n' no "LEDBAR=yes but no bar is attached"
+printf 'app\n' > "$USBF.other"
+[ "$(TSX_LEDBAR_USB=$USBF.other yesno ledbar)" = yes ] && ok "TSX_LEDBAR_USB names the file" || bad "TSX_LEDBAR_USB: $(TSX_LEDBAR_USB=$USBF.other yesno ledbar)"
+rm -f "$USBF.other" "$HWC"; echo app > "$USBF"
 mv "$FWF" "$T/other.fw"
 sed -i 's/leds no/leds yes/; s/effects no/effects yes/' "$T/other.fw"
 [ "$(TSX_LEDBAR_FW=$T/other.fw yesno ledbar-leds)" = yes ] && ok "TSX_LEDBAR_FW names the file" || bad "TSX_LEDBAR_FW: $(TSX_LEDBAR_FW=$T/other.fw yesno ledbar-leds)"

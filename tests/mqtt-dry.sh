@@ -96,30 +96,44 @@ grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/key_leds/config ' "$T/out
 grep -q 'homeassistant/event/' "$T/outbare" && { echo "FAIL: bare: key events announced without keys"; fail=1; }
 grep -qE 'emmc|illuminance' "$T/outbare" && { echo "FAIL: bare: entities announced for parts this panel does not have"; fail=1; }
 grep '/config {' "$T/outbare" | while read -r _ _ t j; do echo "$j" | jq -e . >/dev/null || { echo "FAIL: bad JSON $t"; exit 1; }; done || fail=1
-# The real tsx-panelctl decides on the LED bar: the tool is installed, and hw.conf may say
-# LEDBAR=no (the tsx-hw of the board writes it). No file, no key and LEDBAR=yes announce the
-# light. LEDBAR=no clears its discovery topic.
+# The real tsx-panelctl decides on the LED bar: the tool is installed, tsx-ledbard says that a
+# bar with its application is attached (the file ledbar.usb says "app"), and hw.conf does not say
+# LEDBAR=no (the tsx-hw of the board writes it). The light is announced then. Otherwise its
+# discovery topic is cleared, no LED bar state is published and no LED bar command runs.
 mkdir -p "$T/bin-led" "$T/run-led"
 printf '#!/bin/sh\nexit 0\n' > "$T/bin-led/tsx-ledbar"
 printf '#!/bin/sh\nexec sh "%s" "$@"\n' "$(P usr/local/sbin/tsx-panelctl)" > "$T/bin-led/tsx-panelctl"
 chmod +x "$T/bin-led/tsx-ledbar" "$T/bin-led/tsx-panelctl"
-ledbar_case() {  # ledbar_case "hw.conf text" announced|cleared NAME
-	rm -f "$T/run-led/hw.conf"; [ "$1" = NOFILE ] || printf '%b' "$1" > "$T/run-led/hw.conf"
+printf 'want 0 0 40\n' > "$T/run-led/ledbar.state"
+ledbar_case() {  # ledbar_case "hw.conf text" "ledbar.usb text" announced|cleared NAME  (NOFILE: no file)
+	rm -f "$T/run-led/hw.conf" "$T/run-led/ledbar.usb"
+	[ "$1" = NOFILE ] || printf '%b' "$1" > "$T/run-led/hw.conf"
+	[ "$2" = NOFILE ] || printf '%b' "$2" > "$T/run-led/ledbar.usb"
+	printf '%s\n' 'tsx/tsx-kiosk/ledbar/set ON' 'tsx/tsx-kiosk/ledbar/rgb/set 255,0,0' 'tsx/tsx-kiosk/ledbar/brightness/set 128' 'tsx/tsx-kiosk/screen/set ON' |
 	PATH=$T/bin-led:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run-led TSX_IDLED_STATE=$T/idled \
 		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
-		sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T/outled" 2>&1
-	if [ "$2" = announced ]; then
-		grep -qF 'PUB (retained) homeassistant/light/tsx-kiosk/ledbar/config {' "$T/outled" || { echo "FAIL: $3: the LED bar light is not announced"; fail=1; }
+		sh "$(P usr/local/sbin/tsx-mqtt)" > "$T/outled" 2>&1
+	if [ "$3" = announced ]; then
+		grep -qF 'PUB (retained) homeassistant/light/tsx-kiosk/ledbar/config {' "$T/outled" || { echo "FAIL: $4: the LED bar light is not announced"; fail=1; }
+		grep -qF 'PUB (retained) tsx/tsx-kiosk/ledbar/state ON' "$T/outled" || { echo "FAIL: $4: the LED bar state is not published"; fail=1; }
+		grep -qF 'ignored ledbar/' "$T/outled" && { echo "FAIL: $4: a LED bar command is ignored"; fail=1; }
 	else
-		grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/ledbar/config ' "$T/outled" || { echo "FAIL: $3: the LED bar light is not cleared"; fail=1; }
-		grep -qF 'homeassistant/light/tsx-kiosk/ledbar/config {' "$T/outled" && { echo "FAIL: $3: the LED bar light is announced"; fail=1; }
+		grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/ledbar/config ' "$T/outled" || { echo "FAIL: $4: the LED bar light is not cleared"; fail=1; }
+		grep -qF 'homeassistant/light/tsx-kiosk/ledbar/config {' "$T/outled" && { echo "FAIL: $4: the LED bar light is announced"; fail=1; }
+		grep -qF 'tsx/tsx-kiosk/ledbar/' "$T/outled" && { echo "FAIL: $4: a LED bar topic is published"; fail=1; }
+		[ "$(grep -c 'ignored ledbar/' "$T/outled")" = 3 ] || { echo "FAIL: $4: the three LED bar commands are not ignored"; fail=1; }
+		grep -qE 'CALL|send ledbar' "$T/outled" && { echo "FAIL: $4: a LED bar command ran"; fail=1; }
 	fi
+	grep -qF 'PUB (retained) homeassistant/switch/tsx-kiosk/screen/config {' "$T/outled" || { echo "FAIL: $4: the other entities are gone"; fail=1; }
 	return 0
 }
-ledbar_case NOFILE announced "LED bar tool, no hw.conf"
-ledbar_case 'MIC=yes\nPRESENCE=no\n' announced "LED bar tool, hw.conf without LEDBAR"
-ledbar_case 'LEDBAR=yes\n' announced "LED bar tool, LEDBAR=yes"
-ledbar_case 'LEDBAR=no\n' cleared "LED bar tool, LEDBAR=no"
+ledbar_case NOFILE 'app\n' announced "LED bar tool, bar attached, no hw.conf"
+ledbar_case 'MIC=yes\nPRESENCE=no\n' 'app\n' announced "LED bar tool, bar attached, hw.conf without LEDBAR"
+ledbar_case 'LEDBAR=yes\n' 'app\n' announced "LED bar tool, bar attached, LEDBAR=yes"
+ledbar_case 'LEDBAR=no\n' 'app\n' cleared "LED bar tool, bar attached, LEDBAR=no"
+ledbar_case NOFILE NOFILE cleared "LED bar tool, no bar attached"
+ledbar_case 'LEDBAR=yes\n' NOFILE cleared "LED bar tool, LEDBAR=yes, no bar attached"
+ledbar_case NOFILE 'bootloader\n' cleared "LED bar tool, bar in the bootloader (no light)"
 grep -qE 'emmc' "$T/out" && { echo "FAIL: eMMC entities announced without emmc.state"; fail=1; }
 grep -qE 'presence|distance|usb_power|poe_class|/tag/' "$T/out" && { echo "FAIL: entities announced for parts this panel does not have"; fail=1; }
 

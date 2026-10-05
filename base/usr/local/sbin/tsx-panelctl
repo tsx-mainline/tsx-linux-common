@@ -19,8 +19,11 @@
 #                                     It prints nothing and fails when the panel
 #                                     has no value (no sound card, no sensor).
 #   tsx-panelctl has NAME             exit 0 when the panel has that hardware:
-#                                     ledbar (the tool tsx-ledbar is installed
-#                                     and hw.conf does not say LEDBAR=no),
+#                                     ledbar (a LED bar with its application
+#                                     is attached now: the tool tsx-ledbar is
+#                                     installed, hw.conf does not say
+#                                     LEDBAR=no and /run/tsx/ledbar.usb says
+#                                     "app". See "LED bar attached" below),
 #                                     ledbar-fx (the LED bar firmware
 #                                     TSX-LEDBAR, with effects), ledbar-leds
 #                                     (TSX-LEDBAR 0.1.3 and later, with the
@@ -39,6 +42,15 @@
 #                                     ...", "distance N", "usb-power ...",
 #                                     "poe-class N". It first prints the
 #                                     present values (not a button).
+#
+# LED bar attached: tsx-ledbard (root) writes /run/tsx/ledbar.usb. It holds
+# one word: "app" (the bar runs its application) or "bootloader" (the bar is
+# in recovery and has no light). The file does not exist while no bar is
+# attached, while the service is stopped and for a bar that has been gone for
+# a few seconds. It is the one place that tells whether a bar is attached.
+# "has ledbar" is true only with "app". Programs that show the LED bar to
+# Home Assistant (tsx-esphome, the voice satellite, tsx-mqtt) read this file
+# and ask "has ledbar" when it changes. LEDBAR=no in hw.conf is the hard off.
 #
 # LED bar firmware: "has ledbar-fx" and "has ledbar-leds" read
 # /run/tsx/ledbar.fw. The service tsx-ledbar (tsx-ledbard, root) writes it
@@ -105,11 +117,13 @@
 # TSX_VOLUME_CMD, TSX_EVENTS_POLL (seconds
 # between two reads of `events`), TSX_EVENTS_MAX (stop `events` after that many
 # lines), TSX_PANELCTL_ONESHOT=1 (handle exactly one line, then exit. Tests only),
-# TSX_LEDBAR_FW (the firmware file of the LED bar, $TSX_RUN_DIR/ledbar.fw).
+# TSX_LEDBAR_FW (the firmware file of the LED bar, $TSX_RUN_DIR/ledbar.fw),
+# TSX_LEDBAR_USB (the attached file of the LED bar, $TSX_RUN_DIR/ledbar.usb).
 set -u -f
 R=${TSX_RUN_DIR:-/run/tsx}
 FIFO=${TSX_PANELCTL:-$R/panelctl}
 LEDBAR_FW=${TSX_LEDBAR_FW:-$R/ledbar.fw}
+LEDBAR_USB=${TSX_LEDBAR_USB:-$R/ledbar.usb}
 LEDBAR=${TSX_LEDBAR:-tsx-ledbar}
 KEYPAD=${TSX_KEYPAD:-tsx-keypad}
 KIOSK_PAGE=${TSX_KIOSK_PAGE:-tsx-kiosk-page}
@@ -265,11 +279,14 @@ ledbar_fw() {
 
 has_hw() {
 	case "$1" in
-	# the tool is installed and hw.conf does not say LEDBAR=no (the board's
-	# tsx-hw writes it). A missing file or key means that the bar is there.
+	# the tool is installed, hw.conf does not say LEDBAR=no (the tsx-hw of the
+	# board writes it, a missing file or key is not "no") and tsx-ledbard says
+	# that a bar with its application is attached now (the file ledbar.usb
+	# says "app"). A bar in the bootloader has no light: "bootloader" is no.
 	# busybox ash returns 127 from "command -v" when the name is missing
 	ledbar) command -v "$LEDBAR" >/dev/null 2>&1 || return 1
-		[ "$(hw_get LEDBAR)" != no ];;
+		[ "$(hw_get LEDBAR)" != no ] || return 1
+		[ "$(head -n 1 "$LEDBAR_USB" 2>/dev/null)" = app ];;
 	# the LED bar runs the firmware TSX-LEDBAR, which has effects
 	ledbar-fx) ledbar_fw | grep -qx 'effects yes';;
 	# the LED bar firmware has the 16 LEDs (TSX-LEDBAR 0.1.3 and later)

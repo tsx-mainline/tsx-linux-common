@@ -66,6 +66,7 @@ python3 -m venv "$T/venv"
 F=$T/fixture
 mkdir -p "$F/run/tsx" "$F/etc/tsx" "$F/sys/thermal" "$F/proc/asound" "$F/bin"
 echo "want 50 60 70" > "$F/run/tsx/ledbar.state"
+echo app > "$F/run/tsx/ledbar.usb"   # tsx-ledbard: a bar with its application is attached
 printf 'leds yes\nled 128 unknown\nlast power short\n' > "$F/run/tsx/buttons.state"
 echo "on 17" > "$F/run/tsx-idled.state"
 # the own status of tsx-autoupdate (the shape of write_ha_json of tsx-autoupdate)

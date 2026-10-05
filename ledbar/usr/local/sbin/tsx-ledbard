@@ -48,6 +48,17 @@
 # the file exists only while the service runs. "tsx-ledbard check" does not
 # change it.
 #
+# Attached file: the service tells the rest of the panel whether a bar is
+# attached. It writes /run/tsx/ledbar.usb (mode 644) with one word. "app"
+# means that the bar runs its application (USB 14be:001b) and the check and
+# the settings are done. "bootloader" means that the bar is in the stock
+# bootloader (USB 14be:001a): it is attached and has no light. The file does
+# not exist when no bar is attached. A bar that is gone for TSX_LEDBAR_GONE
+# seconds (default 5) removes the file, so a short USB reset does not remove
+# the LED bar entities of Home Assistant. "tsx-panelctl has ledbar" reads
+# the file. The file exists only while the service runs. "tsx-ledbard check"
+# does not change it.
+#
 #   tsx-ledbard          run as the service
 #   tsx-ledbard check    check (and restart) the LED bar once, apply the
 #                        wanted color, then exit (1 if the bar stays dark)
@@ -56,7 +67,8 @@
 # TSX_LEDBAR_SYSFS (LED dir), TSX_LEDBAR_DRIVER (driver dir),
 # TSX_LEDBAR_TRIES, TSX_LEDBAR_WAIT (seconds for the STM32 to come back),
 # TSX_LEDBAR_CONF (the config file), TSX_RUN_DIR (the dir of the model
-# file and the firmware file), TSX_BOARD_CONF (the board file).
+# file, the firmware file and the attached file), TSX_LEDBAR_GONE (seconds
+# before the attached file goes), TSX_BOARD_CONF (the board file).
 CONF=${TSX_LEDBAR_CONF:-/etc/tsx/ledbar.conf}
 USB=${TSX_USB_SYSFS:-/sys/bus/usb/devices}
 LED=${TSX_LEDBAR_SYSFS:-/sys/class/leds/tsx:rgb:bar}
@@ -66,6 +78,9 @@ WAIT=${TSX_LEDBAR_WAIT:-20}
 RUN=${TSX_RUN_DIR:-/run/tsx}
 MODEL_FILE=$RUN/model
 FW_FILE=$RUN/ledbar.fw
+USB_FILE=$RUN/ledbar.usb
+GONE=${TSX_LEDBAR_GONE:-5}
+USB_NOW=
 SERVICE=
 BOARD=${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}
 log() { echo "$(date '+%F %T') tsx-ledbar: $*"; }
@@ -162,6 +177,28 @@ fw_publish() {
 # asks tsx-ledbar.
 fw_drop() { [ -z "$SERVICE" ] || [ ! -e "$FW_FILE" ] || rm -f "$FW_FILE"; }
 
+# usb_set app|bootloader: write the attached file (only the service). A file
+# with the same word stays as it is, so a reader sees no change.
+usb_set() {
+	[ -n "$SERVICE" ] || return 0
+	[ "$USB_NOW" != "$1" ] || [ ! -e "$USB_FILE" ] || return 0
+	if printf '%s\n' "$1" > "$USB_FILE.tmp" 2>/dev/null &&
+		chmod 644 "$USB_FILE.tmp" && mv -f "$USB_FILE.tmp" "$USB_FILE"; then
+		USB_NOW=$1
+		return 0
+	fi
+	rm -f "$USB_FILE.tmp" "$USB_FILE"
+	USB_NOW=
+	log "cannot write $USB_FILE"
+}
+
+# usb_drop: remove the attached file (only the service).
+usb_drop() {
+	[ -n "$SERVICE" ] || return 0
+	USB_NOW=
+	[ ! -e "$USB_FILE" ] || rm -f "$USB_FILE"
+}
+
 # Log the firmware of the bar and write the firmware file. With TSX-LEDBAR,
 # send the LED map and the effect settings.
 fx_setup() {
@@ -196,7 +233,7 @@ old_keys() {
 }
 
 # Set BAR to "bus-dev" of the bar (14be:001b, or the USB product ID in $1,
-# 001a for the bootloader). The number changes at each USB enumeration, so a
+# 001a for the bootloader). A device with "authorized" 0 does not count. The number changes at each USB enumeration, so a
 # new value means a plug-in or a restart of the STM32.
 bar_id() {
 	BAR=
@@ -206,6 +243,12 @@ bar_id() {
 		[ "$usb_v" = 14be ] || continue
 		read -r usb_p < "$d/idProduct" || continue
 		[ "$usb_p" = "${1:-001b}" ] || continue
+		# a device with authorized 0 is still in sysfs, but the kernel does not use
+		# it: the bar is not attached (a test can remove a bar this way)
+		if [ -r "$d/authorized" ]; then
+			read -r usb_a < "$d/authorized" || continue
+			[ "$usb_a" != 0 ] || continue
+		fi
 		read -r usb_b < "$d/busnum" && read -r usb_n < "$d/devnum" || continue
 		BAR=$usb_b-$usb_n
 		return 0
@@ -330,10 +373,12 @@ old_keys
 # since then. The file exists only while this service runs.
 SERVICE=1
 fw_drop
-trap 'fw_drop; exit 0' TERM INT HUP
-cur= first=1 told= tried= btl_told=
+usb_drop
+trap 'fw_drop; usb_drop; exit 0' TERM INT HUP
+cur= first=1 told= tried= btl_told= gone=0
 while :; do
 	if bar_id; then
+		gone=0
 		if [ "$BAR" != "$cur" ]; then
 			btl_told=
 			fw_drop
@@ -344,6 +389,7 @@ while :; do
 			bar_id
 			cur=$BAR
 			fx_setup
+			usb_set app
 			if [ -n "$first" ]; then
 				if tsx-ledbar boot; then
 					log "boot color set ($(tsx-ledbar get | sed -n 's/^want //p'))"
@@ -361,8 +407,9 @@ while :; do
 		# One try for each start of the service, also when the bar comes
 		# back to the bootloader later. The next pass finds the new
 		# application after a good load.
-		told=1 cur=
+		told=1 cur= gone=0
 		fw_drop
+		usb_set bootloader
 		if [ -z "$tried" ]; then
 			tried=1 btl_told=1
 			btl_recover
@@ -370,13 +417,19 @@ while :; do
 			btl_told=1
 			log "LED bar is in bootloader mode (USB 14be:001a). The one try of this start is used. Restart the tsx-ledbar service to try again"
 		fi
-	elif [ -n "$cur" ]; then
-		log "LED bar removed"
-		cur=
-		fw_drop
-	elif [ -z "$told" ]; then
-		log "LED bar not found yet (USB 14be:001b). Waiting for it"
-		told=1
+	else
+		# no bar: the attached file stays for GONE seconds, so a short USB
+		# reset does not change the entities of Home Assistant
+		gone=$((gone + 1))
+		[ "$gone" -lt "$GONE" ] || usb_drop
+		if [ -n "$cur" ]; then
+			log "LED bar removed"
+			cur=
+			fw_drop
+		elif [ -z "$told" ]; then
+			log "LED bar not found yet (USB 14be:001b). Waiting for it"
+			told=1
+		fi
 	fi
 	sleep 1
 done
