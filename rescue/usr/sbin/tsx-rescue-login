@@ -5,7 +5,7 @@
 #   1. The panel's own login. The script reads panel.conf on the tsxdata
 #      file system (LABEL=tsxdata, read only) and uses ROOT_PASSWORD_HASH
 #      and SSH_AUTHORIZED_KEY, the two values that the installer writes
-#      (docs/rootfs.md "Root login"). The hash becomes the password of root
+#      (see tsx-rootpw). The hash becomes the password of root
 #      in /etc/shadow. The key becomes /root/.ssh/authorized_keys.
 #   2. A one-time password. If /data cannot be read, or panel.conf has
 #      neither value, the script makes a random password for this boot. It
@@ -15,7 +15,8 @@
 #      only a person at the panel can log in. Run the script again to get a
 #      new one.
 #   3. A test build. If the image build put a password hash into /etc/shadow
-#      (TSX_DEV_RESCUE_HASH, docs/recovery.md "Test builds"), the script
+#      (TSX_DEV_RESCUE_HASH, see the "Test builds" docs of the board repository), the
+#      script
 #      leaves it as it is. A public image never has one.
 #
 # The script writes the case to $RUN/tsx-rescue-login: panel, onetime or build.

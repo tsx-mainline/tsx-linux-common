@@ -284,7 +284,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
     )
     entities.append(touched_recently)
 
-    # ---- update (tsx-autoupdate status. docs/rootfs.md "Updates") -------------------
+    # ---- update (tsx-autoupdate status) -----------------------------------
     update = UpdateEntity(
         server, key_for("update"), "Update", "update",
         get_state=backend.get_update_status, install=backend.install_update, icon="mdi:package-up",
@@ -292,7 +292,8 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
     entities.append(update)
 
     # ---- sensors and board I/O: each one only where its device is --------
-    # (the daemons of the board write the state files; docs/ha.md "Sensors")
+    # (the daemons of the board write the state files, see the "Sensors" docs of
+    # the board repository)
     presence = distance = None
     if backend.presence_present():
         presence = BinarySensorEntity(

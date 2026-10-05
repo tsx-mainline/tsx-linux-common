@@ -1,6 +1,7 @@
 #!/sbin/openrc-run
 # The Bluetooth controller and the passive BLE scanner of the
-# Bluetooth proxy (docs/ha.md "Bluetooth proxy"). It runs only when
+# Bluetooth proxy (see the "Bluetooth proxy" docs of the board repository). It
+# runs only when
 # BT_PROXY=on in panel.conf. Empty BT_PROXY is the board default
 # (TSX_BT_PROXY_DEFAULT in the board file).
 #

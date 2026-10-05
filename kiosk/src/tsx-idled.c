@@ -53,7 +53,7 @@
  *  - Every 5 s, the daemon applies the level again if the schedule or someone
  *    else (drm panel enable on unblank, brightnessctl) changed it.
  *  - Boot hold: the daemon can start within the first minute after boot while
- *    the backlight is still lit (the U-Boot logo level, which the kernel
+ *    the backlight is still lit (the bootloader logo level, which the kernel
  *    keeps). Then it does not step the level to the day/night schedule until
  *    tsx-als has published its first level (als-level), for 15 s at most
  *    (TSX_BOOT_HOLD seconds overrides it, 0 = off). Meanwhile the state is

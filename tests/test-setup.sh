@@ -1,6 +1,7 @@
 #!/bin/bash
 # Host test for the on-panel setup page (see
-# docs/rootfs.md "Setup page"). The test covers these parts:
+# see the "Setup page" docs of the board repository). The test covers these
+# parts:
 #  - tsx-kiosk-url (which URL the kiosk loads)
 #  - the `validate` and `setup` subcommands of tsx-config
 #  - tsx-setup-helper (the one root process that privileged writes go through)
@@ -32,9 +33,8 @@
 #  - no secret ever appears in a JSON response or in the log of either daemon
 set -uo pipefail
 export PYTHONDONTWRITEBYTECODE=1   # the test imports tsx-setupd: no .pyc next to it
-# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
+# The made-up board (tests/boards/fake) for the scripts that read a board file.
+. "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 . "$HERE/tests/lib/paths.sh"
 SETUPD=$(P usr/local/sbin/tsx-setupd)
@@ -117,7 +117,8 @@ EOF
 chmod +x "$T/bin/tsx-panelctl"
 # A deliberately broken `date`, early on PATH. tsx-config setup and
 # tsx-kiosk-url must not be affected AT ALL. They read /proc/uptime and never
-# call date +%s (docs/rootfs.md "Setup page"). This proves that the setup
+# call date +%s (see the "Setup page" docs of the board repository). This
+# proves that the setup
 # window is monotonic and not wall-clock. The test does not need to step the
 # system clock, which a host test cannot do safely. The log() of
 # tsx-setup-helper DOES call date, for cosmetic timestamps only. It must keep
@@ -668,7 +669,8 @@ fi
 
 # ---- 7. tsx-config setup re-opens it for one window, then it expires ---
 # (fake broken `date` is on PATH for all of this: proves the window uses
-# /proc/uptime, not wall-clock time -- docs/rootfs.md "Setup page")
+# /proc/uptime, not wall-clock time -- see the "Setup page" docs of the board
+# repository)
 echo "== tsx-config setup (monotonic window, PATH has a deliberately broken date) =="
 BEFORE_UPTIME=$(awk '{print int($1)}' /proc/uptime)
 KR0=$(grep -c 'kiosk-restart' "$T/helper.log" 2>/dev/null || true)
@@ -727,7 +729,7 @@ out=$(submit "$GSUBMIT")
 	&& ok "a submit leaves VOICE, WAKE_WORD and BT_PROXY as they are (a panel.conf from another panel keeps them)" \
 	|| bad "submit on a panel without the parts: $(status_of "$out"), $(grep -E '^(VOICE|WAKE_WORD|BT_PROXY)=' "$CONF" | tr '\n' ' ')"
 case "$page" in *'name="BT_PROXY"'*'id="bt-wrap"'*|*'id="bt-wrap"'*'name="BT_PROXY"'*) ok "the page has the Bluetooth proxy field and hides it when unavailable";; *) bad "the page has no Bluetooth proxy field";; esac
-case "$page" in *'(default: off)'*) ok "the Bluetooth proxy field names the default of the board (off)";; *) bad "the Bluetooth proxy field does not name the board default";; esac
+case "$page" in *'(default: on)'*) ok "the Bluetooth proxy field names the default of the board (on)";; *) bad "the Bluetooth proxy field does not name the board default";; esac
 case "$page" in *'if (el.disabled) return;'*) ok "the page sends no disabled field";; *) bad "the page sends disabled fields";; esac
 rm -f "$RUNDIR/hw.conf"
 

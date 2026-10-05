@@ -1,21 +1,18 @@
 #!/sbin/openrc-run
 # tsx-hostname: name the panel like the factory firmware does,
-# <model>-<MAC uppercase, no colons> (for example TSW-1060-XXXXXXXXXXXX),
+# <model>-<MAC uppercase, no colons> (for example MODEL-100-XXXXXXXXXXXX),
 # before anything on the network needs the name. The order of the sources:
 #   1. lan_hostname from the board data (tsx_board_hostname_hint of board.sh).
-#      The board file only READS its data. The xx60 reads the U-Boot env with
-#      fw_printenv, the same env that tsx-boot-ok writes to (see
-#      /etc/tsx/uboot-env.conf). The factory firmware itself used this exact
-#      string.
-#   2. <model>-<MAC>. The board file gives the model (tsx_board_model). On the
-#      xx60 it is product_name up to "_[" (for example "TSW-1060" from
-#      "TSW-1060_[v3.002.1055,_#XXXXXXXX]"). Another board can give the device
+#      The board file only READS its data. A board can keep this name in the
+#      bootloader environment, which it reads with a tool of the board. The
+#      factory firmware used this exact string.
+#   2. <model>-<MAC>. The board file gives the model (tsx_board_model). A board
+#      can cut the model from a longer product string, or it can give the device
 #      tree model without the vendor name. The MAC is the one of eth0. tsx-setup
-#      sets it and must run first, because the kernel MAC is random on these
-#      boards.
+#      sets it and must run first, because the kernel MAC can be random.
 #   3. tsx-kiosk.
-# PANEL_NAME in the panel config (tsx-config, docs/rootfs.md "Panel
-# configuration") overrides all of the above. If it is set, tsx-config apply
+# PANEL_NAME in the panel config (see the header of tsx-config) overrides all
+# of the above. If it is set, tsx-config apply
 # writes it to /run/tsx/panel-name before this service runs (it already
 # validated the name against the same charset). It wins outright. It also
 # names the sendspin player and the voice satellite, so the panel has one

@@ -4,7 +4,7 @@
 # tsx-mqtt, the voice satellite). Those programs reach the buttons, the light
 # sensor, the LED bar, the volume and the display power only through this
 # program. This is the seam between the base and the Home Assistant layer
-# (docs/rootfs.md "Profiles"). It has four faces:
+# (see the "Profiles" docs of the board repository). It has four faces:
 #
 #   tsx-panelctl                      the daemon: it reads whitelisted commands
 #                                     from a FIFO (below)
@@ -41,13 +41,13 @@
 #                                     present values (not a button).
 #
 # LED bar firmware: "has ledbar-fx" and "has ledbar-leds" read
-# /run/tsx/ledbar.fw. The LED bar service of the board (root) writes it
+# /run/tsx/ledbar.fw. The service tsx-ledbar (tsx-ledbard, root) writes it
 # after each plug-in of the bar, with the lines of "tsx-ledbar fw" (firmware,
 # effects, leds) and "caps WORDS". Only root can open the USB device of the
 # bar, and the CAPS query of "tsx-ledbar fw" needs it. So the voice satellite
-# (user kiosk) cannot ask the bar itself. Without the file (an older board
-# service, the first check of the bar is not done yet, the service is
-# stopped), the script asks "tsx-ledbar fw". That works fully only for root.
+# (user kiosk) cannot ask the bar itself. Without the file (the first check of
+# the bar is not done yet, the service is stopped), the script asks
+# "tsx-ledbar fw". That works fully only for root.
 #
 # The files that hold these values are /run/tsx/*.state and
 # /run/tsx-idled.state (written by tsx-buttons, tsx-idled and the daemons of
@@ -57,15 +57,15 @@
 # in the CLI of the board, or the has command says no.
 #
 # The daemon is the ONLY privileged surface of the panel for the
-# unprivileged Home Assistant ESPHome plugin (docs/ha.md "One Home Assistant device"). It runs
+# unprivileged Home Assistant ESPHome plugin (docs/esphome.md). It runs
 # as root and reads fixed, whitelisted commands from a FIFO that the group
 # "kiosk" can write. It runs them with the existing root-only CLIs
 # (tsx-ledbar, tsx-keypad, tsx-kiosk-page, tsx-blank, tsx-config, reboot), or it writes the
 # runtime override files that they use. Its second client is the
 # quick-settings overlay (tsx-overlay, also user kiosk): brightness-offset,
 # brightness-learn-reset (forget the points that the automatic brightness
-# learned from manual changes), als, blank, reload-page, setup (the "Setup" button, docs/rootfs.md "Setup
-# page").
+# learned from manual changes), als, blank, reload-page, setup (the "Setup"
+# button, see the "Setup page" docs of the board repository).
 #
 # WHY THIS EXISTS: the voice satellite (tsx-voice / linux-voice-assistant)
 # runs as user kiosk (group kiosk, + audio), not as root. It is an always-on
@@ -427,7 +427,7 @@ handle() {
 		else reject "brightness-offset $a1 $a2 $a3 $a4 $rest"; fi;;
 	brightness-learn-reset)
 		# Forget the learned points: remove the file, and tell the daemon
-		# of the light curve (tsx-sensord or tsx-als-learn) with a flag file.
+		# of the light curve (the light service of the board) with a flag file.
 		if [ -z "$a1$a2$a3$a4$rest" ]; then
 			log "brightness-learn-reset"
 			rm -f "${TSX_LEARN_FILE:-/data/tsx/brightness-learn.json}"
@@ -487,7 +487,7 @@ handle() {
 		# The "Setup" button of the quick-settings overlay (tsx-overlay.c).
 		# It reopens the on-panel setup page for one ~15 min window, even on
 		# an already-configured panel, like `tsx-config setup` over ssh
-		# (docs/rootfs.md "Setup page").
+		# (see the "Setup page" docs of the board repository).
 		if [ -z "$a1$a2$a3$a4$rest" ]; then
 			log "setup requested"; "$CONFIG" setup
 		else reject "setup $a1 $a2 $a3 $a4 $rest"; fi;;
@@ -498,7 +498,7 @@ handle() {
 
 # Opening with <> (read+write) keeps a permanent reference on the FIFO. A
 # short-lived writer (each caller opens, writes one line, closes) then never
-# makes the read see EOF. See docs/ha.md "One Home Assistant device": a plain
+# makes the read see EOF. See docs/esphome.md: a plain
 # read-only open would make this loop exit after the very first command.
 exec 3<>"$FIFO"
 log "listening on $FIFO"

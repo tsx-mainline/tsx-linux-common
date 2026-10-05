@@ -64,7 +64,7 @@ running() { echo "$$ install" > "$T/run/tsx-op"; echo "$1" > "$T/run/tsx-install
 echo "== idle =="
 clear_op; render
 want '^\\___)=(___/   rescue$' "the line under the banner is just \"rescue\""
-wantnot 'mainline rescue' "no \"mainline rescue -- TSW ...\" line"
+wantnot 'mainline rescue' "no \"mainline rescue -- MODEL ...\" line"
 wantnot 'reason for rescue' "no reason row"
 wantnot '^status' "no status row"
 wantnot 'idle: waiting' "no idle status text"

@@ -2,7 +2,7 @@
 # tsx-config: read and write the one configuration file of the panel, and
 # apply it to the running services. The same script runs on the panel, in
 # host-side installer tooling (TSX_CONF pointed at a build-time file), and
-# in the on-panel setup page (tsx-setupd, docs/rootfs.md "Setup page"). It
+# in the on-panel setup page (tsx-setupd). It
 # uses busybox ash and plain POSIX sh only (`busybox sh -n`), no bash syntax.
 #
 #   tsx-config get KEY            print the value (empty + exit 1 if unset)
@@ -42,7 +42,7 @@
 # Keys:
 # PANEL_NAME, KIOSK_URL, HA_LOGIN_METHOD (token|trusted), HA_TOKEN, TZ_NAME,
 # VOICE (on|off), WAKE_WORD.
-# HA_TRANSPORT (esphome|mqtt|both), see docs/ha.md "One Home Assistant device":
+# HA_TRANSPORT (esphome|mqtt|both), see docs/esphome.md:
 #   esphome = one zero-config Home Assistant device over the ESPHome native
 #             API, with no broker. It is tsx-esphome, or the voice satellite
 #             itself when VOICE=on.
@@ -50,14 +50,15 @@
 #   both    = run whichever of the two are configured.
 # HA_API_KEY: the ESPHome API encryption key. It is 32 random bytes, base64,
 #   like `api: encryption: key:` of ESPHome. The same text goes into Home
-#   Assistant. Empty = plaintext, the zero-config default -- docs/ha.md
-#   "Security".
+#   Assistant. Empty = plaintext, the zero-config default. See the "Security"
+#   docs of the board repository.
 # HA_ALLOW_FROM: comma list of IPv4/IPv6 addresses or CIDRs that can use the
 #   ESPHome API. Empty = allow any, the zero-config default.
 # MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, KERNEL_FLAVOR (lts|stable).
 # APK_URL: base URL of the apk repositories of this project (tsx-aports).
 #   apply rewrites the two lines <APK_URL>/<alpine-branch>/common and
-#   .../xx60 (the repository category of the board) at the top of /etc/apk/repositories. Unset = the build default
+#   <APK_URL>/<alpine-branch>/<category> (TSX_APK_CATEGORY of the board file)
+#   at the top of /etc/apk/repositories. Unset = the build default
 #   in /etc/tsx/apk-url.default. "off" = leave them out.
 # BLANK_TIMEOUT: seconds without input before the screen goes dark, 0 =
 #   never. It replaces BLANK_TIMEOUT of kiosk.conf through
@@ -76,12 +77,12 @@
 #   how the panel hangs, see tsx-orientation. Apply keeps
 #   /etc/tsx/orientation on the root file system for the initramfs, the
 #   splash, the kiosk and tsx-buttons, and turns the running kiosk at once.
-# BT_PROXY (on|off|empty, default empty = the board default, off on the
-#   xx60): the Bluetooth proxy for Home
-#   Assistant (docs/ha.md "Bluetooth proxy"). The board default comes from
-#   TSX_BT_PROXY_DEFAULT (a board file sets it). Apply writes /run/tsx/bt.conf
-#   (world-readable, no secret) for tsx-bt and both ESPHome front ends, and
-#   starts or stops the tsx-bt service when the value changes.
+# BT_PROXY (on|off|empty, default empty = the board default): the Bluetooth
+#   proxy for Home Assistant (see the "Bluetooth proxy" docs of the board
+#   repository). The board default comes from TSX_BT_PROXY_DEFAULT (a board
+#   file sets it). Apply writes
+#   /run/tsx/bt.conf (world-readable, no secret) for tsx-bt and both ESPHome
+#   front ends, and starts or stops the tsx-bt service when the value changes.
 # BT_ACTIVE (on|off, default off): with BT_PROXY=on, also active connections:
 #   Home Assistant can connect to BLE devices through the panel (GATT).
 #   Apply writes it to bt.conf and restarts the ESPHome front end, so that
@@ -89,10 +90,10 @@
 # BT_MAC: the Bluetooth address that tsx-bt loads into the chip. Empty = the
 #   eth0 MAC, the same value as the vendor firmware.
 # AUTO_BRIGHTNESS (on|off, default on): the backlight follows the ambient
-#   light sensor (tsx-als or tsx-sensord, whichever the board has). Apply
-#   writes it to /run/tsx/als.panel, which tsx-als reads in place of ALS_AUTO of
-#   /etc/tsx/als.conf, and to /run/tsx/sensors.conf for tsx-sensord. `tsx-als
-#   auto` and the Home Assistant "Auto brightness" switch write this key.
+#   light sensor (the light service of the board). Apply writes it to
+#   /run/tsx/als.panel, which a light service in shell (tsx-als) reads in place
+#   of ALS_AUTO of /etc/tsx/als.conf, and to /run/tsx/sensors.conf for a sensor
+#   daemon of the board. `tsx-als auto` and the Home Assistant "Auto brightness" switch write this key.
 # ALS_SCALE (lux = sensor lux x this; 0.01-1000; empty = 1.0 or the own
 #   calibration of the unit, for example a factor for the front glass). Apply
 #   writes it to /run/tsx/als.panel and to /run/tsx/sensors.conf. The curve
@@ -102,8 +103,8 @@
 #   4000, default the threshold of the unit). PRESENCE_MIN_MM (closer than
 #   this is the front window, 0 to 1000). PRESENCE_HOLD_S (seconds without a
 #   target before "away", 1 to 3600). Only a board with a distance sensor
-#   uses these four keys. Apply writes them to /run/tsx/sensors.conf for
-#   tsx-sensord.
+#   uses these four keys. Apply writes them to /run/tsx/sensors.conf for the
+#   sensor daemon of the board.
 # A board can add keys with the plugins of the folder config.d (see "Plugins"
 # below). get, set, validate, unset, show and apply treat these keys like the
 # keys above.
@@ -114,8 +115,7 @@
 # apply treats them as off. A key of a plugin (config.d) can do the same with
 # its own part.
 # ROOT_PASSWORD_HASH, SSH_AUTHORIZED_KEY.
-# See installer/panel.conf.example and docs/rootfs.md "Panel configuration"
-# for what each key does.
+# This header says what each key does.
 set -eu
 TSX_CONF=${TSX_CONF:-/data/tsx/panel.conf}
 RUN=${TSX_RUN:-/run}/tsx
@@ -131,7 +131,7 @@ PREFIX=${TSX_APPLY_PREFIX:-}
 # (host tooling, an early boot) means a panel with all parts.
 HW_CONF=${TSX_HW_CONF:-$RUN/hw.conf}
 # The board values (TSX_FAMILY, TSX_APK_CATEGORY, TSX_BT_PROXY_DEFAULT,
-# TSX_BT_MAC_SETTABLE). Test hook: TSX_BOARD_CONF. The installer runs this
+# TSX_BT_MAC_SETTABLE, TSX_CONFIG_RELOAD). Test hook: TSX_BOARD_CONF. The installer runs this
 # script from a checkout of the repository on a host. There the board file is
 # next to it.
 BOARD=${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}
@@ -528,7 +528,7 @@ clock_status() {
 }
 
 # Warn when the ESPHome API has neither a key nor an allow-list. Then anyone
-# on the LAN can use it (docs/ha.md "Security").
+# on the LAN can use it (see the "Security" docs of the board repository).
 warn_open_api() {
 	# The console profile has no ESPHome device: nothing listens on port 6053.
 	[ "$(cat "$PREFIX/etc/tsx/profile" 2>/dev/null)" != console ] || return 0
@@ -539,7 +539,7 @@ warn_open_api() {
 	echo "#   HA_ALLOW_FROM is empty, so any host on the LAN can reboot this panel" >&2
 	echo "#   or change its kiosk URL. Set HA_API_KEY (encryption key, made with" >&2
 	echo "#   head -c 32 /dev/urandom | base64) and/or HA_ALLOW_FROM (the address" >&2
-	echo "#   of your Home Assistant host) -- docs/ha.md \"Security\"." >&2
+	echo "#   of your Home Assistant host). See the \"Security\" docs of the board repository." >&2
 }
 
 # ---- apply: boot-time materialisation (panel only) -------------------------
@@ -559,12 +559,17 @@ seed_promote() {
 		&& log "promoted $SEED to $TSX_CONF (installer-provided config, first boot with /data available)"
 }
 
-# APK_URL: the two apk repositories of this project (tsx-aports common +
-# xx60). They are always listed FIRST in /etc/apk/repositories, because
-# tsx-xx60-chromium must win the tie with the own chromium of Alpine (see
-# "Use the repositories on a panel" in the tsx-aports README). The script rewrites only
-# the marked block, and only when it changes. The Alpine lines and anything
-# else that a user added stay as they are.
+# APK_URL: the two apk repositories of this project (tsx-aports common + the
+# category of the board). They are always listed FIRST in /etc/apk/repositories,
+# because a package of the board can replace a package of Alpine and must win
+# the tie (see "Use the repositories on a panel" in the tsx-aports README).
+# The script drops the lines of this project: the lines of the marked block,
+# and every line <base>/<branch>/<category> whose base is the current URL, the
+# build default URL, the URL of the earlier block or a URL with "tsx-aports"
+# in it. Then it writes the block. So only the categories common and the
+# board stay, and a line of another category of the same repository goes. The
+# Alpine lines and anything else that a user added stay as they are. The
+# script changes the file only when the result differs.
 APK_MARK="# tsx-aports (tsx-config apply; panel.conf APK_URL)"
 apk_repos() {
 	repos=$PREFIX/etc/apk/repositories
@@ -577,6 +582,18 @@ apk_repos() {
 	br=$(sed -nE 's#^[[:space:]]*[^#].*/(v[0-9][0-9.]*|edge)/main/*[[:space:]]*$#\1#p' "$repos" | head -n 1)
 	[ -n "$br" ] || br=v$(cut -d. -f1-2 "$PREFIX/etc/alpine-release" 2>/dev/null)
 	[ "$br" != v ] || { log "WARNING: APK_URL: cannot tell the Alpine branch; $repos left as it is"; return 0; }
+	# The base URLs of this project: the URL of the earlier block (the line
+	# after the mark), the build default, the current URL, and a host or path
+	# with tsx-aports in it. "off" is not a URL.
+	oldbase=$(sed -nE '/^# tsx-aports /{n;s#^(.*)/(v[0-9][0-9.]*|edge)/common/*[[:space:]]*$#\1#p;}' "$repos" | head -n 1)
+	defbase=$(head -n 1 "$PREFIX/etc/tsx/apk-url.default" 2>/dev/null) || defbase=
+	own='[^#[:space:]]*tsx-aports[^[:space:]]*'
+	for b in "$url" "$oldbase" "$defbase"; do
+		b=${b%/}
+		case $b in ''|off) continue;; esac
+		own="$own|$(printf '%s' "$b" | sed 's/[][\.*^$+?(){}|]/\\&/g')"
+	done
+	ownline='^[[:space:]]*(@[^[:space:]]+[[:space:]]+)?('"$own"')/(v[0-9][0-9.]*|edge)/[A-Za-z0-9_.-]+/*[[:space:]]*$'
 	tmp="$repos.tmp.$$"
 	{
 		echo "$APK_MARK"
@@ -586,10 +603,15 @@ apk_repos() {
 			echo "$url/$br/common"
 			echo "$url/$br/$TSX_APK_CATEGORY"
 		fi
-		# Everything else, minus an earlier block and any other copy of the
-		# repositories of this project (/<branch>/common and the category of
-		# any family, /<branch>/xx<NN>, so a line of another family goes too)
-		grep -vE '^# tsx-aports |^#   APK_URL=off|/(v[0-9][0-9.]*|edge)/(common|xx[0-9]+)/*[[:space:]]*$' "$repos"
+		# Everything else, minus an earlier block and every line of this
+		# project, in any category. A line of a mirror that serves the
+		# Alpine categories (main, community, testing) stays.
+		while IFS= read -r line || [ -n "$line" ]; do
+			case $line in "# tsx-aports "*|"#   APK_URL=off"*) continue;; esac
+			if printf '%s\n' "$line" | grep -qE "$ownline" \
+				&& ! printf '%s\n' "$line" | grep -qE '/(main|community|testing)/*[[:space:]]*$'; then continue; fi
+			printf '%s\n' "$line"
+		done < "$repos"
 	} > "$tmp"
 	if cmp -s "$tmp" "$repos"; then rm -f "$tmp"; return 0; fi
 	chmod 644 "$tmp" && mv "$tmp" "$repos" && log "apk repositories: tsx-aports at $url ($br). The next apk update / tsx-autoupdate check uses it"
@@ -795,7 +817,7 @@ apply() {
 		plugin_sig="$plugin_sig|$ap_sig"
 	done
 
-	# The same warning as `show` (docs/ha.md "Security"). Not with HA_TRANSPORT=mqtt.
+	# The same warning as `show` (the "Security" docs of the board repository). Not with HA_TRANSPORT=mqtt.
 	[ "$transport" = mqtt ] || warn_open_api
 
 	# HA_TRANSPORT and VOICE together decide whether tsx-esphome (the
@@ -847,10 +869,12 @@ apply() {
 	apk_repos
 
 	# PRESENCE_*, AUTO_BRIGHTNESS and ALS_SCALE: /run/tsx/sensors.conf for
-	# tsx-sensord of a board with a distance sensor (shell-style KEY="value"
-	# lines, only the keys that are set). The daemon reloads it on HUP. It does
-	# not get the HUP at the first apply after boot, because it has not started
-	# then and reads the file itself. Without such a daemon, the file is only
+	# the sensor daemon of a board (shell-style KEY="value"
+	# lines, only the keys that are set). The board names the daemon in
+	# TSX_CONFIG_RELOAD (service names, separated by spaces). A running
+	# service of that list reloads when the file changes. It does not get the
+	# reload at the first apply after boot, because it has not started then
+	# and reads the file itself. Without such a service, the file is only
 	# a file. A key of a part that the panel does not have stays out.
 	{
 		for k in PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE; do
@@ -864,9 +888,11 @@ apply() {
 	ssig=$(cat "$RUN/sensors.conf" 2>/dev/null) || ssig=
 	sfirst=1; oldssig=; [ -e "$RUN/.sensors-sig" ] && { sfirst=0; oldssig=$(cat "$RUN/.sensors-sig"); }
 	printf '%s\n' "$ssig" > "$RUN/.sensors-sig"
-	if [ "$sfirst" = 0 ] && [ "$ssig" != "$oldssig" ] && command -v rc-service >/dev/null 2>&1 \
-		&& rc-service tsx-sensord status >/dev/null 2>&1; then
-		rc-service tsx-sensord reload >/dev/null 2>&1 || true
+	if [ "$sfirst" = 0 ] && [ "$ssig" != "$oldssig" ] && command -v rc-service >/dev/null 2>&1; then
+		for svc in ${TSX_CONFIG_RELOAD:-}; do
+			case $svc in ''|*[!A-Za-z0-9_.-]*) log "WARNING: TSX_CONFIG_RELOAD: '$svc' is not a service name"; continue;; esac
+			if rc-service "$svc" status >/dev/null 2>&1; then rc-service "$svc" reload >/dev/null 2>&1 || true; fi
+		done
 	fi
 
 	# BOOT_VERBOSE=1: boot text on the LCD instead of the splash, from the
@@ -968,13 +994,15 @@ apply() {
 # setup: show the on-panel setup page (tsx-setupd) for one ~15 min window,
 # even if the panel is already configured. This is the CLI form of the
 # "Setup" overlay entry (the "setup" command of tsx-panelctl,
-# docs/rootfs.md "Setup page"). It touches only a runtime flag. kiosk-session,
+# see the "Setup page" docs of the board repository). It touches only a runtime
+# flag. kiosk-session,
 # tsx-kiosk-url and tsx-setupd all read the age of the flag. It never edits
 # panel.conf.
 #
 # The flag holds monotonic time (seconds since boot, /proc/uptime), NOT
 # date +%s. The panel has no RTC, so it boots with a stale clock, and NTP
-# steps that clock by months once chrony syncs (docs/boot.md). A wall-clock
+# steps that clock by months once chrony syncs (see the docs of the board
+# repository). A wall-clock
 # timestamp written just before that step would read as expired at once, or
 # as good for months. Both are wrong. /run is tmpfs, so a reboot (a new boot,
 # a new uptime epoch) always clears this file anyway.

@@ -9,13 +9,13 @@ depend() { need localmount; before networking kiosk; }
 #
 # Mainline has no MAC source on these boards. The kernel picks a random MAC
 # at each boot, so the DHCP address changed at every boot. The board file
-# (board.sh) reads the unit MAC from the place that the board keeps it, for
-# example the U-Boot env or the devinfo partition. This MAC ALWAYS wins when
+# (board.sh) reads the unit MAC from the place that the board keeps it. This
+# MAC ALWAYS wins when
 # the board gives a valid one. The rescue system uses the same MAC, so a
 # panel keeps one DHCP address in both. TSX_ETH0_MAC_FILE (/etc/tsx/eth0.mac)
 # is only the fallback for a unit with no MAC in the board data. The script
-# keeps it in step with a valid board MAC whenever it sees one (docs/recovery.md
-# "Random MAC in the rescue, and the fix").
+# keeps it in step with a valid board MAC whenever it sees one (see the docs of
+# the board repository, "Random MAC in the rescue, and the fix").
 #
 # The board file gives the MAC (tsx_board_mac_early, board.sh). TSX_BOARD_CONF
 # and TSX_ETH0_MAC_FILE are hooks for host tests only (tests/). The hooks of

@@ -4,8 +4,8 @@
  * The kernel command line maps the framebuffer console to a framebuffer
  * that never exists (fbcon=map:1). So no kernel text reaches the LCD, and
  * nothing else draws on fb0. This tool owns the screen from the initramfs
- * until the compositor of the kiosk takes the display (docs/boot.md "Boot
- * splash").
+ * until the compositor of the kiosk takes the display (see the "Boot splash" docs of the board
+ * repository).
  *
  *   tsx-splash [-s TEXT] [-p PCT] show      image, status line and progress bar
  *   tsx-splash [-s TEXT] [-p PCT] status    redraw only the status band
@@ -36,7 +36,7 @@
  * opening the framebuffer.
  * -o ORIENTATION is landscape, portrait, landscape-flipped or
  * portrait-flipped. The default is the name in /etc/tsx/orientation (env
- * TSX_ORIENTATION_FILE), else landscape (docs/rootfs.md "Orientation").
+ * TSX_ORIENTATION_FILE), else landscape (see tsx-orientation).
  *
  * The tool composes the frame upright for the viewer (for example 800x1280
  * on a 1280x800 LCD in portrait, from splash-800x1280.ppm). It turns the
@@ -55,7 +55,7 @@
  * older kernel without fbcon=map:1). So they never draw over boot text.
  * "show" records the framebuffer driver (fix.id) in /run/tsx-splash.fb.
  * "status" does a full "show" instead in two cases. In the first case, fb0
- * has another driver: the DRM driver replaced simpledrm on the U-Boot
+ * has another driver: the DRM driver replaced simpledrm on the bootloader
  * framebuffer after "show" and switched that plane off. In the second case,
  * the orientation changed: the initramfs knows it only once the root file
  * system is mounted. The full "show" brings the splash back and not just a

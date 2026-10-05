@@ -1,6 +1,6 @@
 """The hardware facts of the panel: /run/tsx/hw.conf, written at boot by
-tsx-hw (rootfs/overlay/usr/local/sbin/tsx-hw, docs/rootfs.md "Panel
-parts"). A missing file or key means that the part is there.
+the tsx-hw of the board (see the "Panel parts" docs of the board repository).
+A missing file or key means that the part is there.
 
 Test hooks: TSX_HW_CONF, else TSX_RUN_DIR/hw.conf.
 """

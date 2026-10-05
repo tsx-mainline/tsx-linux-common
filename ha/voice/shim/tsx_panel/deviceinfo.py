@@ -23,8 +23,9 @@ _MODEL = None
 
 
 def model() -> str:
-    """The model of the panel: "xx60 panel" on the xx60, "Crestron <model>"
-    on a board that gives the model of the unit (backend.esphome_model)."""
+    """The model of the panel: "<family> panel" on a board that gives only its
+    family name, "Crestron <model>" on a board that gives the model of the
+    unit (backend.esphome_model)."""
     global _MODEL  # noqa: PLW0603
     if _MODEL is None:
         _MODEL = esphome_model(board_call("tsx_board_ha_model"), board_value("TSX_HA_MODEL")) or "panel"

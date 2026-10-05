@@ -7,7 +7,7 @@
 #                                   in there. /etc/init.d/tsx-config runs it
 #                                   at each start.
 # The serial console is TSX_SERIAL_CONSOLE of the board file (for example
-# ttyAML0). Without it, the function uses the serial consoles that
+# ttyS0). Without it, the function uses the serial consoles that
 # the kernel lists in /proc/consoles. Test hooks: TSX_PROC_CONSOLES,
 # TSX_SECURETTY (the securetty file that tsx_serial_allow_root changes).
 tsx_serial_say() {

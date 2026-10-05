@@ -14,9 +14,8 @@ adds these fields:
 
 and these checks: the settings that this panel cannot use (no microphone, no
 voice service, no Bluetooth module), and the Home Assistant URL check. A board
-can add more fields with its own plugin file in the same folder, for example
-a camera field. The page code of tsx-setupd never names Home Assistant, MQTT
-or voice.
+can add more fields with its own plugin file in the same folder. The page
+code of tsx-setupd never names Home Assistant, MQTT or voice.
 
 What a plugin gives to tsx-setupd (all names are optional except NAME):
 

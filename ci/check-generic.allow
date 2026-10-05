@@ -1,0 +1,9 @@
+# Allow list of ci/check-generic.sh. One entry per line:
+#   PATH-GLOBS :: TOKEN-REGEX :: REASON
+# PATH-GLOBS are separated by commas. TOKEN-REGEX must match a whole word that
+# the gate finds. A line with "for example" or "e.g." needs no entry.
+ci/check-no-proprietary.sh :: csr8811|tfa9890|psr :: The guard names the vendor files and folders that it refuses.
+tests/test-board-fake.sh :: uboot|u-boot|xx60|tss|tsw|meson|lima|ttyaml :: The test lists real hardware names, which a made-up board must never show.
+ha/usr/local/sbin/tsx-bt,tests/test-bt.sh :: psr|psrkind :: Names of the state file field and of the chip file variable. The chip files of the boards set PSRKIND.
+tests/boards/fake/esphome.d/fakeent.py,tests/test-shim-plugins.sh :: camera :: The fake plugin uses the camera message classes of the API library as an entity type that common does not know.
+tests/test-generic-gate.sh :: .* :: The test plants these words on purpose to prove that the gate fails.

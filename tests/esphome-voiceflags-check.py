@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Client-side check of the voice feature flags for tests/test-esphome.sh.
 
-  esphome-voiceflags-check.py OFF_PORT ON_PORT GOV_PORT [--key BASE64]
+  esphome-voiceflags-check.py OFF_PORT ON_PORT NOMIC_PORT [--key BASE64]
 
 OFF_PORT: tsx-esphome (VOICE=off) on a panel with a microphone.
 ON_PORT:  the voice satellite code path (VOICE=on), noise-encrypted with --key.
-GOV_PORT: tsx-esphome on a panel without a microphone (MIC=no).
+NOMIC_PORT: tsx-esphome on a panel without a microphone (MIC=no).
 
 Home Assistant (esphome integration, tag 2026.9.2) makes the voice selects
 (pipelines, finished speaking detection, wake words) once for each setup of the
@@ -67,7 +67,7 @@ async def flags_of(port, key, subscribe=False):
 async def main(args) -> int:
     off = await flags_of(args.off_port, None, subscribe=True)
     on = await flags_of(args.on_port, args.key)
-    gov = await flags_of(args.gov_port, None)
+    nomic_flags = await flags_of(args.nomic_port, None)
 
     only = VoiceAssistantFeature.VOICE_ASSISTANT
     assert off == only, f"VOICE=off announces {off!r}, want only VOICE_ASSISTANT"
@@ -77,7 +77,7 @@ async def main(args) -> int:
     print(f"OK: VOICE=on: voice_assistant_feature_flags {int(on)}")
     assert bool(off) and bool(on), (off, on)
     print("OK: the flags are not 0 in both modes (the voice selects exist in both)")
-    assert int(gov) == 0, gov
+    assert int(nomic_flags) == 0, nomic_flags
     print("OK: no microphone (MIC=no): no voice feature flags")
 
     # An entry that Home Assistant sets up while VOICE=off, and then VOICE=on, off, on
@@ -92,7 +92,7 @@ async def main(args) -> int:
     print("OK: an entry set up with VOICE=off has the voice selects, and the wake word list arrives when VOICE=on")
     # A panel without a microphone has no voice entities at all
     nomic = HaEntry()
-    nomic.connect(gov)
+    nomic.connect(nomic_flags)
     assert not nomic.voice_selects and not nomic.satellite, vars(nomic)
     print("OK: an entry of a panel without a microphone has no voice entities")
     return 0
@@ -102,6 +102,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("off_port", type=int)
     parser.add_argument("on_port", type=int)
-    parser.add_argument("gov_port", type=int)
+    parser.add_argument("nomic_port", type=int)
     parser.add_argument("--key")
     sys.exit(asyncio.run(main(parser.parse_args())))

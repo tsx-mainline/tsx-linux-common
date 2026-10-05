@@ -4,8 +4,8 @@
 # ESPHome device name (--name). They get it through /run/tsx/voice.conf, which
 # `tsx-config apply` always writes, so both front ends have it. The precedence
 # is the same as for /etc/kiosk.conf and /run/tsx/kiosk.conf in kiosk-session:
-# the /etc default first, then the /run/tsx override (docs/rootfs.md "Panel
-# configuration"). --print only builds and prints the command, so this test
+# the /etc default first, then the /run/tsx override (see the header of
+# tsx-config). --print only builds and prints the command, so this test
 # needs neither linux-voice-assistant nor python3.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)

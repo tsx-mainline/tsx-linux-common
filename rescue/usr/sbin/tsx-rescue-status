@@ -4,8 +4,8 @@
 # While an install or restore runs, it also shows what that operation does.
 # Both rescues use this screen: the standalone rescue image and the initramfs
 # own rescue (force-rescue, tsx.rescue, no usable root). The script draws on
-# /dev/tty0 (the panel LCD, through fbcon: docs/recovery.md "The rescue
-# screen"). It also mirrors the screen as one line to /dev/kmsg (with a
+# /dev/tty0 (the panel LCD, through fbcon: see the "The rescue screen" docs of the board
+# repository). It also mirrors the screen as one line to /dev/kmsg (with a
 # kernel timestamp, so it reaches the serial console). busybox ash only.
 #
 #   tsx-rescue-status loop    The inittab entry "tty1::respawn:" runs this mode

@@ -1,6 +1,6 @@
 """tsx_panel: the panel as one Home Assistant device over the ESPHome
 native API. Shared by two front ends that never run at
-the same time (see docs/ha.md "One Home Assistant device"):
+the same time (see docs/esphome.md):
 
   tsx-esphome           standalone server, used when VOICE=off
   tsx_lva (the voice satellite's shim) appends these same entities into its

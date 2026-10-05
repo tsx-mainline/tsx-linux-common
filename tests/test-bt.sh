@@ -1,6 +1,6 @@
 #!/bin/bash
 # Host test for the Bluetooth bring-up of the panel (docs/layout.md
-# "Bluetooth chip file", docs/ha.md "Bluetooth proxy"). No hardware, no
+# "Bluetooth chip file"). No hardware, no
 # compile, Python standard library and busybox only:
 #  - tsx-bt (the bring-up script) with a fake sysfs, fake tools and a
 #    made-up chip file: the order of the steps, the Bluetooth address, the

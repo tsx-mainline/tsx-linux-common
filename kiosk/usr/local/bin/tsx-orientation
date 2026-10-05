@@ -1,7 +1,7 @@
 #!/bin/sh
-# tsx-orientation: the screen orientation of the panel (panel.conf ORIENTATION,
-# docs/rootfs.md "Orientation"). It is the one table that all consumers take
-# their numbers from, and the live switch for the running kiosk.
+# tsx-orientation: the screen orientation of the panel (panel.conf ORIENTATION).
+# It is the one table that all consumers take their numbers from, and the
+# live switch for the running kiosk.
 #
 # The names describe how the panel hangs on the wall, seen from the front:
 #   landscape          the native mode: the front keys right of the screen

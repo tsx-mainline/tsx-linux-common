@@ -13,7 +13,7 @@ PRINT=${TSX_VOICE_PRINT:-0}; [ "${1-}" = --print ] && PRINT=1
 # The NAME and WAKE_WORD override of panel.conf (`tsx-config apply`). The
 # start_pre of /etc/init.d/tsx-voice also sources this file. That is a
 # separate process, and its variables never reach this one. So this script
-# must read the override too -- docs/rootfs.md "Panel configuration".
+# must read the override too -- the header of tsx-config.
 RUNCONF=${TSX_VOICE_RUN_CONF:-/run/tsx/voice.conf}
 [ -r "$RUNCONF" ] && . "$RUNCONF"
 case $WAKE in

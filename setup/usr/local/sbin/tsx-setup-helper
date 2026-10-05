@@ -1,6 +1,6 @@
 #!/bin/sh
 # tsx-setup-helper: the ONLY privileged surface for tsx-setupd (the
-# unprivileged on-panel and LAN setup page, docs/rootfs.md "Setup page").
+# unprivileged on-panel and LAN setup page, see the "Setup page" docs of the board repository).
 # It runs as root and reads fixed, whitelisted commands from a FIFO. The
 # group "tsx-setup" can write to the FIFO. That is the own, unprivileged
 # user of tsx-setupd. It is deliberately NOT "kiosk". The setup page is a
@@ -8,7 +8,7 @@
 # is always unsandboxed and which tsx-panelctl must already assume is hostile.
 # The helper runs the commands with tsx-config or chpasswd. tsx-setupd
 # itself never reads or writes panel.conf (mode 600, owned by root -- see
-# docs/rootfs.md "Panel configuration"). It never runs a shell that is built
+# see the header of tsx-config). It never runs a shell that is built
 # from what a form submits. This script hands every value to tsx-config or
 # chpasswd only as a separate argv element or over stdin. It never puts a
 # value into a command string.

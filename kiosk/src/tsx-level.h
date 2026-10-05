@@ -7,7 +7,7 @@
  * at the dark end. The eye sees a level of 600 as about half as bright as
  * 2400, not as a quarter. So the slider position pos (0 to 1) maps to the
  * level with a square: level = min + (max - min) * pos * pos. A backlight
- * with a small range (the xx60: 24 steps) stays linear, because every step
+ * with a small range (for example 24 steps) stays linear, because every step
  * is already large.
  */
 #ifndef TSX_LEVEL_H

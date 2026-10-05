@@ -33,17 +33,14 @@ cp "$KCONF" "$T/etc/kiosk.conf"
 rm -f "$T/etc/tsx/panel-board.conf" "$T/run/kiosk.conf"
 eq "$(show)" "gpu=auto max= day= gov=off ovl=fivefinger" "no board file: the neutral values of kiosk.conf"
 
-for fam in xx60; do
-	[ -r "$HERE/tests/boards/$fam/panel-board.conf" ] || continue
-	cp "$HERE/tests/boards/$fam/panel-board.conf" "$T/etc/tsx/panel-board.conf"
-	case $fam in
-	xx60) eq "$(show)" "gpu=browser max=23 day=17 gov=performance ovl=fivefinger" "the xx60 board file sets GPU, backlight range and governor";;
-	esac
-done
+# The made-up board of tests/boards/fake. The family tests check the values of
+# a real board file.
+BOARD_CONF=$HERE/tests/boards/fake/panel-board.conf
+cp "$BOARD_CONF" "$T/etc/tsx/panel-board.conf"
+eq "$(show)" "gpu=compositor max=15 day=11 gov=ondemand ovl=fivefinger" "the board file sets GPU, backlight range and governor"
 
-cp "$HERE/tests/boards/xx60/panel-board.conf" "$T/etc/tsx/panel-board.conf"
 printf 'KIOSK_GPU="off"\nBRIGHTNESS_DAY=5\n' > "$T/run/kiosk.conf"
-eq "$(show)" "gpu=off max=23 day=5 gov=performance ovl=fivefinger" "panel.conf (/run/tsx/kiosk.conf) wins over the board file"
+eq "$(show)" "gpu=off max=15 day=5 gov=ondemand ovl=fivefinger" "panel.conf (/run/tsx/kiosk.conf) wins over the board file"
 rm -f "$T/run/kiosk.conf"
 
 printf 'KIOSK_GPU=on\n' > "$T/etc/tsx/panel-board.conf"

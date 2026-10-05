@@ -65,7 +65,7 @@ def x_to_lux(x):
 
 
 def log_ramp(lo, hi, full_lux, steps=4):
-    """The base curve of tsx-sensord: lo at 0 lux, hi at full_lux, linear in
+    """The base curve of a sensor daemon: lo at 0 lux, hi at full_lux, linear in
     x. Returns (lux, level) pairs with `steps` + 1 points."""
     top = lux_to_x(full_lux)
     return [(x_to_lux(top * i / steps), lo + (hi - lo) * i / steps) for i in range(steps + 1)]
@@ -429,8 +429,8 @@ class Learner:
 
 
 # ---- the daemon for a board with a shell light service --------------------------
-# A board can run its own light service in shell (for example tsx-als on the
-# xx60). This part learns for it:
+# A board can run its own light service in shell (for example a tsx-als of the
+# board package). This part learns for it:
 #   python3 tsx_brightness.py als-daemon
 # It reads the curve ALS_CURVE of als.conf, learns user points, and writes the
 # whole curve to /run/tsx/als-curve ("lux:level" pairs, whole numbers). The

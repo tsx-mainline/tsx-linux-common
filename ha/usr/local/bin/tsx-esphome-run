@@ -10,7 +10,7 @@ PRINT=${TSX_ESPHOME_PRINT:-0}; [ "${1-}" = --print ] && PRINT=1
 [ -r "$CONF" ] && . "$CONF"
 # The PANEL_NAME override of panel.conf. `tsx-config apply` always writes it
 # to /run/tsx/voice.conf, and tsx-voice-run shares that file. A panel name
-# applies whether VOICE is on or off -- docs/rootfs.md "Panel configuration".
+# applies whether VOICE is on or off -- the header of tsx-config.
 RUNCONF=${TSX_ESPHOME_RUN_CONF:-/run/tsx/voice.conf}
 [ -r "$RUNCONF" ] && . "$RUNCONF"
 # tsx_panel is vendored next to the shim of the voice satellite. Both come

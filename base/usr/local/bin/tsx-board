@@ -3,9 +3,9 @@
 # source it (the Python parts of the panel software).
 #   tsx-board get NAME   print the value of the variable NAME (TSX_SOUND_CARD)
 #   tsx-board call NAME  print the output of the function NAME (tsx_board_model).
-#                        For the functions that read the U-Boot env (model,
-#                        stock_fw, unit_id, mac, hostname_hint) it reads the
-#                        env first (tsx_board_load).
+#                        For the functions that read the board data (model,
+#                        stock_fw, unit_id, mac, hostname_hint) it loads the
+#                        data first (tsx_board_load).
 # A name that the board does not define prints nothing and returns 1.
 # Test hook: TSX_BOARD_CONF replaces /usr/local/lib/tsx/board.sh.
 set -u
@@ -24,7 +24,7 @@ get)
 call)
 	case "$2" in tsx_board_*) ;; *) exit 1;; esac
 	type "$2" >/dev/null 2>&1 || exit 1
-	# The functions that read the U-Boot env print nothing until tsx_board_load
+	# The functions that read the board data print nothing until tsx_board_load
 	# has read it. This is a new process, so load it here. A failed load keeps
 	# the output empty, and the function then prints nothing (the load says why).
 	case "$2" in

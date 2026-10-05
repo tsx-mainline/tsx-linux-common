@@ -18,7 +18,8 @@ A plugin file can define these names. All are optional:
                               the Bluetooth proxy. Return True when the
                               plugin took the message. Take only a message
                               that no other code handles, for example the
-                              image request of a camera. To answer, call
+                              request for an entity type that only the plugin
+                              knows. To answer, call
                               conn.send_messages(msgs).
   connection_lost(conn)       Called when a client connection closes.
 

@@ -6,8 +6,8 @@
 #   mksplash.sh OUTDIR 1280x800 800x1280
 # Each size is WIDTHxHEIGHT in decimal, without a leading zero. Give the
 # upright size of each screen. For a panel that hangs in portrait, also give
-# the portrait size. tsx-splash turns the frame onto the landscape LCD (see
-# docs/rootfs.md "Orientation"). tsx-splash draws the largest image that fits
+# the portrait size. tsx-splash turns the frame onto the landscape LCD (the
+# table of tsx-orientation). tsx-splash draws the largest image that fits
 # the screen, so an unused size costs only space.
 # The picture scales with the size. The Tux scale is the short side divided
 # by 300, but at least 1. The word mark is 7/16 of the long side wide, but

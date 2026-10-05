@@ -1,6 +1,6 @@
 #!/sbin/openrc-run
 # Privileged command FIFO for the unprivileged on-panel setup page
-# (tsx-setupd). docs/rootfs.md "Setup page".
+# (tsx-setupd). See the "Setup page" docs of the board repository.
 description="Privileged helper for the on-panel setup page (tsx-setupd)"
 supervisor=supervise-daemon
 command=/usr/local/sbin/tsx-setup-helper

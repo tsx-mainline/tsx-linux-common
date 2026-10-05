@@ -32,7 +32,7 @@
  *   reload-page
  *   setup                 brings the on-panel setup page back up for about
  *                         15 minutes, even on an already-configured panel
- *                         (docs/rootfs.md "Setup page").
+ *                         (see the "Setup page" docs of the board repository).
  * It runs as the kiosk user, never as root.
  *
  * Why C and cairo on wl_shm: the process stays resident, so the slider appears

@@ -15,9 +15,9 @@
  * tsx-ledbard uses it to check the LED driver chips after a plug-in and to
  * restart the STM32 when they did not start.
  *
- * Backends: when the kernel driver leds-crestron-stm32 is present (for
- * example in the xx60 kernel), the tool uses it (/sys/class/leds/tsx:rgb:bar,
- * multi_intensity and brightness, and the "raw" attribute for packets).
+ * Backends: when the kernel driver leds-crestron-stm32 is present, the tool
+ * uses it (/sys/class/leds/tsx:rgb:bar, multi_intensity and brightness, and
+ * the "raw" attribute for packets).
  * Otherwise it uses libusb, which claims interface 1 itself. --usb forces
  * libusb and detaches the kernel driver while the tool runs.
  *

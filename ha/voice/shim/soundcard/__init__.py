@@ -1,8 +1,8 @@
 """Minimal ALSA stand-in for the "soundcard" package (TSX panel).
 
 linux-voice-assistant records through soundcard, which only has a PulseAudio
-backend on Linux. The panel has no sound server: the ZL38051 echo-cancelled
-capture is shared by ALSA dsnoop and exposed as the "mic" PCM
+backend on Linux. The panel has no sound server: the echo-cancelled capture of
+the audio hardware is shared by ALSA dsnoop and exposed as the "mic" PCM
 (/etc/asound.conf), which ALSA resamples to 16 kHz mono. This module offers
 the subset LVA uses (default_microphone, get_microphone, all_microphones,
 Microphone.recorder().record()) on top of `arecord`.

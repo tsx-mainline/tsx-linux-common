@@ -1,5 +1,6 @@
 #!/sbin/openrc-run
-# On-panel first-boot setup page (docs/rootfs.md "Setup page"). It runs as
+# On-panel first-boot setup page (see the "Setup page" docs of the board repository). It
+# runs as
 # the unprivileged "tsx-setup" system user (mkrootfs.sh creates it next to
 # "kiosk"), NOT as root. tsx-mqtt and tsx-esphome differ: this daemon parses
 # HTTP from the LAN before any pairing has happened, so it gets no root at

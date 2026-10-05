@@ -1,6 +1,6 @@
 #!/bin/bash
 # Host test: base/usr/local/sbin/tsx-config's get/set/unset/show
-# parser (docs/rootfs.md "Panel configuration"). No panel, no docker: runs
+# parser (see the header of tsx-config). No panel, no docker: runs
 # the exact same script the panel runs, under busybox ash (the panel's
 # shell), against a throwaway file via $TSX_CONF.
 set -uo pipefail

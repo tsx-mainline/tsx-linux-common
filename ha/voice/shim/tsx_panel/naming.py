@@ -4,7 +4,7 @@ tsx-esphome (VOICE=off) and the voice satellite (VOICE=on) must present the
 same device to Home Assistant, or switching VOICE renames it:
 
   name           PANEL_NAME lowercased, anything but [a-z0-9-] -> "-"
-                 (e.g. TSS-10-ABCDEF -> tss-10-abcdef); without a
+                 (e.g. MODEL-10-ABCDEF -> model-10-abcdef); without a
                  PANEL_NAME, tsx-<mac> (12 lowercase hex digits)
   friendly_name  PANEL_NAME as typed; without one, the process's --name
                  (NAME in /etc/tsx/esphome.conf or voice.conf, default the

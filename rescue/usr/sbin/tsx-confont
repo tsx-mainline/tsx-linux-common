@@ -7,8 +7,8 @@
 # join, so the figlet banner of the rescue screen falls apart. This script
 # picks the largest Terminus bold font that still gives at least 80x25 cells
 # on fb0:
-#   1280x800 (TSW-1060 / TSS-10)  ter-132b 16x32 -> 80x25
-#   1024x600 (TSW-760)            ter-124b 12x24 -> 85x25
+#   1280x800  ter-132b 16x32 -> 80x25
+#   1024x600  ter-124b 12x24 -> 85x25
 #   portrait (the console turned a quarter, fbcon rotate 1/3): 800x1280
 #   ter-120b 10x20 -> 80x64. 600x1024 has no font with 80 columns, so the
 #   kernel font stays (75x64).

@@ -14,6 +14,8 @@
 #   TSX_MAC_DEV         a plain file with the MAC on its first line
 #                       (default /etc/tsx/fake-mac)
 #   TSX_FAKE_NO_MAC     any value: the board gives no MAC
+#   TSX_CONFIG_RELOAD   the services that tsx-config apply reloads when the
+#                       sensor settings change (default "fakesvc1 fakesvc2")
 
 TSX_FAMILY=${TSX_FAMILY:-fake}
 TSX_APK_CATEGORY=${TSX_APK_CATEGORY:-fake}
@@ -32,6 +34,7 @@ TSX_RENDER_ENV=${TSX_RENDER_ENV-}
 TSX_BROWSER_GL_FLAGS=${TSX_BROWSER_GL_FLAGS-}
 TSX_VOLUME_CMD=${TSX_VOLUME_CMD-}
 TSX_RESCUE_BACKLIGHT=${TSX_RESCUE_BACKLIGHT:-35}
+TSX_CONFIG_RELOAD=${TSX_CONFIG_RELOAD-fakesvc1 fakesvc2}
 
 # The board keeps no data in a store that needs a reader. The functions
 # print fixed values, and the MAC comes from a plain file.

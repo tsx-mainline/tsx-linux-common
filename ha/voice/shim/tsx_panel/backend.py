@@ -12,7 +12,8 @@ The seam to the base system: this module is part of the Home Assistant layer
 (tsx-ha) and never touches the hardware itself. Every command goes to
 tsx-panelctl, and the one value that needs a tool (the volume) comes from
 `tsx-panelctl get`. The base system owns tsx-panelctl
-(rootfs/overlay/usr/local/sbin/tsx-panelctl, docs/rootfs.md "Profiles").
+(/usr/local/sbin/tsx-panelctl, see the "Profiles" docs of the board
+repository).
 The state files that tsx-buttons, tsx-als, tsx-ledbard and tsx-idled write
 under /run/tsx are the event interface, and this module reads them directly.
 
@@ -129,7 +130,8 @@ def esphome_model(ha_model, family_model) -> str:
 
     ha_model is tsx_board_ha_model of the board file. family_model is
     TSX_HA_MODEL, the name that a board gives when it has no better one.
-    - The two are equal (the xx60 gives its family name "xx60"): "xx60 panel".
+    - The two are equal (the board gives only its family name, for example
+      "fake"): "fake panel".
     - A board gives the model of the unit: the vendor and the model
       ("Crestron " and the model, unless the model starts with "Crestron").
     - The board gives only TSX_HA_MODEL: the same as the first case.
@@ -518,7 +520,7 @@ class PanelBackend:
         except (ValueError, IndexError):
             return None
 
-    # ---- rear USB power (tsx-usbpower, read back by tsx-sensord) ----------------
+    # ---- rear USB power (written by the daemons of the board) -------------------
     def usb_power_present(self) -> bool:
         return (self.run_dir / "usb-power.state").is_file()
 
@@ -534,7 +536,7 @@ class PanelBackend:
         self._usb_pending = (on, time.monotonic())
         self._ctl("usbpower", "on" if on else "off")
 
-    # ---- PoE class (tsx-sensord: the GPIO line poe-plus) ------------------------
+    # ---- PoE class (written by the daemons of the board) ------------------------
     def poe_present(self) -> bool:
         return (self.run_dir / "poe.state").is_file()
 
@@ -546,7 +548,7 @@ class PanelBackend:
             return "PoE (802.3af)"
         return "unknown"
 
-    # ---- eMMC health (tsx-sensord, every hour) ----------------------------------
+    # ---- eMMC health (written by the daemons of the board) ----------------------
     def emmc_present(self) -> bool:
         return (self.run_dir / "emmc.state").is_file()
 
@@ -873,7 +875,7 @@ class PanelBackend:
     def reboot(self) -> None:
         self._ctl("reboot")
 
-    # ---- update (tsx-autoupdate, docs/rootfs.md "Updates") --------------------------
+    # ---- update (tsx-autoupdate) ------------------------------------------
     def get_update_status(self) -> dict:
         """tsx-autoupdate's own HA-ready status (same file tsx-mqtt's
         update_state() reads: $TSX_RUN_DIR/update-ha-state.json), or a safe

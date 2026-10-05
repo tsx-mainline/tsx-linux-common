@@ -42,8 +42,8 @@ WATCHDOG seconds while clients are connected, the daemon sends the scan
 commands again. This covers a controller reset and a kernel that turned the
 scan off.
 
-Active connections (panel.conf BT_ACTIVE=on, docs/ha.md "Bluetooth
-proxy"): the daemon also holds the BLE links that Home Assistant asks for
+Active connections (panel.conf BT_ACTIVE=on, see the "Bluetooth proxy" docs of
+the board repository): the daemon also holds the BLE links that Home Assistant asks for
 and runs GATT over them (btgatt.py). The front ends reach it on a second
 socket, because GATT answers must never get lost the way a report to a slow
 client does:

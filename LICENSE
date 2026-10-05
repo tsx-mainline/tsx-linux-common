@@ -1,23 +1,22 @@
-tsx-xx60-linux: mainline Linux and a Home Assistant kiosk for Crestron
-TSW-760 / TSW-1060 / TSS-10 touch panels
+tsx-linux-common: the shared software of the tsx-mainline touch panels
+(mainline Linux and a Home Assistant kiosk for Crestron panels)
 Copyright (C) 2026 the tsx-mainline contributors
 
-The files in this repository (installer/, rootfs/, kernel/ build scripts,
-provision/, tools/, docs/, ci/ and the other files written for this project)
-are free software; you can redistribute them and/or modify them under the
-terms of the GNU General Public License as published by the Free Software
-Foundation; either version 2 of the License, or (at your option) any later
-version (SPDX-License-Identifier: GPL-2.0-or-later).
+The files in this repository (the package folders, tests/, docs/, ci/ and
+the other files written for this project) are free software. You can
+redistribute them and modify them under the terms of the GNU General Public
+License as published by the Free Software Foundation, either version 2 of the
+License or (at your option) any later version
+(SPDX-License-Identifier: GPL-2.0-or-later).
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
 FOR A PARTICULAR PURPOSE. See the GNU General Public License below for more
 details.
 
-The kernel fork this project builds (github.com/tsx-mainline/linux, based on
-Linux itself) keeps the Linux kernel's own license, GPL-2.0 with the syscall
-note; see that repository's COPYING file. Third-party software downloaded at
-build time keeps its own license.
+The Linux kernel that runs this software keeps its own license, GPL-2.0 with
+the syscall note. Third-party software that a build downloads keeps its own
+license.
 
 The full text of the GNU General Public License version 2 follows.
 

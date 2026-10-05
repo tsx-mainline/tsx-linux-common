@@ -1,6 +1,6 @@
 #!/sbin/openrc-run
-# Apply /data/tsx/panel.conf (tsx-config, docs/rootfs.md "Panel
-# configuration"). This service does three things.
+# Apply /data/tsx/panel.conf (see the header of tsx-config). This service does
+# three things.
 # 1. It writes the small /run/tsx/*.conf overrides. kiosk-session, kiosk,
 #    tsx-setup, tsx-hostname, tsx-sendspin, tsx-voice and tsx-mqtt read them
 #    after their own /etc defaults.

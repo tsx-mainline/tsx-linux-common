@@ -1,5 +1,5 @@
 #!/bin/sh
-# Host test for the root login (docs/rootfs.md "Root login"). It needs no panel,
+# Host test for the root login (see tsx-rootpw). It needs no panel,
 # no compiler and no container.
 #   - first boot: tsx-config apply puts ROOT_PASSWORD_HASH and the SSH key in
 #     place, and a password that a person sets later survives the next boot

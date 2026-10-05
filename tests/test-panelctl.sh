@@ -330,7 +330,7 @@ hwcase() {  # hwcase "hw.conf text" EXPECTED NAME
 rm -f "$HWC"
 [ "$(yesno ledbar)" = yes ] && ok "has ledbar: yes, the tool and no hw.conf" || bad "has ledbar without hw.conf: $(yesno ledbar)"
 hwcase "" yes "an empty hw.conf"
-hwcase $'GOVERNMENT=0\nMIC=yes\nREASON=\n' yes "hw.conf without a LEDBAR line"
+hwcase $'MIC=yes\nBT=yes\nREASON=\n' yes "hw.conf without a LEDBAR line"
 hwcase $'MIC=yes\nLEDBAR=yes\n' yes "LEDBAR=yes"
 hwcase $'MIC=yes\nLEDBAR=no\nREASON=no bar\n' no "LEDBAR=no"
 hwcase $'LEDBAR=no' no "LEDBAR=no without a final newline"

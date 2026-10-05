@@ -28,8 +28,8 @@
 # Not installed:
 # - soundcard. It supports PulseAudio only. voice/shim/soundcard is an ALSA
 #   stand-in on arecord.
-# - webrtc-noise-gain. The ZL38051 does AEC and NR. LVA imports the module only
-#   with --mic-auto-gain or --mic-noise-suppression.
+# - webrtc-noise-gain. The audio hardware does AEC and NR. LVA imports the
+#   module only with --mic-auto-gain or --mic-noise-suppression.
 # - types-protobuf.
 # aioesphomeapi asks for cryptography>=48 and zeroconf>=0.149.16. Alpine has
 # 47.0 and 0.147. LVA uses only the plaintext frame helper, the protobuf

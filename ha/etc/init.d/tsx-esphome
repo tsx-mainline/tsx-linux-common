@@ -1,5 +1,5 @@
 #!/sbin/openrc-run
-description="Standalone Home Assistant ESPHome device for the panel (VOICE=off; see docs/ha.md)"
+description="Standalone Home Assistant ESPHome device for the panel (VOICE=off; see docs/esphome.md)"
 supervisor=supervise-daemon
 command=/usr/local/bin/tsx-esphome-run
 respawn_delay=5

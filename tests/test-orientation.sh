@@ -1,6 +1,6 @@
 #!/bin/sh
-# Host test for the screen orientation (panel.conf ORIENTATION, docs/rootfs.md
-# "Orientation"), no panel needed:
+# Host test for the screen orientation (panel.conf ORIENTATION,
+# see tsx-orientation), no panel needed:
 #   - tsx-orientation: the four names, and the table (sway transform, touch
 #     matrix, fbcon rotation, slide direction). Also the configured name from
 #     the file (missing or junk = landscape), the sway lines, and `apply`.

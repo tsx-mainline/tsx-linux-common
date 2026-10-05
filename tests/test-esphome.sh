@@ -1,6 +1,6 @@
 #!/bin/bash
 # Host test for the ESPHome device of the panel (see rootfs/voice/shim/tsx_panel/
-# and docs/ha.md "One Home Assistant device"). The test uses both front ends:
+# and docs/esphome.md). The test uses both front ends:
 #  - tsx-esphome, the standalone server that runs when VOICE=off.
 #  - The code path of the voice satellite: the VoiceSatelliteProtocol of
 #    linux-voice-assistant with the tsx_lva patches (esphome-lva-harness.py,
@@ -63,7 +63,7 @@ mkdir -p "$F/run/tsx" "$F/etc/tsx" "$F/sys/thermal" "$F/proc/asound" "$F/bin"
 echo "want 50 60 70" > "$F/run/tsx/ledbar.state"
 printf 'leds yes\nled 128 unknown\nlast power short\n' > "$F/run/tsx/buttons.state"
 echo "on 17" > "$F/run/tsx-idled.state"
-# the own status of tsx-autoupdate (the shape of write_ha_json, docs/rootfs.md "Updates")
+# the own status of tsx-autoupdate (the shape of write_ha_json of tsx-autoupdate)
 cat > "$F/run/tsx/update-ha-state.json" <<'EOF'
 {"installed_version":"abc123","latest_version":"abc123+1pending","title":"TSX test-panel packages","release_summary":"pkg1 (1.0 -> 1.1)","in_progress":false}
 EOF
@@ -167,13 +167,13 @@ echo "== ESPHome device name rules (tsx_panel/naming.py) =="
 PYTHONPATH="$SHIM" TSX_PANEL_NAME_FILE=/nonexistent "$T/venv/bin/python3" -c '
 import os
 from tsx_panel import naming as n
-assert n.esphome_name("TSS-10-ABCDEF", "02:00:00:00:00:01") == "tss-10-abcdef"
+assert n.esphome_name("MODEL-10-ABCDEF", "02:00:00:00:00:01") == "model-10-abcdef"
 assert n.esphome_name("", "02:AA:bb:cc:dd:ee") == "tsx-02aabbccddee"
 assert n.esphome_name("--Odd--Name--", "") == "odd-name"
 os.environ.pop("TSX_PANEL_NAME", None)
-assert n.resolve("02:aa:bb:cc:dd:ee", "TSW-1060-HOST") == ("tsx-02aabbccddee", "TSW-1060-HOST")
-os.environ["TSX_PANEL_NAME"] = "TSS-10-ABCDEF"
-assert n.resolve("02:aa:bb:cc:dd:ee", "TSW-1060-HOST") == ("tss-10-abcdef", "TSS-10-ABCDEF")
+assert n.resolve("02:aa:bb:cc:dd:ee", "MODEL-10-HOST") == ("tsx-02aabbccddee", "MODEL-10-HOST")
+os.environ["TSX_PANEL_NAME"] = "MODEL-10-ABCDEF"
+assert n.resolve("02:aa:bb:cc:dd:ee", "MODEL-10-HOST") == ("model-10-abcdef", "MODEL-10-ABCDEF")
 print("OK: PANEL_NAME -> lowercase name + PANEL_NAME friendly name, with the fallback tsx-<mac> and --name")
 ' || rc=1
 
@@ -377,21 +377,21 @@ wait "$SLOTS_PID" && echo "OK: a restart of tsx-btscan: 0 slots while it is away
 	|| { echo "FAIL: slots across a tsx-btscan restart: $(cat "$T/slots.out")"; rc=1; }
 
 # ---- a panel without a microphone or a Bluetooth module (hw.conf of tsx-hw,
-# government=1): bt.conf says on, but the device offers no Bluetooth proxy
+# MIC=no and BT=no): bt.conf says on, but the device offers no Bluetooth proxy
 # and no voice features. The voice satellite does not start. The entity
 # list is the same as on a panel with all parts (no entity goes away).
-echo "== government=1 (hw.conf): no Bluetooth proxy, no voice features, the same entities =="
-printf 'GOVERNMENT=1\nMIC=no\nBT=no\nREASON=government=1 (TSW-760-NC): no microphone, no camera, no Bluetooth module\n' > "$F/run/tsx/hw-gov.conf"
-GOV_PORT=$((API_PORT + 55))
-TSX_TEST_SERVER_ARGS=--no-zeroconf start_server standalone "$T/server-gov.log" "$GOV_PORT" Gov-Panel TSX_HA_API_KEY= \
-	TSX_BT_CONF="$F/run/tsx/bt-active.conf" TSX_HW_CONF="$F/run/tsx/hw-gov.conf"
-start_server voice "$T/voice-gov.log" $((API_PORT + 56)) Gov-Voice TSX_HA_API_KEY= TSX_HW_CONF="$F/run/tsx/hw-gov.conf"
-GOVV_PID=$LAST_PID
-wait_listening "$T/server-gov.log"
-"$T/venv/bin/python3" "$HERE/esphome-bt-check.py" "$GOV_PORT" off || rc=1
-grep -q 'Bluetooth proxy: off' "$T/server-gov.log" && echo "OK: tsx-esphome logs the proxy as off (no Bluetooth module)" \
-	|| { echo "FAIL: no 'Bluetooth proxy: off' in server-gov.log"; rc=1; }
-"$T/venv/bin/python3" - "$GOV_PORT" "$BT_PORT" <<'PYEOF' || rc=1
+echo "== no microphone, no Bluetooth module (hw.conf): no Bluetooth proxy, no voice features, the same entities =="
+printf 'MIC=no\nBT=no\nREASON=FAKE-100 NC variant: no microphone, no Bluetooth module\n' > "$F/run/tsx/hw-nomic.conf"
+NOMIC_PORT=$((API_PORT + 55))
+TSX_TEST_SERVER_ARGS=--no-zeroconf start_server standalone "$T/server-nomic.log" "$NOMIC_PORT" NoMic-Panel TSX_HA_API_KEY= \
+	TSX_BT_CONF="$F/run/tsx/bt-active.conf" TSX_HW_CONF="$F/run/tsx/hw-nomic.conf"
+start_server voice "$T/voice-nomic.log" $((API_PORT + 56)) NoMic-Voice TSX_HA_API_KEY= TSX_HW_CONF="$F/run/tsx/hw-nomic.conf"
+NOMICV_PID=$LAST_PID
+wait_listening "$T/server-nomic.log"
+"$T/venv/bin/python3" "$HERE/esphome-bt-check.py" "$NOMIC_PORT" off || rc=1
+grep -q 'Bluetooth proxy: off' "$T/server-nomic.log" && echo "OK: tsx-esphome logs the proxy as off (no Bluetooth module)" \
+	|| { echo "FAIL: no 'Bluetooth proxy: off' in server-nomic.log"; rc=1; }
+"$T/venv/bin/python3" - "$NOMIC_PORT" "$BT_PORT" <<'PYEOF' || rc=1
 import asyncio, sys
 from aioesphomeapi import APIClient
 async def info(port):
@@ -408,19 +408,19 @@ async def main():
     _, nents = await info(sys.argv[2])
     assert gflags == 0, gflags
     assert gents == nents, (gents, nents)
-    print(f"OK: government=1: no voice assistant features, the same {len(gents)} entities as on a panel with all parts")
+    print(f"OK: no microphone: no voice assistant features, the same {len(gents)} entities as on a panel with all parts")
 asyncio.run(main())
 PYEOF
-st=0; wait "$GOVV_PID" || st=$?
-[ "$st" != 0 ] && grep -q 'no microphone on this panel (government=1 (TSW-760-NC)' "$T/voice-gov.log" \
-	&& echo "OK: the voice satellite does not start without a microphone ($st)" || { echo "FAIL: the voice satellite started without a microphone"; cat "$T/voice-gov.log"; rc=1; }
+st=0; wait "$NOMICV_PID" || st=$?
+[ "$st" != 0 ] && grep -q 'no microphone on this panel (FAKE-100 NC variant: no microphone, no Bluetooth module)' "$T/voice-nomic.log" \
+	&& echo "OK: the voice satellite does not start without a microphone ($st)" || { echo "FAIL: the voice satellite started without a microphone"; cat "$T/voice-nomic.log"; rc=1; }
 
 # ---- the voice feature flags (tsx_panel/esphome_server.py voice_feature_flags) -
 # Home Assistant makes the voice selects only when the flags are not 0 at the
 # setup of the config entry. So tsx-esphome (VOICE=off) announces the voice
 # feature too, on a panel with a microphone. Without one, it announces none.
 echo "== the voice feature flags in both modes =="
-"$T/venv/bin/python3" "$HERE/esphome-voiceflags-check.py" "$BT_PORT" "$VBT_PORT" "$GOV_PORT" --key "$KEY" || rc=1
+"$T/venv/bin/python3" "$HERE/esphome-voiceflags-check.py" "$BT_PORT" "$VBT_PORT" "$NOMIC_PORT" --key "$KEY" || rc=1
 
 # ---- the device information is the same in both modes (tsx_panel/deviceinfo.py) -
 # Home Assistant builds the device page from it. Both servers have the same

@@ -8,7 +8,8 @@
 # true:
 #
 #   - CURRENT_URL is empty (nothing is configured at all: /etc/kiosk.conf
-#     ships with an empty KIOSK_URL on purpose, docs/rootfs.md "Setup page").
+#     ships with an empty KIOSK_URL on purpose, see the "Setup page" docs of the
+#     board repository).
 #   - /run/tsx/setup-open is fresh (`tsx-config setup` or the overlay "Setup"
 #     entry, for one ~15 min window, even on an already-configured panel).
 #

@@ -1,12 +1,14 @@
 #!/bin/bash
-# Host test: `tsx-config apply` (docs/rootfs.md "Panel configuration")
+# Host test: `tsx-config apply` (see the header of tsx-config)
 # against a fixture directory standing in for the panel's root, via
 # TSX_APPLY_PREFIX/TSX_RUN/TSX_STATE_DIR/TSX_APPLY_ALLOW_NONROOT. No docker,
 # no real /etc/shadow or /root/.ssh is ever touched.
 set -uo pipefail
-# The board file (tests/boards/xx60/board.sh) for the scripts that read it.
-export TSX_BOARD_CONF=$(cd "$(dirname "$0")/.." && pwd)/tests/boards/xx60/board.sh
-export TSX_BOARD_BIN=$(cd "$(dirname "$0")/.." && pwd)/base/usr/local/bin/tsx-board
+# The made-up board (tests/boards/fake) for the scripts that read a board file.
+# It takes its values from the environment. This test runs a board with the
+# Bluetooth proxy off by default and a settable Bluetooth address.
+. "$(dirname "$0")/lib/board.sh"
+export TSX_BT_PROXY_DEFAULT=off TSX_BT_MAC_SETTABLE=yes
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 SCRIPT="$HERE/base/usr/local/sbin/tsx-config"
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-tsx-config-apply: no busybox on this host"; exit 0; }
@@ -27,7 +29,7 @@ env TSX_CONF="$W/nope/panel.conf" TSX_RUN="$FX/run" TSX_STATE_DIR="$FX/var/lib/t
 [ ! -e "$FX/run/tsx/kiosk.conf" ] && ok "no /run/tsx/kiosk.conf written" || bad "kiosk.conf written with nothing to apply"
 
 echo "== apply requires root unless TSX_APPLY_ALLOW_NONROOT=1 =="
-set_ PANEL_NAME TSS-10-ABCDEF >/dev/null
+set_ PANEL_NAME FAKE-100-ABCDEF >/dev/null
 env TSX_CONF="$CFG" TSX_RUN="$FX/run" busybox sh "$SCRIPT" apply >/dev/null 2>&1 && bad "apply ran without root and without the test override" || ok "apply refuses non-root without the override"
 
 echo "== build a full panel.conf and apply it =="
@@ -35,7 +37,7 @@ set_ KIOSK_URL "https://ha.example.org/lovelace/default_view" >/dev/null
 set_ TZ_NAME "America/Denver" >/dev/null
 set_ MQTT_HOST "192.0.2.5" >/dev/null
 set_ MQTT_PORT "1883" >/dev/null
-set_ MQTT_USER "tss10" >/dev/null
+set_ MQTT_USER "fake100" >/dev/null
 set_ MQTT_PASSWORD "hunter2" >/dev/null
 set_ HA_LOGIN_METHOD token >/dev/null
 set_ HA_TOKEN "abcdefghijklmnopqrstuvwxyz0123456789ABCDEF" >/dev/null
@@ -45,9 +47,9 @@ set_ WAKE_WORD hey_jarvis >/dev/null
 apply_ >/dev/null 2>&1
 [ $? = 0 ] && ok "apply exits 0" || bad "apply failed"
 
-[ "$(cat "$FX/run/tsx/panel-name" 2>/dev/null)" = TSS-10-ABCDEF ] && ok "panel-name written" || bad "panel-name missing/wrong"
-grep -q '^SENDSPIN_NAME="TSS-10-ABCDEF"$' "$FX/run/tsx/sendspin.conf" 2>/dev/null && ok "sendspin.conf override has SENDSPIN_NAME" || bad "sendspin.conf override wrong"
-grep -q '^NAME="TSS-10-ABCDEF"$' "$FX/run/tsx/voice.conf" 2>/dev/null && ok "voice.conf override has NAME" || bad "voice.conf override wrong (NAME)"
+[ "$(cat "$FX/run/tsx/panel-name" 2>/dev/null)" = FAKE-100-ABCDEF ] && ok "panel-name written" || bad "panel-name missing/wrong"
+grep -q '^SENDSPIN_NAME="FAKE-100-ABCDEF"$' "$FX/run/tsx/sendspin.conf" 2>/dev/null && ok "sendspin.conf override has SENDSPIN_NAME" || bad "sendspin.conf override wrong"
+grep -q '^NAME="FAKE-100-ABCDEF"$' "$FX/run/tsx/voice.conf" 2>/dev/null && ok "voice.conf override has NAME" || bad "voice.conf override wrong (NAME)"
 grep -q '^WAKE_WORD="hey_jarvis"$' "$FX/run/tsx/voice.conf" 2>/dev/null && ok "voice.conf override has WAKE_WORD" || bad "voice.conf override wrong (WAKE_WORD)"
 grep -q '^KIOSK_URL="https://ha.example.org/lovelace/default_view"$' "$FX/run/tsx/kiosk.conf" 2>/dev/null && ok "kiosk.conf override has KIOSK_URL" || bad "kiosk.conf override wrong"
 grep -q '^TZ_NAME="America/Denver"$' "$FX/run/tsx/kiosk.conf" 2>/dev/null && ok "kiosk.conf override has TZ_NAME" || bad "kiosk.conf override missing TZ_NAME"
@@ -89,7 +91,7 @@ set_ KIOSK_URL "https://ha.example.org/other" >/dev/null; applyp
 [ "$(restarts)" = 1 ] && ok "a KIOSK_URL change does not restart it" || bad "KIOSK_URL change restarted it ($(restarts))"
 set_ HA_ALLOW_FROM 192.0.2.9 >/dev/null; applyp
 [ "$(restarts)" = 2 ] && ok "an HA_ALLOW_FROM change restarts it" || bad "HA_ALLOW_FROM change: $(restarts) restarts"
-set_ PANEL_NAME TSS-10-OTHER >/dev/null; applyp
+set_ PANEL_NAME FAKE-100-OTHER >/dev/null; applyp
 [ "$(restarts)" = 3 ] && ok "a PANEL_NAME change restarts it" || bad "PANEL_NAME change: $(restarts) restarts"
 
 vrestarts() { grep -c 'tsx-voice restart' "$W/rc.log" 2>/dev/null || true; }
@@ -143,19 +145,30 @@ https://dl-cdn.alpinelinux.org/alpine/v3.24/community'
 printf '%s\n' "$ALP" > "$REPOS"
 applyb
 [ "$(sed -n 2,3p "$REPOS")" = "https://tsx-aports.unexceptional.net/v3.24/common
-https://tsx-aports.unexceptional.net/v3.24/xx60" ] && ok "no APK_URL, no build default: the public URL, listed first" || bad "default block wrong: $(cat "$REPOS")"
+https://tsx-aports.unexceptional.net/v3.24/fake" ] && ok "no APK_URL, no build default: the public URL, listed first" || bad "default block wrong: $(cat "$REPOS")"
 [ "$(tail -n 2 "$REPOS")" = "$ALP" ] && ok "Alpine lines kept, after ours" || bad "Alpine lines changed"
 echo https://mirror.example.org/tsx/ > "$FX/etc/tsx/apk-url.default"
 applyb
-grep -qx 'https://mirror.example.org/tsx/v3.24/xx60' "$REPOS" && ok "build default (/etc/tsx/apk-url.default) used, trailing / dropped" || bad "build default not used: $(cat "$REPOS")"
+grep -qx 'https://mirror.example.org/tsx/v3.24/fake' "$REPOS" && ok "build default (/etc/tsx/apk-url.default) used, trailing / dropped" || bad "build default not used: $(cat "$REPOS")"
 set_ APK_URL http://192.0.2.7:8080 >/dev/null; applyb
-[ "$(grep -c '/v3.24/common$' "$REPOS")/$(grep -c '/v3.24/xx60$' "$REPOS")/$(grep -c '^# tsx-aports ' "$REPOS")" = 1/1/1 ] && ok "one block, one common + one xx60 line" || bad "duplicate lines: $(cat "$REPOS")"
+[ "$(grep -c '/v3.24/common$' "$REPOS")/$(grep -c '/v3.24/fake$' "$REPOS")/$(grep -c '^# tsx-aports ' "$REPOS")" = 1/1/1 ] && ok "one block, one common + one board line" || bad "duplicate lines: $(cat "$REPOS")"
 [ "$(sed -n 2p "$REPOS")" = http://192.0.2.7:8080/v3.24/common ] && ok "APK_URL (a LAN mirror) replaces the block" || bad "APK_URL not applied: $(cat "$REPOS")"
 echo /media/usb/alpine/v3.24/testing >> "$REPOS"
 cp "$REPOS" "$W/repos.before"; applyb
 cmp -s "$REPOS" "$W/repos.before" && ok "re-apply leaves the file (and a user's own line) alone" || bad "re-apply changed the file"
+# Another category of this repository goes, by its URL (the current URL, or a
+# host or path with tsx-aports in it). A line of another host stays, and so
+# does a line with an Alpine category on the same base.
+printf '%s\n' http://192.0.2.7:8080/v3.24/other https://tsx-aports.example.org/v3.24/other \
+	https://mirror2.example.org/v3.24/other http://192.0.2.7:8080/v3.24/main >> "$REPOS"; applyb
+grep -qE '192.0.2.7:8080/v3.24/other|tsx-aports.example.org/v3.24/other' "$REPOS" \
+	&& bad "a line of another category of this repository stays listed" || ok "a line of another category of this repository is dropped (current URL and tsx-aports host)"
+grep -qx 'https://mirror2.example.org/v3.24/other' "$REPOS" && grep -qx 'http://192.0.2.7:8080/v3.24/main' "$REPOS" \
+	&& ok "a line of another host, and an Alpine category on the same base, stay" || bad "a line of another host or an Alpine category was dropped: $(cat "$REPOS")"
+[ "$(grep -c '/v3.24/common$' "$REPOS")/$(grep -c '/v3.24/fake$' "$REPOS")" = 1/1 ] && ok "common and the category of the board stay once" || bad "common or board line wrong: $(cat "$REPOS")"
+grep -vx -e 'https://mirror2.example.org/v3.24/other' -e 'http://192.0.2.7:8080/v3.24/main' "$REPOS" > "$W/repos.clean"; cp "$W/repos.clean" "$REPOS"
 set_ APK_URL off >/dev/null; applyb
-grep -qE '/(common|xx60)$' "$REPOS" && bad "APK_URL=off still lists our repositories" || ok "APK_URL=off drops our repositories"
+grep -qE '/(common|fake)$' "$REPOS" && bad "APK_URL=off still lists our repositories" || ok "APK_URL=off drops our repositories"
 [ "$(grep -c alpinelinux.org "$REPOS")" = 2 ] && ok "APK_URL=off keeps Alpine" || bad "APK_URL=off lost Alpine lines"
 TSX_CONF="$CFG" busybox sh "$SCRIPT" unset APK_URL >/dev/null; applyb
 [ "$(sed -n 2p "$REPOS")" = https://mirror.example.org/tsx/v3.24/common ] && ok "unset APK_URL: back to the build default" || bad "unset: $(cat "$REPOS")"
@@ -240,7 +253,7 @@ grep -qx 'ACTIVE="on"' "$FX/run/tsx/bt.conf" && ok "BT_ACTIVE=on reaches bt.conf
 set_ BT_PROXY off >/dev/null; applyp
 [ "$(btl stop)" -ge 1 ] && ok "BT_PROXY=off stops tsx-bt" || bad "BT_PROXY=off did not stop tsx-bt"
 set_ BT_PROXY "" >/dev/null; applyp
-grep -qx 'PROXY="off"' "$FX/run/tsx/bt.conf" && ok "an empty BT_PROXY is the board default: off on the xx60" || bad "empty BT_PROXY: $(cat "$FX/run/tsx/bt.conf")"
+grep -qx 'PROXY="off"' "$FX/run/tsx/bt.conf" && ok "an empty BT_PROXY is the board default (here TSX_BT_PROXY_DEFAULT=off)" || bad "empty BT_PROXY: $(cat "$FX/run/tsx/bt.conf")"
 s1=$(btl restart); TSX_BT_PROXY_DEFAULT=on applyp
 grep -qx 'PROXY="on"' "$FX/run/tsx/bt.conf" && [ "$(btl restart)" = $((s1 + 1)) ] \
 	&& ok "an empty BT_PROXY follows the default of the board file (TSX_BT_PROXY_DEFAULT=on): bt.conf on, tsx-bt restarts" \
@@ -261,7 +274,7 @@ for k in AUTO_BRIGHTNESS ALS_SCALE; do TSX_CONF="$CFG" busybox sh "$SCRIPT" unse
 [ ! -e "$FX/run/tsx/als.panel" ] && ok "both keys unset: als.panel removed" || bad "als.panel left behind"
 
 echo "== a panel without a microphone or a Bluetooth module (hw.conf, REASON) =="
-CFG3="$W/panel-gov.conf"; FX3="$W/fx-gov"; mkdir -p "$FX3/run/tsx" "$FX3/etc"
+CFG3="$W/panel-nopart.conf"; FX3="$W/fx-nopart"; mkdir -p "$FX3/run/tsx" "$FX3/etc"
 printf '#!/bin/sh\necho "tsx-audio $*" >> "%s/audio.log"\nexit 0\n' "$W" > "$W/bin/tsx-audio"; chmod +x "$W/bin/tsx-audio"
 parts_conf() {  # parts_conf missing|all: the hw.conf that a tsx-hw writes for a panel without the parts, or with all of them
 	if [ "$1" = missing ]; then printf 'MIC=no\nBT=no\nREASON=FAKE-100 NC variant\n'
@@ -382,6 +395,31 @@ set_ KEY_LED_BLANK 30 >/dev/null; applyp
 [ "$(cat "$BOV" 2>/dev/null)" = "LED_BLANK=30" ] && [ "$(breloads)" = $((b0 + 3)) ] && ok "tsx-buttons stopped (boot): the override is written, no reload" || bad "stopped tsx-buttons: $(breloads) reloads"
 printf '#!/bin/sh\necho "rc-service $*" >> "%s/rc.log"\nexit 0\n' "$W" > "$W/bin/rc-service"
 TSX_CONF="$CFG" busybox sh "$SCRIPT" unset KEY_LED_BLANK >/dev/null; applyp
+
+echo "== TSX_CONFIG_RELOAD: the services of the board that reload when the sensor settings change =="
+# The board file names two services. fakesvc1 runs, fakesvc2 is stopped. A
+# third name, from the environment, is not a service name.
+CFGR="$W/panel-reload.conf"; FXR="$W/fx-reload"; mkdir -p "$FXR/run/tsx" "$FXR/etc" "$W/binr"
+printf '#!/bin/sh\necho "rc-service $*" >> "%s/rcr.log"\n[ "$1 $2" != "fakesvc2 status" ]\n' "$W" > "$W/binr/rc-service"; chmod +x "$W/binr/rc-service"
+cfgr() { env PATH="$W/binr:$PATH" TSX_CONF="$CFGR" TSX_RUN="$FXR/run" TSX_STATE_DIR="$FXR/var/lib/tsx" TSX_APPLY_PREFIX="$FXR" TSX_APPLY_ALLOW_NONROOT=1 "$@"; }
+reloads() { grep -c "rc-service $1 reload" "$W/rcr.log" 2>/dev/null || true; }
+echo 'root:!:19000:0:99999:7:::' > "$FXR/etc/shadow"
+TSX_CONF="$CFGR" busybox sh "$SCRIPT" set AUTO_BRIGHTNESS on >/dev/null
+cfgr busybox sh "$SCRIPT" apply >/dev/null 2>&1
+[ "$(reloads fakesvc1)" = 0 ] && ok "the first apply after boot reloads nothing" || bad "first apply: $(cat "$W/rcr.log")"
+TSX_CONF="$CFGR" busybox sh "$SCRIPT" set AUTO_BRIGHTNESS off >/dev/null
+cfgr busybox sh "$SCRIPT" apply >/dev/null 2>&1
+[ "$(reloads fakesvc1)" = 1 ] && ok "a changed sensor setting reloads the running service of the board" || bad "changed setting: $(cat "$W/rcr.log")"
+[ "$(reloads fakesvc2)" = 0 ] && grep -q 'rc-service fakesvc2 status' "$W/rcr.log" && ok "a stopped service of the board is asked and not reloaded" || bad "stopped service: $(cat "$W/rcr.log")"
+cfgr busybox sh "$SCRIPT" apply >/dev/null 2>&1
+[ "$(reloads fakesvc1)" = 1 ] && ok "an unchanged apply reloads nothing" || bad "unchanged apply: $(reloads fakesvc1) reloads"
+TSX_CONF="$CFGR" busybox sh "$SCRIPT" set AUTO_BRIGHTNESS on >/dev/null
+cfgr TSX_CONFIG_RELOAD= busybox sh "$SCRIPT" apply >/dev/null 2>&1
+[ "$(reloads fakesvc1)" = 1 ] && ok "a board with no TSX_CONFIG_RELOAD reloads nothing" || bad "empty list: $(cat "$W/rcr.log")"
+TSX_CONF="$CFGR" busybox sh "$SCRIPT" set AUTO_BRIGHTNESS off >/dev/null
+out=$(cfgr TSX_CONFIG_RELOAD='fakesvc1;reboot' busybox sh "$SCRIPT" apply 2>&1)
+[ "$(reloads fakesvc1)" = 1 ] && ! grep -q 'reboot' "$W/rcr.log" && case "$out" in *"TSX_CONFIG_RELOAD: 'fakesvc1;reboot' is not a service name"*) true;; *) false;; esac \
+	&& ok "a name that is not a service name is refused with a warning" || bad "bad name: $out / $(cat "$W/rcr.log")"
 
 echo "== $N ok, $F failed =="
 [ $F = 0 ] && echo PASS test-tsx-config-apply || echo FAIL test-tsx-config-apply

@@ -1,5 +1,5 @@
 #!/bin/sh
-# tsx-rootpw: the root password state of the panel (docs/rootfs.md "Root login").
+# tsx-rootpw: the root password state of the panel.
 #
 # A public image has no root password. The installer stops unless it gets a
 # root password or an SSH public key. It stores the hash of the password

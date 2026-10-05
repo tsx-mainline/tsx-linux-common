@@ -48,7 +48,7 @@ check("500 lux and more is the day level", round(c.level_for_lux(500)) == 2400 a
 check("the start curve is monotone", monotone(c))
 x = tb.lux_to_x(40)
 expect = 600 + (2400 - 600) * x / tb.lux_to_x(500)
-check("the start curve is the log curve of tsx-sensord", abs(c.level_at(x) - expect) < 1.0, "%.1f vs %.1f" % (c.level_at(x), expect))
+check("the start curve is the log curve of log_ramp", abs(c.level_at(x) - expect) < 1.0, "%.1f vs %.1f" % (c.level_at(x), expect))
 
 print("== user points")
 c = wide()

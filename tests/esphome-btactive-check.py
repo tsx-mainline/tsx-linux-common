@@ -16,8 +16,8 @@ disconnect, --cycles connect/disconnect cycles, a drop by the peer and the
 reconnect after it, a connect timeout (--silent), and with --adv that raw
 advertisements keep arriving between the links. --retries N: try a connect
 again up to N times when the link fails while it comes up, like
-bleak-retry-connector in Home Assistant (a Linux peer drops some links,
-docs/hardware.md). Prints one "OK:" line per check and the timings. Exit
+bleak-retry-connector in Home Assistant (a Linux peer drops some links).
+Prints one "OK:" line per check and the timings. Exit
 status 1 on the first failure.
 """
 import argparse

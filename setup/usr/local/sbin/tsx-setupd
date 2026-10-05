@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""tsx-setupd: the on-panel first-boot setup page (see
-docs/rootfs.md "Setup page").
+"""tsx-setupd: the on-panel first-boot setup page (see the "Setup page" docs
+of the board repository).
 
 It always runs in the default runlevel, as the UNPRIVILEGED "tsx-setup"
 system user, not as root. tsx-mqtt and tsx-esphome differ: this daemon
@@ -1070,7 +1070,7 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
           <option value="lts">LTS (default, recommended)</option>
           <option value="stable">Stable (latest)</option>
         </select>
-        <div class="hint">The panel installs updates of this flavor by itself (docs/updates.md).</div>
+        <div class="hint">The panel installs updates of this flavor by itself.</div>
       </div>
     </details>
 
@@ -1363,8 +1363,8 @@ PAGE = build_page(PAGE_MAIN, PLUGINS)
 # gap, including one from the kiosk itself over loopback, gets a connection
 # reset or refusal instead of an answer. This is the same class of transient
 # failure as tsx-setupd not having started yet (kiosk-session already waits
-# and retries for that, docs/rootfs.md "Setup page"). It is not a new one. A
-# client must retry and not treat one reset as final.
+# and retries for that, see the "Setup page" docs of the board repository).
+# It is not a new one. A client must retry and not treat one reset as final.
 POLL_S = 1.0
 
 

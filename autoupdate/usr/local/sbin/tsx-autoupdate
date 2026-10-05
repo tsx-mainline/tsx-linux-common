@@ -304,7 +304,8 @@ cmd_healthcheck() {
 	[ -e "$STATE/reboot-marker" ] || return 0
 	rm -f "$STATE/reboot-marker"
 	ok=1 msg=
-	# The kiosk is not in every image profile (docs/rootfs.md "Profiles"). The
+	# The kiosk is not in every image profile (see the "Profiles" docs of the
+	# board repository). The
 	# console profile has no kiosk service and no page to reach.
 	has_kiosk=0; [ -e "${TSX_INITD:-/etc/init.d}/kiosk" ] && has_kiosk=1
 	if [ "$has_kiosk" = 1 ] && command -v rc-service >/dev/null 2>&1; then
@@ -312,7 +313,7 @@ cmd_healthcheck() {
 	fi
 	url=; [ -r "$KIOSK_CONF" ] && . "$KIOSK_CONF" 2>/dev/null
 	# The KIOSK_URL override of panel.conf (`tsx-config apply`) wins, with the
-	# same precedence as in kiosk-session -- docs/rootfs.md "Panel configuration"
+	# same precedence as in kiosk-session -- see the header of tsx-config
 	[ -r "$RUN/kiosk.conf" ] && . "$RUN/kiosk.conf" 2>/dev/null
 	url=${KIOSK_URL:-$url}
 	[ "$has_kiosk" = 1 ] || url=

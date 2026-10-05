@@ -24,15 +24,15 @@ set -u
 . /etc/kiosk.conf
 [ -r /etc/tsx/panel-board.conf ] && . /etc/tsx/panel-board.conf   # the values of the board
 # panel.conf overrides (KIOSK_URL, TZ_NAME). tsx-config apply generates them
-# at boot. See docs/rootfs.md "Panel configuration".
+# at boot. See the header of tsx-config.
 [ -r /run/tsx/kiosk.conf ] && . /run/tsx/kiosk.conf
 # URL chosen with a front-panel key when DevTools is off (tsx-buttons, NAV_FALLBACK=restart)
 [ -s /run/tsx/kiosk-url ] && KIOSK_URL=$(cat /run/tsx/kiosk-url)
 # The on-panel setup page shows when nothing is configured yet, or for ~15
-# min after `tsx-config setup` or the overlay "Setup" entry (docs/rootfs.md
-# "Setup page"). tsx-kiosk-url is a pure function of its argument and
-# /run/tsx/setup-open. It is not inline in this script, so a test can run it
-# standalone (tests/test-setup.sh).
+# min after `tsx-config setup` or the overlay "Setup" entry (see the "Setup
+# page" docs of the board repository). tsx-kiosk-url is a pure function of its
+# argument and /run/tsx/setup-open. It is not inline in this script, so a test
+# can run it standalone (tests/test-setup.sh).
 KIOSK_URL=$(/usr/local/bin/tsx-kiosk-url "${KIOSK_URL:-}")
 : "${KIOSK_URL:=https://ha.example.org}" "${KIOSK_GPU:=auto}" "${KIOSK_SCALE:=1.0}"
 : "${KIOSK_PROFILE:=/var/lib/kiosk/chromium}" "${KIOSK_EXTRA_FLAGS:=}" "${KIOSK_DEVTOOLS:=0}"
@@ -47,7 +47,7 @@ case "$KIOSK_OSK" in squeekboard|wvkbd|off) ;; *) log "unknown KIOSK_OSK=$KIOSK_
 # own OpenRC service) may not have bound its port yet this early in boot.
 # Wait at most about 10s, with a heartbeat log line. Then a slow setup
 # service does not cause a browser connection-refused error page. The own
-# chrome-error retry of tsx-kiosk-reveal (docs/boot.md) covers only the
+# chrome-error retry of tsx-kiosk-reveal (see the docs of the board repository) covers only the
 # sway+DevTools path, not KIOSK_OSK=off or KIOSK_DEVTOOLS=0.
 case "$KIOSK_URL" in
 http://127.0.0.1:*/setup)
@@ -63,11 +63,11 @@ http://127.0.0.1:*/setup)
 esac
 
 # --- renderer selection -------------------------------------------------
-# Primary path: the display driver of the board (TSX_DISPLAY_DRM, meson on the
-# xx60) for KMS, and its GPU (TSX_RENDER_DRM, lima) for the render node. GLES2
-# in cage and GPU compositing in Chromium. Fallback: simpledrm on the U-Boot
-# framebuffer with pixman + software rendering. The script picks cards by
-# driver name, never by number (on the xx60 lima is card0, meson card2).
+# Primary path: the display driver of the board (TSX_DISPLAY_DRM) for KMS, and
+# its GPU (TSX_RENDER_DRM) for the render node. GLES2 in cage and GPU
+# compositing in Chromium. Fallback: simpledrm on the bootloader framebuffer
+# with pixman + software rendering. The script picks cards by driver name,
+# never by number, because the card numbers differ from board to board.
 # drv_in NAME LIST: succeed if NAME matches one of the patterns in LIST
 drv_in() {
 	for _p in $2; do
@@ -171,9 +171,9 @@ else
 fi
 [ -n "$disp" ] && export WLR_DRM_DEVICES=$disp
 if drv_in "$dispdrv" "$TSX_DISPLAY_DRM" && [ -n "$TSX_DISPLAY_ENV" ]; then
-	# The board names the variables of its display. On the xx60 (Meson8 OSD
-	# planes: ARGB8888 only, no modifiers), the patched cage picks ARGB8888
-	# when XRGB8888 is missing. The variables force it regardless.
+	# The board names the variables of its display. A display with planes that
+	# take only ARGB8888 and no modifiers needs them. The patched cage picks
+	# ARGB8888 when XRGB8888 is missing. The variables force it regardless.
 	export $TSX_DISPLAY_ENV
 fi
 # The board can name variables for its GPU in TSX_RENDER_ENV (NAME=value
@@ -196,7 +196,7 @@ log "display=${disp:-none} (${dispdrv:-?}) render=${render:-none} renderer=$WLR_
 # (wayland-info on the panel, 2026-09-26). sway 1.12 has layer-shell,
 # input-method-v2, text-input-v3 and virtual-keyboard, and it turns the output
 # with the touch mapping that goes with it. It falls back to ARGB8888 by
-# itself when the Meson plane has no XRGB8888 (no patch needed). A board
+# itself when the plane has no XRGB8888 (no patch needed). A board
 # without cage always gets sway.
 sway=1
 [ "$KIOSK_OSK" = off ] && [ -x "${TSX_CAGE:-/usr/bin/cage}" ] && sway=0
@@ -247,7 +247,8 @@ done
 EOF
 		overlay_exec="exec sh $XDG_RUNTIME_DIR/kiosk-overlay.sh"
 	fi
-	# Boot splash handoff (docs/boot.md "Boot splash"). The background of sway
+	# Boot splash handoff (see the "Boot splash" docs of the board repository).
+	# The background of sway
 	# is the frame that the framebuffer splash showed (tsx-splash png, status
 	# line included). The browser window stays fully transparent until
 	# tsx-kiosk-reveal sees the page painted. So there is no black gap, no
@@ -264,8 +265,8 @@ for_window [app_id=\"^chrome-\"] opacity 0"
 			log "tsx-splash png failed: no splash background, browser shown at once"
 		fi
 	fi
-	# Screen orientation (panel.conf ORIENTATION, docs/rootfs.md
-	# "Orientation") and the mounting of the LCD: the output transform and the
+	# Screen orientation (panel.conf ORIENTATION, see tsx-orientation) and the
+	# mounting of the LCD: the output transform and the
 	# touch mapping that goes with it. tsx-orientation prints nothing when the
 	# screen needs no turn. `tsx-config apply` turns a running session live
 	# with the same numbers (tsx-orientation apply).
@@ -329,9 +330,9 @@ else
 	# With namespaces, the renderers run sandboxed. The GPU-process seccomp
 	# policy of Chromium 152 on armv7/musl kills the GPU process on pwritev2
 	# (syscall 393): "GPU process isn't usable. Goodbye." and a respawn loop
-	# (xx60, 2026-09-26). On aarch64 the GPU sandbox works. KIOSK_GPU_SANDBOX:
-	# auto = off on armv7, on elsewhere | 0 = off | 1 = on. Only the GPU
-	# process runs unsandboxed. The renderers stay sandboxed.
+	# (measured on armv7, 2026-09-26). On aarch64 the GPU sandbox works.
+	# KIOSK_GPU_SANDBOX: auto = off on armv7, on elsewhere | 0 = off | 1 = on.
+	# Only the GPU process runs unsandboxed. The renderers stay sandboxed.
 	gs=${KIOSK_GPU_SANDBOX:-auto}
 	[ "$gs" = auto ] && { [ "$(uname -m)" = armv7l ] && gs=0 || gs=1; }
 	if [ "$gs" = 0 ]; then

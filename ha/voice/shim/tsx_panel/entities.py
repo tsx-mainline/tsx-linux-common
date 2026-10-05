@@ -308,7 +308,7 @@ class TextSensorEntity(ESPHomeEntity):
     """A generic read-only text sensor (IP address). A get_state that
     returns None means "no value": Home Assistant shows it as unknown.
     device_class "timestamp": the state is an ISO 8601 time with a time
-    zone, and Home Assistant shows it as a time (the last snapshot)."""
+    zone, and Home Assistant shows it as a time."""
 
     def __init__(self, server, key, name, object_id, get_state, icon="", entity_category=0, device_class=""):
         ESPHomeEntity.__init__(self, server)
@@ -371,9 +371,10 @@ class BinarySensorEntity(ESPHomeEntity):
 
 
 class UpdateEntity(ESPHomeEntity):
-    """tsx-autoupdate's status (docs/rootfs.md "Updates") as a generic HA `update`
+    """tsx-autoupdate's status as a generic HA `update`
     entity: the same status tsx-mqtt already publishes
-    (docs/ha.md "Update entity"), now also on the ESPHome device. get_state
+    (see the "Update entity" docs of the board repository), now also on the
+    ESPHome device. get_state
     returns tsx-autoupdate's own update-ha-state.json shape --
     installed_version/latest_version/title/release_summary/in_progress (see
     backend.py's get_update_status) -- with no numeric progress field, so
@@ -434,7 +435,8 @@ class KeyEventEntity(ESPHomeEntity):
     same shape as linux_voice_assistant.entity.ButtonEventSensorEntity but
     with our own event_types (tsx-buttons only ever reports short/long/hold;
     "double" is listed for parity with the MQTT bridge's evt_typ but tsx-buttons
-    does not detect double-press today -- see docs/ha.md open questions).
+    does not detect double-press today -- see the open questions in the docs of
+    the board repository).
     """
 
     def __init__(self, server, key, name, object_id):
