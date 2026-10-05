@@ -22,6 +22,24 @@ for a in "$@"; do
 	*) echo "usage: $0 [--c] [--net]" >&2; exit 2;;
 	esac
 done
+# The panel scripts run under busybox ash. The sh of Debian and Ubuntu is dash.
+# It has no read -t and other parts that the scripts use, so test-rescue-screen
+# and mqtt-stop-timeout fail under it. Put an sh that runs busybox sh at the
+# front of PATH, so that every test runs the scripts as the panel does.
+if command -v busybox >/dev/null 2>&1; then
+	SHDIR=$(mktemp -d)
+	trap 'rm -rf "$SHDIR"' EXIT
+	printf '#!/bin/sh\nexec busybox sh "$@"\n' > "$SHDIR/sh"
+	chmod 755 "$SHDIR/sh"
+	if "$SHDIR/sh" -c 'exit 0'; then
+		PATH=$SHDIR:$PATH
+		echo "sh for the tests: busybox sh ($SHDIR/sh)"
+	else
+		echo "sh for the tests: $(command -v sh) (the busybox sh wrapper does not run in $SHDIR)"
+	fi
+else
+	echo "sh for the tests: $(command -v sh) (no busybox on this host)"
+fi
 pass=0 failed=
 for t in $list; do
 	echo "=== $t"

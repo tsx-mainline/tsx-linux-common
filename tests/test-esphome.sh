@@ -30,6 +30,11 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 SHIM=$HERE/../ha/voice/shim
 T=$(mktemp -d)
+# A suffix for every device name that this run announces. zeroconf refuses a
+# name that another process already announces on the same network
+# (NonUniqueNameException). Two runs on one host, or on one network, would
+# collide on a fixed name.
+RUN=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 : > "$T/libtflite.so"   # tsx_lva only checks that the wake word library exists
 PIDS=
 trap 'for p in $PIDS; do kill "$p" 2>/dev/null || true; done; [ -n "${KEEP:-}" ] && echo "kept $T" || rm -rf "$T"' EXIT
@@ -124,11 +129,13 @@ BADKEY=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
 # start_server KIND LOG PORT PANEL_NAME [ENV=VALUE...]
 # KIND is standalone (tsx-esphome, VOICE=off) or voice (the voice satellite
 # code path, esphome-lva-harness.py, VOICE=on). Every instance gets its own
-# PANEL_NAME. All instances announce themselves over mDNS on this host, and
-# the name is the same in both modes (tsx_panel/naming.py). Two instances
-# with one name would collide. The test reads nothing from /run/tsx on this host.
+# PANEL_NAME, with the suffix of this run: PANEL_NAME-$RUN. The device name is
+# its lower case form (tsx_panel/naming.py), the same in both modes. Standalone
+# instances announce themselves over mDNS on this host. Two instances with one
+# name would collide, also an instance of another run. The test reads nothing
+# from /run/tsx on this host.
 start_server() {
-	local kind=$1 log=$2 port=$3 pname=$4; shift 4
+	local kind=$1 log=$2 port=$3 pname=$4-$RUN; shift 4
 	local cmd
 	case $kind in
 	standalone) cmd=(-m tsx_panel.esphome_server --name "$pname-host" --port "$port" --host 127.0.0.1 ${TSX_TEST_SERVER_ARGS:-});;
@@ -213,7 +220,7 @@ noise_check() {  # noise_check PORT MODE [KEY]
 # ---- standalone tsx-esphome, plaintext (no HA_API_KEY: zero-config) -------
 start_server standalone "$T/server.log" "$API_PORT" Test-Panel TSX_HA_API_KEY=
 wait_listening "$T/server.log"
-full_check "tsx-esphome, plaintext" "$API_PORT" --keys "$T/keys-standalone"
+full_check "tsx-esphome, plaintext" "$API_PORT" --name "test-panel-$RUN" --friendly "Test-Panel-$RUN" --keys "$T/keys-standalone"
 grep -q 'Page.navigate' "$T/devtools.log" 2>/dev/null && echo "OK: kiosk URL navigated live via DevTools" || { echo "FAIL: no Page.navigate seen"; rc=1; }
 sleep 0.3
 grep -q 'connection accepted: 127.0.0.1 (plaintext)' "$T/server.log" && echo "OK: accepted connection logged (plaintext)" || { echo "FAIL: no accepted-connection log line"; rc=1; }
@@ -224,7 +231,7 @@ noise_check "$API_PORT" noise-on-plain "$KEY"
 ENC_PORT=$((API_PORT + 20))
 start_server standalone "$T/server-enc.log" "$ENC_PORT" Enc-Panel TSX_HA_API_KEY="$KEY"
 wait_listening "$T/server-enc.log"
-full_check "tsx-esphome, noise-encrypted" "$ENC_PORT" --key "$KEY" --name enc-panel --friendly Enc-Panel
+full_check "tsx-esphome, noise-encrypted" "$ENC_PORT" --key "$KEY" --name "enc-panel-$RUN" --friendly "Enc-Panel-$RUN"
 sleep 0.3
 grep -q 'connection accepted: 127.0.0.1 (encrypted)' "$T/server-enc.log" && echo "OK: accepted connection logged (encrypted)" || { echo "FAIL: no accepted-connection log line"; rc=1; }
 grep -q 'connection closed: 127.0.0.1 (encrypted)' "$T/server-enc.log" && echo "OK: closed connection logged (encrypted)" || { echo "FAIL: no closed-connection log line"; rc=1; }
@@ -244,15 +251,15 @@ start_server voice "$T/voice-plain.log" "$VPLAIN_PORT" Voice-Plain TSX_HA_API_KE
 wait_listening "$T/voice-enc.log" "$T/voice-plain.log"
 grep -q "tsx_lva: ESPHome API encrypted" "$T/voice-enc.log" && grep -q "tsx_lva: ESPHome API NOT encrypted" "$T/voice-plain.log" \
 	&& echo "OK: the voice satellite logs its API mode" || { echo "FAIL: the voice satellite does not log its API mode"; rc=1; }
-full_check "voice satellite, noise-encrypted" "$VENC_PORT" --key "$KEY" --name voice-enc --friendly Voice-Enc --voice
+full_check "voice satellite, noise-encrypted" "$VENC_PORT" --key "$KEY" --name "voice-enc-$RUN" --friendly "Voice-Enc-$RUN" --voice
 grep -q 'Unknown message type' "$T/voice-enc.log" && { echo "FAIL: MediaPlayerEntity logged Unknown message type noise (voice-enc.log)"; rc=1; } \
 	|| echo "OK: no Unknown message type noise for panel-entity commands (voice-enc.log)"
 echo "== voice satellite, encrypted: refusals and mDNS =="
 noise_check "$VENC_PORT" wrong-key "$BADKEY"
 noise_check "$VENC_PORT" plaintext
 grep -q "('api_encryption', 'Noise_NNpsk0_25519_ChaChaPoly_SHA256')" "$T/voice-enc.log" && echo "OK: mDNS TXT advertises api_encryption" || { echo "FAIL: no api_encryption in the mDNS TXT"; rc=1; }
-grep -q "('friendly_name', 'Voice-Enc')" "$T/voice-enc.log" && echo "OK: mDNS TXT carries friendly_name" || { echo "FAIL: no friendly_name in the mDNS TXT"; rc=1; }
-full_check "voice satellite, plaintext" "$VPLAIN_PORT" --name voice-plain --friendly Voice-Plain --voice --keys "$T/keys-voice"
+grep -q "('friendly_name', 'Voice-Enc-$RUN')" "$T/voice-enc.log" && echo "OK: mDNS TXT carries friendly_name" || { echo "FAIL: no friendly_name in the mDNS TXT"; rc=1; }
+full_check "voice satellite, plaintext" "$VPLAIN_PORT" --name "voice-plain-$RUN" --friendly "Voice-Plain-$RUN" --voice --keys "$T/keys-voice"
 grep -q "api_encryption" "$T/voice-plain.log" && { echo "FAIL: plaintext satellite advertises api_encryption"; rc=1; } || echo "OK: no api_encryption in the plaintext mDNS TXT"
 grep -q 'Unknown message type' "$T/voice-plain.log" && { echo "FAIL: MediaPlayerEntity logged Unknown message type noise (voice-plain.log)"; rc=1; } \
 	|| echo "OK: no Unknown message type noise for panel-entity commands (voice-plain.log)"
@@ -444,7 +451,7 @@ start_server standalone "$T/server-bare.log" "$BARE_PORT" Bare-Panel TSX_HA_API_
 	TSX_RUN_DIR="$F/bare/run" TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf.missing" TSX_BUTTONS_BOARD_CONF="$F/etc/tsx/buttons-board.conf.missing" TSX_LEDBAR=tsx-ledbar-not-installed
 wait_listening "$T/server-bare.log"
 echo "== tsx-esphome, no front keys, no LED bar, no eMMC health =="
-"$T/venv/bin/python3" "$HERE/esphome-check.py" "$BARE_PORT" --name bare-panel --friendly Bare-Panel --bare || rc=1
+"$T/venv/bin/python3" "$HERE/esphome-check.py" "$BARE_PORT" --name "bare-panel-$RUN" --friendly "Bare-Panel-$RUN" --bare || rc=1
 
 # ---- the plugins of esphome.d (tsx_panel/plugins.py): the fake plugin of the made-up board
 # Both front ends load the same file. The folder and the file belong to the

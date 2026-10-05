@@ -16,8 +16,10 @@
 #     the board, never the random kernel MAC or "no address yet".
 #   - the screen gets every board fact (model, firmware, unit id, MAC, extra
 #     line) from the board file. It sources no other helper file.
-# The test runs under busybox or dash sh and needs no compiler. The board is
-# the made-up board of tests/boards/fake. Its MAC comes from a plain file.
+# The test needs busybox sh as sh: the screen script runs on the panel and
+# uses read -t, which dash does not have. tests/run-all.sh does this. The test
+# needs no compiler. The board is the made-up board of tests/boards/fake. Its
+# MAC comes from a plain file.
 set -eu
 . "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
