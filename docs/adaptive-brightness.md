@@ -26,7 +26,7 @@ The curve then stays fixed.
 
 The curve is a list of points (x, level). x is `log10(1 + lux)`. Between two points the level is a line in x. Before the first point and after the last point the level is flat.
 
-1. The start curve has 5 base points. It runs from `BRIGHTNESS_NIGHT` at 0 lux to `BRIGHTNESS_DAY` at `AUTO_BRIGHTNESS_LUX`, as a line in x. On the xx60, the start curve is `ALS_CURVE` in `als.conf`.
+1. The start curve has 5 base points. It runs from `BRIGHTNESS_NIGHT` at 0 lux to `BRIGHTNESS_DAY` at `AUTO_BRIGHTNESS_LUX`, as a line in x. A board with its own light service in shell gives the start curve as `ALS_CURVE` in `als.conf` (for example the xx60).
 2. A manual change is an offset from the slider (`brightness-offset`). The program makes a user point when all of these are true:
     - Automatic brightness is on and the screen is lit.
     - The offset stays the same for `HOLD_S` (8 seconds).
@@ -51,7 +51,7 @@ The level follows the light with two hold times and two bands. The bands are in 
 3. A flash or a shadow that is shorter than the time changes nothing. Noise inside the band changes nothing.
 4. The level takes the curve value of the held light in one step. `tsx-idled` ramps the change.
 
-The darken band is wider than the brighten band, so the level does not hunt around a step of the curve. On the xx60, `tsx-als` reads the light in shell every 0.8 seconds. This is the output period of the MAX44009 in its default mode.
+The darken band is wider than the brighten band, so the level does not hunt around a step of the curve. A light service in shell reads the sensor at fixed intervals. For example, `tsx-als` of the xx60 reads the light every 0.8 seconds, the output period of its sensor.
 
 ## Settings
 
@@ -60,7 +60,10 @@ The darken band is wider than the brighten band, so the level does not hunt arou
 | `BRIGHTNESS_LEARN` | `kiosk.conf` | `on` | `off` turns the learning off |
 | `BRIGHTNESS_NIGHT` | board | board value | Level at 0 lux in the start curve |
 | `BRIGHTNESS_DAY` | board | board value | Level at `AUTO_BRIGHTNESS_LUX` in the start curve |
-| `BACKLIGHT_MIN` | board | 3 percent of `max_brightness`, at least 1 | Lowest lit level. The xx60 board file sets 1 |
+| `BACKLIGHT_MIN` | board | 3 percent of `max_brightness`, at least 1 | Lowest lit level |
+| `BACKLIGHT_MAX` | board | see "Numbers from the board" | Top level |
+| `ALS_CURVE` | `als.conf` of the board | see "Numbers from the board" | Start curve of the daemon `als-daemon`, as `lux:level` pairs |
+| `AUTO_BRIGHTNESS_LUX` | board | 500 | Light where the log curve reaches the top level, when the board gives no `ALS_CURVE` |
 | `AUTO_BRIGHTEN_S` | `panel-board.conf` | 1.5 | Seconds that the light must stay brighter |
 | `AUTO_BRIGHTEN_BAND` | `panel-board.conf` | 0.06 | Change in x that counts as brighter |
 | `AUTO_DARKEN_S` | `panel-board.conf` | 5 | Seconds that the light must stay darker |
@@ -83,14 +86,26 @@ The user points are in `/data/tsx/brightness-learn.json`: the lux, the level as 
 
 ## Where it runs
 
+The table gives the xx60 as an example. Another board can run its own daemon with the classes of `tsx_brightness.py`.
+
 | Family | Daemon | How the curve reaches the backlight |
 |---|---|---|
 | xx60 | `tsx-als` (shell) starts `tsx_brightness.py als-daemon` | The daemon writes the whole curve to `/run/tsx/als-curve`. `tsx-als` uses it in place of `ALS_CURVE` and takes the new level at once |
 
-The xx60 has 24 backlight steps. The program rounds the curve value to a whole step. The hysteresis of `tsx-als` (a light change of 25 percent and a hold time) and the hysteresis band of `tsx-sensord` stop the level from flipping between two steps.
+The program rounds the curve value to a whole step. The hysteresis of `tsx-als` (a light change of 25 percent and a hold time) and the hysteresis band of the sensor daemon of a board stop the level from flipping between two steps.
+
+## Numbers from the board
+
+The code has no curve and no top level of its own. The daemon `als-daemon` takes them from the board:
+
+1. The top level is `BACKLIGHT_MAX` of `panel-board.conf` (or `kiosk.conf`), but not above `max_brightness` of the backlight device. Without `BACKLIGHT_MAX`, it is the `max` line of `brightness.state`, then `max_brightness` of the device, then 31.
+2. The lowest level is `BACKLIGHT_MIN`, else the `min` line of `brightness.state`, else 3 percent of the top level (at least 1).
+3. The start curve is `ALS_CURVE` of `als.conf`. Without it, the daemon uses `log_ramp`: a line in x from the lowest level at 0 lux to the top level at `AUTO_BRIGHTNESS_LUX` (default 500 lux).
+
+The daemon writes one line to its log when it uses the log ramp.
 
 ## Slider scale and ramp
 
-- On a range of more than 64 levels, the slider position maps to the level with a square: level = min + (max - min) x position squared. The dark end has finer steps. On the xx60 (24 steps) the scale is linear. The percent label under the slider is the level as a percent of the top level. The code is `kiosk/src/tsx-level.h`.
+- On a range of more than 64 levels, the slider position maps to the level with a square: level = min + (max - min) x position squared. The dark end has finer steps. On a range of 64 levels or less the scale is linear (for example the 24 steps of the xx60). The percent label under the slider is the level as a percent of the top level. The code is `kiosk/src/tsx-level.h`.
 - `tsx-idled`, `tsx-overlay`, `tsx-panelctl` and `tsx-als` use `BACKLIGHT_MIN`. A blank screen has the backlight at 0, below `BACKLIGHT_MIN`. `tsx-idled` writes the value as `min` in `brightness.state`.
 - `tsx-idled` ramps a change of the level. The ramp is even in the scale of the slider. The start and the wake from blank set the level at once. While the level is steady, `tsx-idled` has no ramp timer.

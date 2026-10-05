@@ -7,11 +7,12 @@ The repo has one directory for each package. A package directory holds the files
 | Directory | Package | Contents |
 |---|---|---|
 | base | tsx-base | `tsx-config`, `tsx-hostname`, `tsx-setup`, `tsx-data`, `tsx-panelctl`, `tsx-board`, `tsx-rootpw`, the clock files (chrony, udhcpc hooks, `tsx-savetime`), the console banner, sysctl, sshd, profile, `serial.sh`, and `tsx_brightness.py` ([adaptive brightness](adaptive-brightness.md)) |
-| kiosk | tsx-kiosk | `kiosk-session`, `tsx-orientation`, `tsx-osk`, `tsx-kiosk-url`, `tsx-kiosk-reveal`, `tsx-display-power`, `tsx-blank`, `kiosk.conf`, the Chromium policy, `tsx-idled` and `tsx-overlay` (C, with the header `tsx-level.h`) |
+| kiosk | tsx-kiosk | `kiosk-session` (with the `kiosk.d` hook loader), `tsx-orientation`, `tsx-osk`, `tsx-kiosk-url`, `tsx-kiosk-page`, `tsx-kiosk-reveal`, `tsx-display-power`, `tsx-blank`, `kiosk.conf`, the Chromium policy, `tsx-idled` and `tsx-overlay` (C, with the header `tsx-level.h`) |
 | setup | tsx-setup | `tsx-setupd`, `tsx-setup-helper`, their init scripts, `setup.conf` |
-| ha | tsx-ha | `tsx-mqtt`, `tsx-bt`, the voice scripts, the ESPHome shim (`tsx_panel`, `tsx_lva`), the setup page plugin, `install-lva.sh`, the Bluetooth chip files |
-| buttons | tsx-buttons | `tsx-buttons` (C), `tsx-keypad`, `buttons.conf` |
+| ha | tsx-ha | `tsx-mqtt`, `tsx-bt`, the voice scripts, the ESPHome shim (`tsx_panel`, `tsx_lva`), the setup page plugin, `install-lva.sh` |
+| buttons | tsx-buttons | `tsx-buttons` (C), `tsx-keypad`, `buttons.conf` (a template with no keys). See [Front keys](buttons.md) |
 | autoupdate | tsx-autoupdate | `tsx-autoupdate`, its init script, its conf, its logrotate file |
+| ledbar | tsx-ledbar | `tsx-ledbar` (C), `tsx-ledbard`, its init script and `ledbar.conf`. See [LED bar](ledbar.md) |
 | rescue | tsx-rescue-ui | `tsx-rescue-status`, `tsx-confont`, `tsx-rescue-login` |
 | splash | tsx-splash | `tsx-splash` (C), the splash images and tools |
 | tests | none | host tests, fixtures (`tests/boards`), helper programs |
@@ -36,20 +37,24 @@ The repo has one directory for each package. A package directory holds the files
 | tsx-voice | tsx-ha | Assist voice satellite (ESPHome API) |
 | tsx-bt | tsx-ha | Bluetooth controller, BLE scanner and BLE links for the Home Assistant Bluetooth proxy |
 | tsx-sendspin | tsx-ha | Synchronized-audio player, configured in `/etc/tsx/sendspin.conf` |
-| tsx-buttons | tsx-buttons | Front-panel keys and key LEDs. The actions come from `/etc/tsx/buttons.conf` |
+| tsx-buttons | tsx-buttons | Front keys and key LEDs. The keys come from `/etc/tsx/buttons-board.conf`, the actions from `/etc/tsx/buttons.conf` |
 | tsx-autoupdate | tsx-autoupdate | Schedules automatic Alpine package updates |
+| tsx-ledbar | tsx-ledbar | Checks the LED bar, recovers it from bootloader mode and sends its color, effect and LED map |
 
 ## Not in this repo
 
 These parts are board glue. They stay in the family repos:
 
 - `board.sh`, `tsx-hw`, `tsx-boot-ok`, `tsx-update-boot`, `tsx-emmc-state`
-- `tsx-als`, `tsx-cpufreqd`, `tsx-audio`, `asound.conf`, the LED bar and TFA tools
+- `tsx-als`, `tsx-cpufreqd`, `tsx-audio`, `asound.conf` and the tools of the audio chip
 - `uboot-env.conf`, `tsx-chromium-es2` and the cage patch, `tsx-lib.sh` and the installers
 - the initramfs init, `rcS` and `inittab`
+- the Bluetooth chip file of a board and the tool that loads its firmware (see [Bluetooth chip file](#bluetooth-chip-file))
+- the key definitions (`buttons-board.conf`)
+- the parts of a board that use the plugin folders (see [Plugin folders](#plugin-folders)), for example the camera
 - the image build (`mkrootfs.sh`, the profile lists, `profile.sh`) and the image tests
-- the sensor, NFC, light bar, watchdog and firmware services of a family
-- `tsx-voice-hook` (it calls the light tool of the board), `tsx-voice-run`, the asound names for the audio devices, and the `after` line of `tsx-esphome`, which lists `avahi-daemon` on the xx60 only
+- the sensor, NFC, watchdog and firmware services of a family
+- the family tests with the real board files (see [Tests](#tests))
 
 ## Board interface
 
@@ -57,43 +62,152 @@ The family repo gives the board values to this repo in `board.sh`, in the files 
 
 ### board.sh
 
-Variables: `TSX_FAMILY`, `TSX_APK_CATEGORY`, `TSX_HA_MODEL`, `TSX_SOUND_CARD`, `TSX_DISPLAY_DRM`, `TSX_RENDER_DRM`, `TSX_RENDER_ES2_DRM`, `TSX_DISPLAY_ENV`, `TSX_BT_CHIP`, `TSX_BT_PROXY_DEFAULT`, `TSX_BT_MAC_SETTABLE`, `TSX_MAC_SOURCE`.
+Variables: `TSX_FAMILY`, `TSX_APK_CATEGORY`, `TSX_HA_MODEL`, `TSX_SOUND_CARD`, `TSX_DISPLAY_DRM`, `TSX_RENDER_DRM`, `TSX_DISPLAY_ENV`, `TSX_BT_CHIP`, `TSX_BT_PROXY_DEFAULT`, `TSX_BT_MAC_SETTABLE`, `TSX_MAC_SOURCE`.
 
-Functions: `tsx_board_model`, `tsx_board_stock_fw`, `tsx_board_unit_id`, `tsx_board_mac`, `tsx_board_mac_early`, `tsx_board_mac_source`, `tsx_board_hostname_hint`, `tsx_board_rescue_extra`, `tsx_board_load`, `tsx_board_probe`. Every function name starts with `tsx_board_`. A function prints its value, or nothing when the board has none.
+Functions: `tsx_board_model`, `tsx_board_stock_fw`, `tsx_board_unit_id`, `tsx_board_mac`, `tsx_board_mac_early`, `tsx_board_mac_source`, `tsx_board_hostname_hint`, `tsx_board_rescue_extra`, `tsx_board_load`, `tsx_board_probe`. Every function name starts with `tsx_board_`. A function prints its value, or nothing when the board has none. The functions `tsx_board_ha_model` and `tsx_board_ledbar_map` are optional (see the next table).
+
+The shared scripts source only `board.sh`. A board that needs a helper file sources that file from its own `board.sh`. An example is a file that reads the board data in the rescue system. The rescue screen `tsx-rescue-status` names no helper file.
 
 ### Optional names
 
-Every name in this table is optional. The xx60 behavior applies when a board does not set it.
+Every name in this table is optional. The neutral default applies when a board does not set it.
 
 | Name | Used by | Meaning |
 |---|---|---|
-| `TSX_SERIAL_CONSOLE` | `serial.sh` | Serial console name, for example `ttyAML0`. Without it, the script reads `/proc/consoles` |
+| `TSX_SERIAL_CONSOLE` | `serial.sh`, `tsx-config` service | Serial console name, for example `ttyS0`. Without it, `serial.sh` reads `/proc/consoles`. The `tsx-config` service adds the name to `/etc/securetty` at each start, if the file does not list it. Then root can log in there. The package list names no board console |
 | `TSX_RENDER_ENV` | `kiosk-session` | `NAME=value` words for the GPU driver |
 | `TSX_BROWSER_GL_FLAGS` | `kiosk-session` | Extra Chromium flags for GPU rendering |
+| `/usr/local/lib/tsx/kiosk.d/*.sh` | `kiosk-session` | Hooks of the board. A hook can change the compositor, the browser mode, the GPU flags and the disabled features. See [Kiosk hooks](kiosk-hooks.md) |
 | `TSX_VOLUME_CMD` | `tsx-panelctl` | Command that prints and sets the volume |
-| `tsx_board_ha_model` | `tsx-mqtt`, `tsx_panel` | Function that returns the model name for Home Assistant. Else `TSX_HA_MODEL`. When the result equals `TSX_HA_MODEL` (a family name), the ESPHome device shows "xx60 panel". Else it shows "Crestron" and the model name |
+| `TSX_CONFIG_RELOAD` | `tsx-config` | Service names, separated by spaces. `tsx-config apply` writes `/run/tsx/sensors.conf` from the keys `PRESENCE_*`, `AUTO_BRIGHTNESS` and `ALS_SCALE`. When the file changes, `apply` runs `rc-service NAME reload` for each service of the list that runs. The first `apply` after boot reloads nothing, because the services read the file when they start. A board with no such service sets nothing |
+| `tsx_board_ha_model` | `tsx-mqtt`, `tsx_panel` | Function that returns the model name for Home Assistant. Else `TSX_HA_MODEL`. When the result equals `TSX_HA_MODEL` (a family name), the ESPHome device shows the family name and "panel", for example "xx60 panel". Else it shows "Crestron" and the model name |
+| `tsx_board_ledbar_map` | `tsx-ledbard` | Function that prints the name of the LED map for the LED bar of a panel model, or nothing for the firmware default map. Argument 1 is the model from `/run/tsx/model`. `LEDMAP` of `ledbar.conf` wins. See [LED bar](ledbar.md) "LED map" |
 | `/etc/tsx/panel-board.conf` | `kiosk-session`, `kiosk`, `tsx-idled`, `tsx-cpufreqd` | The board layer of `kiosk.conf`: GPU mode, backlight range and floor (`BACKLIGHT_MAX`, `BACKLIGHT_MIN`), CPU governor, overlay tap, `ALS_WATCH`. `kiosk.conf` holds neutral defaults. The family ships this file in the base profile |
+| `/etc/tsx/buttons-board.conf` | `tsx-buttons`, `tsx-panelctl`, `tsx-mqtt`, `tsx_panel` | The board layer of the front keys: the `button` lines, the LED names (`LED_PWM`, `LED_KEY_PREFIX`) and `SLIDE_STEP`. `tsx-buttons` reads it before `buttons.conf`. A board with no keys ships no file. See [Front keys](buttons.md) |
 | `/etc/tsx/motd.board` | `profile.d/tsx.sh` | Lines for the login banner |
 | `rc_after` in `/etc/conf.d/tsx-config` | `tsx-config` | Services to wait for |
-| `PRESENCE=no`, `LIGHT=no` in `hw.conf` | `tsx-config`, `tsx-setupd` | The `tsx-hw` of the board writes these for a panel without that part. The xx60 `tsx-hw` writes `PRESENCE=no` |
-| `/run/tsx/*.state` | `tsx-panelctl`, `tsx_panel` | Files of the board daemons: presence, usb-power, poe, nfc, brightness |
-| `/run/tsx/ledbar.fw` | `tsx-panelctl` | The firmware of the LED bar: the lines of `tsx-ledbar fw` and `caps WORDS`. The LED bar service of the board (root) writes it. Without it, `has ledbar-fx` and `has ledbar-leds` run `tsx-ledbar fw`, which gives the full answer only to root |
+| `rc_after` in `/etc/conf.d/tsx-panelctl`, `tsx-esphome`, `tsx-mqtt` | the same services | The board names its own services that must start first (for example its light service). The init scripts of this repo name no service of a board |
+| `/etc/tsx/als.conf` | `tsx_brightness.py als-daemon` | The start curve of the learner (`ALS_CURVE`) of a board with a light service in shell. See [Adaptive brightness](adaptive-brightness.md) |
+| `REASON` in `hw.conf` | `tsx-config`, `tsx-setupd`, `tsx-voice`, `tsx_panel` | The text that says why a part is missing. The texts about a missing part end with `(REASON)`. Without `REASON`, they are short and have no brackets |
+| `PRESENCE=no`, `LIGHT=no` in `hw.conf` | `tsx-config`, `tsx-setupd` | The `tsx-hw` of the board writes these for a panel without that part |
+| `LEDBAR=no` in `hw.conf` | `tsx-panelctl` | The `tsx-hw` of the board writes `LEDBAR=no` for a panel model without a LED bar. Then `tsx-panelctl has ledbar` fails, and Home Assistant gets no LED bar entity. A missing file or key means that the bar is there, when the tool `tsx-ledbar` is installed. See [LED bar](ledbar.md) "Panels without a bar" |
+| `/run/tsx/model` | `tsx-ledbard`, `tsx-banner` | The model of the panel. `tsx-hostname` writes it at boot from `tsx_board_model`. The file can be missing |
+| `/run/tsx/*.state` | `tsx-panelctl`, `tsx_panel` | Files of the board daemons: presence, usb-power, poe, nfc, brightness. The tool `tsx-ledbar` writes `ledbar.state` |
+| `/run/tsx/ledbar.fw` | `tsx-panelctl` | The firmware of the LED bar: the lines of `tsx-ledbar fw` and `caps WORDS`. The service `tsx-ledbar` (`tsx-ledbard`, root) writes it. Without it, `has ledbar-fx` and `has ledbar-leds` run `tsx-ledbar fw`, which gives the full answer only to root |
 
 ### Values that a board sets
 
 - the serial console name (inittab, kiosk init, `tsx-ip.start`, securetty)
 - the display and render driver names
 - the GPU variables and the Chromium flags
-- the Chromium ES2 path
+- the browser rules for a GPU (a hook in `kiosk.d`)
 - the backlight range and the `kiosk.conf` defaults (GPU mode, CPU governor, overlay trigger)
+- the front keys, their key codes and their LEDs (`buttons-board.conf`)
 - the MAC and identity store (`tsx-setup`, `tsx-hostname`)
 - the volume command
+- the services that reload when the sensor settings change (`TSX_CONFIG_RELOAD`)
 - the Home Assistant model name
+- the LED map of the bar for a panel model (`tsx_board_ledbar_map`)
 - the boot status lines of the motd
 - the eMMC state tool
+- the Bluetooth chip file (`TSX_BT_CHIP`)
 - the order of `tsx-config`
+- the order of `tsx-panelctl`, `tsx-esphome` and `tsx-mqtt` (`rc_after` in `/etc/conf.d`)
+- the start curve of the light service (`als.conf`) and the top and lowest backlight level (`panel-board.conf`)
 
-`tsx-idled` can apply `als-level` at once. This is the board key `ALS_WATCH=1`. It is off by default, because the xx60 `tsx-als` ramps the backlight itself.
+`tsx-idled` can apply `als-level` at once. This is the board key `ALS_WATCH=1`. It is off by default, because the light service of a board can ramp the backlight itself (for example `tsx-als` of the xx60).
+
+### Bluetooth chip file
+
+`tsx-bt` holds the steps that every board needs. The steps of one Bluetooth chip are in a chip file. The board names the file in `TSX_BT_CHIP` of `board.sh`. A board whose kernel driver registers `hciN` by itself sets `TSX_BT_CHIP=none`. A board that sets nothing does the same. For example, the xx60 board package ships the chip file for its CSR8811 controller.
+
+`tsx-bt` reads the chip file with `.`. The file defines these functions:
+
+| Function | Meaning |
+|---|---|
+| `chip_up` | Reset the chip, load its firmware and attach it to the kernel. Set `HCI` to the new `hciN` if the file knows it. `MAC` is the address to load, or empty (the chip keeps its own address). Call `fail TEXT` on an error |
+| `chip_down` | Detach the chip and hold it in reset |
+| `chip_absent_reason` | Print why the board has no Bluetooth module. This function is optional. Without it, `tsx-bt` prints the `REASON` of `hw.conf` |
+
+The file can use these names of `tsx-bt`: `log`, `fail`, `hw_get`, `hci_list`, `state`, and the variables `RUN`, `SYS`, `PROC`, `HCI`, `MAC` and `PSRKIND`. `PSRKIND` names the firmware that the file loaded. `tsx-bt` writes it to the state file as `psr=`. The file owns all other names.
+
+When `hw.conf` says `BT=no`, `tsx-bt` never calls `chip_up` or `chip_down`. It writes `state=absent` with the reason and exits with 0. When `TSX_BT_CHIP` names a file that is missing, `tsx-bt` logs a warning and runs with no chip steps. The state is `failed` if `hciN` does not show up.
+
+The test `tests/test-bt.sh` uses a made-up chip file. The tests of a real chip file are in the repo of the board.
+
+## Plugin folders
+
+A board package adds parts to the shared software with files in plugin folders. The shared packages do not name the parts. A panel without the files behaves as a panel without the parts.
+
+| Folder | Read by | File | Adds | Test hook |
+|---|---|---|---|---|
+| `/usr/local/share/tsx/setup.d` | `tsx-setupd` | `NAME.py` | Fields of the setup page. The contract is in `ha/usr/local/share/tsx/setup.d/ha.py`. | `TSX_SETUP_PLUGIN_DIR` |
+| `/usr/local/share/tsx/esphome.d` | `tsx-esphome` and the voice satellite | `NAME.py` | Entities and API messages of the ESPHome device (see [ESPHome device](esphome.md#plugins)) | `TSX_ESPHOME_PLUGIN_DIR` |
+| `/usr/local/lib/tsx/config.d` | `tsx-config` | `NAME.sh` | Keys of `panel.conf` | `TSX_CONFIG_PLUGIN_DIR` |
+| `/usr/local/lib/tsx/kiosk.d` | `kiosk-session` | `NAME.sh` | Changes of the renderer choice and the browser flags (see [Kiosk hooks](kiosk-hooks.md)) | `TSX_KIOSK_HOOK_DIR` |
+
+A file in `esphome.d`, `config.d` or `kiosk.d` loads only when root owns it and the folder, and the group and others cannot write them. A link does not load. For `esphome.d` and `config.d`, the test hook `TSX_PLUGIN_OWNER_UID` changes the owner that the loaders accept (default 0). For `kiosk.d`, the test hook is `TSX_KIOSK_HOOK_UID`. A test sets the id of its own user.
+
+### config.d
+
+`tsx-config` reads each `NAME.sh` of the folder, in name order, when it starts. `NAME` has lowercase letters, digits and `_`. The file defines only variables and functions. Its keys then work like the keys of `tsx-config`: `get`, `set`, `validate`, `unset`, `show` and `apply`. The setup page uses `validate`, so it accepts these keys too.
+
+| Name | Meaning |
+|---|---|
+| `CFG_NAME_KEYS` | The keys of the plugin, separated by spaces. Required. A key has capital letters, digits and `_`. A key that `tsx-config` or an earlier plugin has already is ignored, with a log line. |
+| `CFG_NAME_SECRET_KEYS` | The keys among them that `show` masks. |
+| `cfg_NAME_valid KEY VALUE` | Exit with 0 when the value is valid. Required. |
+| `cfg_NAME_missing KEY` | When the panel lacks the part of the key, print why and exit with 0. Else exit with 1. `set` and `show` use it for a warning. Use `hw_get REASON` for the reason. |
+| `cfg_NAME_apply` | Write the override files of the plugin. `apply` runs it once. |
+| `CFG_NAME_SIG` | Set by `cfg_NAME_apply`. `apply` adds this text to the restart signatures of `tsx-esphome` and `tsx-voice`. They restart when the text changes. |
+
+In these names, `NAME` is the file name in lowercase for the functions and in capitals for the variables. A plugin in `fakeopt.sh` defines `CFG_FAKEOPT_KEYS` and `cfg_fakeopt_valid`.
+
+A plugin can use these helpers of `tsx-config`:
+
+| Helper | Meaning |
+|---|---|
+| `cfg_get KEY` | Prints the value of a key of `panel.conf`. It fails when the key is not set. |
+| `hw_get KEY` | Prints a value of `/run/tsx/hw.conf`, for example `REASON`. |
+| `hw_why` | Prints ` (REASON)` with the `REASON` of `hw.conf`, or nothing when `hw.conf` has no `REASON`. Use it at the end of a text about a missing part. |
+| `hw_warn KEY VALUE` | Logs the warning for a part that is missing, when `cfg_NAME_missing` says so. |
+| `write_override PATH [MODE]` | Writes its standard input to the file. Empty input removes the file. |
+| `shq TEXT` | Quotes a value for a file that a script sources. |
+| `log TEXT` | Writes a line to the log. |
+| `RUN` | The folder `/run/tsx`. |
+
+Example, for a made-up key `FAKEOPT`:
+
+```sh
+CFG_FAKEOPT_KEYS="FAKEOPT"
+
+cfg_fakeopt_valid() { case "$2" in off|low|high) return 0;; esac; return 1; }
+
+cfg_fakeopt_missing() {
+	[ "$(hw_get FAKEOPT)" = no ] || return 1
+	echo "this panel has no fake option$(hw_why)"
+}
+
+cfg_fakeopt_apply() {
+	mode=$(cfg_get FAKEOPT) || mode=off
+	if cfg_fakeopt_missing FAKEOPT >/dev/null; then hw_warn FAKEOPT "$mode"; mode=off; fi
+	printf 'FAKEOPT="%s"\n' "$mode" | write_override "$RUN/fakeopt.conf" 644
+	CFG_FAKEOPT_SIG=$mode
+}
+```
+
+A file that fails a check gives one log line and is skipped. These are the checks:
+
+- The owner and the write bits are right.
+- The name is right.
+- The file loads. A syntax error or a failing command stops it.
+- The file defines `CFG_NAME_KEYS` and `cfg_NAME_valid`.
+
+The other files still load.
+
+A panel without the plugin does not know its keys. `tsx-config set` refuses them, and `tsx-config apply` logs one warning for each such key in `panel.conf` and ignores it. So a `panel.conf` from another panel still loads.
+
+A host run from a checkout, for example the installer, has no `/usr/local/lib/tsx`. There `tsx-config` reads `config.d` next to the script (`../lib/tsx/config.d`), as it does for `board.sh`. For a user that is not root, it does not check the owner of this folder. Root always checks it.
 
 ## Tests
 
@@ -104,15 +218,23 @@ Every name in this table is optional. The xx60 behavior applies when a board doe
 | `tests/run-all.sh --net` | Also the ESPHome tests `test-esphome.sh`, `test-esphome-ledbar.sh` and `test-esphome-wakewords.sh` (need pip) |
 | `tests/test-tsx-data-chroot.sh` | The `tsx-data` test. It needs a container and is not in the list |
 | `ci/lint.sh` | The lint: shell syntax, Python byte-compile, init script modes, proprietary files, doc links |
+| `ci/check-generic.sh` | The gate: no family name, chip or family value outside `docs/`. See "The generic gate" |
 
-A test that needs a board file uses a copy in `tests/boards/<family>`. The copy holds `board.sh`, `panel-board.conf`, `motd.board` and, if the family has it, `conf.d-tsx-config`. `test-setup.sh` covers the presence fields of the setup page (shown with `PRESENCE=yes`, hidden with `PRESENCE=no`). It also covers the save rule: a save writes only the changed fields, and the server refuses a page with an old revision of `panel.conf`. `test-setup-page.sh` runs the script of the setup page in node, with a small fake DOM. It checks the changed fields that a save sends and the refresh every 20 s. Without node, it prints SKIPPED. `test-panel-board.sh` covers the board layer of `kiosk.conf`.
+A test that needs a board file uses the made-up board in `tests/boards/fake`. A test sources `tests/lib/board.sh`, which sets `TSX_BOARD_CONF` and `TSX_BOARD_BIN`. The board holds `board.sh`, `panel-board.conf`, `buttons-board.conf` and `motd.board`. It also holds a fake plugin for each plugin folder: `config.d/fakeopt.sh` and `esphome.d/fakeent.py`. A test of a loader sets the test hook of the folder to a copy of the folder. `test-config-plugins.sh` covers `config.d`. `test-shim-plugins.sh` and `test-esphome.sh` cover `esphome.d`. The values of the board differ from the values of every real family. So a test fails when shared code has a family value built in. `test-board-fake.sh` runs the shared scripts against this board and against a second made-up board. It also runs `kiosk-session` with fake `kiosk.d` hooks.
 
-### Check the board fixtures
+`test-setup.sh` covers the presence fields of the setup page (shown with `PRESENCE=yes`, hidden with `PRESENCE=no`). It also covers the save rule: a save writes only the changed fields, and the server refuses a page with an old revision of `panel.conf`. `test-setup-page.sh` runs the script of the setup page in node, with a small fake DOM. It checks the changed fields that a save sends and the refresh every 20 s. Without node, it prints SKIPPED. `test-panel-board.sh` covers the board layer of `kiosk.conf`.
 
-To check that the copies match a family checkout:
+### Tests of a family
 
-1. Run `tests/check-boards.sh xx60=PATH`. PATH is the top of the family checkout.
-2. Read each difference that the command prints. The command exits with 1 when a copy differs.
-3. Copy the changed board file into `tests/boards/<family>`.
+The tests with the real board files are in the repo of each family, in `rootfs/tests/common/`. This repo holds no copy of a board file. To run them:
 
-The CI of this repo cannot reach the family repos, so it does not run this check. The CI of a family repo can run it after a checkout of this repo.
+1. Check out this repo in the folder `tsx-linux-common` next to the family repo, or set `TSX_COMMON` to the top of the checkout.
+2. Run `rootfs/tests/common/run.sh` in the family repo.
+
+A family test sources `tests/lib/paths.sh` of this repo to find a shared file by its path on the panel. The CI of a family repo checks out this repo and runs the same command.
+
+### The generic gate
+
+`ci/check-generic.sh` fails when a file outside `docs/` has a family word in its text or in its name. The words are family names, panel model names, serial console names, SoC and GPU driver names, chip names, and the names of parts that only one family has (for example the camera). The gate uses `git grep`.
+
+A line passes when it has the text "for example" or "e.g." on the same line as the word. The file `ci/check-generic.allow` lists the other cases. Each entry has a file pattern, a pattern for the allowed words and the reason. Keep the list short. An entry that allows nothing is an error. The gate also checks each `docs/NAME.md` in a comment. The page must be a page of this repo, and a quoted heading must be a heading of the page. A comment names the docs of the board repository in words. `tests/test-generic-gate.sh` plants hits and checks that the gate fails on them.
