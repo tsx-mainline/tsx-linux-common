@@ -174,7 +174,7 @@ class PanelBackend:
         self._usb_pending: Optional[Tuple[bool, float]] = None
         self._last_tag: Optional[Tuple[str, str]] = None
         self._orientation_pending: Optional[Tuple[str, float]] = None
-        self._last_key: Optional[Tuple[str, str]] = None
+        self._last_key: Optional[Tuple[str, ...]] = None
         self._blank_timeout_pending: Optional[Tuple[int, float]] = None
         self._verbose_boot_pending: Optional[Tuple[bool, float]] = None
 
@@ -758,20 +758,23 @@ class PanelBackend:
         types: press/long/double (tsx-buttons reports short/long/hold; hold
         repeats while held -- mapped to "long" again, "double" is unused
         today, see entities.KeyEventEntity).
+
+        tsx-buttons writes "last NAME TYPE HH:MM:SS" for each press. The whole
+        line identifies a press, so a second press of the same key is a new
+        event. The line of the first read after start is a press from before
+        the start and is not an event. "last none" (no press since tsx-buttons
+        started) is a first read too, so the first press after it is an event.
         """
         raw = _field(self.run_dir / "buttons.state", "last")
         if not raw:
             return None
-        parts = raw.split()
-        if len(parts) < 2 or parts[0] == "none":
-            return None
-        cur = (parts[0], parts[1])
+        cur = tuple(raw.split())
         if cur == self._last_key:
             return None
         first = self._last_key is None
         self._last_key = cur
-        if first:
-            return None  # first read after start: not a new event
+        if first or len(cur) < 2 or cur[0] == "none":
+            return None  # first read after start, or no press yet
         mapped = {"short": "press", "long": "long", "hold": "long"}.get(cur[1])
         if not mapped:
             return None

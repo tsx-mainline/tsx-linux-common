@@ -30,6 +30,10 @@ depend() {
 DIRS="var/lib/kiosk var/log var/lib/tsx root home"
 # Only the ha profile has the Sendspin player and its state directory.
 [ -e /etc/init.d/tsx-sendspin ] && DIRS="var/lib/kiosk var/log var/lib/tsx var/lib/sendspin root home"
+# Only the ha profile has the voice satellite. Its state directory holds the
+# wake words, the sensitivities and the volume that Home Assistant set. A new
+# image must keep them.
+[ -e /etc/init.d/tsx-voice ] && DIRS="$DIRS var/lib/tsx-voice"
 # Test hooks (tests/test-tsx-data.sh): a root to work under, and the log file.
 R=${TSX_DATA_ROOT:-}
 LOG=${TSX_DATA_LOG:-/run/tsx-data.log}

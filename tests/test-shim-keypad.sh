@@ -10,6 +10,9 @@
 #    "keypad led-blank N" (0 to 255) and shows a value that it just set until
 #    tsx-buttons has it.
 #  - Without key LEDs (tsx-panelctl has keyleds says no), neither entity exists.
+#  - Key events: each new "last" line of buttons.state is one event, also a
+#    second press of the same key and the first press after "last none". The
+#    line of the first read after start is no event.
 # Small stand-ins replace aioesphomeapi, protobuf and linux_voice_assistant,
 # so the test needs no network and no libmpv.
 set -eu
@@ -189,6 +192,26 @@ msgs.clear()
 state(OFF_BLANK.replace("led_blank 24", "led_blank 30"))
 dev.poll(d, msgs.extend)
 check("poll: a new screen-off level reaches the number", mine(msgs), [("number", 30.0)])
+
+# ---- key events (buttons.state "last") ---------------------------------------------
+os.remove(t + "/run/buttons.state")
+b = Backend()
+check("events: no state file", b.poll_key_event(), None)
+state(AWAKE + "last none\n")
+check("events: no press since tsx-buttons started", b.poll_key_event(), None)
+state(AWAKE + "last power short 12:00:01\n")
+check("events: the first press after start is an event", b.poll_key_event(), ("power", "press"))
+check("events: the same line is no new event", b.poll_key_event(), None)
+state(AWAKE + "last power short 12:00:04\n")
+check("events: a second press of the same key is an event", b.poll_key_event(), ("power", "press"))
+state(AWAKE + "last home long 12:00:06\n")
+check("events: a long press", b.poll_key_event(), ("home", "long"))
+state(AWAKE + "last home hold 12:00:07\n")
+check("events: a hold is a long press again", b.poll_key_event(), ("home", "long"))
+b = Backend()
+check("events: a press from before the start is no event", b.poll_key_event(), None)
+state(AWAKE + "last up short 12:00:09\n")
+check("events: the next press is an event", b.poll_key_event(), ("up", "press"))
 
 # ---- a panel with keys and no key LEDs -----------------------------------------
 Backend.keyleds = False

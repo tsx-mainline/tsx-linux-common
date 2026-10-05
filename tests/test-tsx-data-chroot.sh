@@ -2,8 +2,8 @@
 # Chroot test of the move and bind logic of etc/init.d/tsx-data (installer p2
 # space fix). A fixed 800 MiB p2 leaves almost no headroom once packages are
 # installed. So /var/lib/kiosk, /var/log, /var/lib/tsx, /var/lib/sendspin,
-# /root and /home must live on /data (p4, tsxdata). The script moves them
-# there once and bind-mounts them at every boot.
+# /var/lib/tsx-voice, /root and /home must live on /data (p4, tsxdata). The
+# script moves them there once and bind-mounts them at every boot.
 # This is a dedicated chroot test and not an addition to the qemu boot of
 # test-initramfs-qemu.sh. That harness boots a whole-disk rootfs-p2.ext4 image
 # with no spare partition to stand in for tsxdata. A loop-mounted ext4 in a
@@ -26,6 +26,7 @@ apk add -q --root /r --initdb --no-cache --keys-dir /etc/apk/keys --repositories
 mkdir -p /r/etc/init.d /r/data /r/proc /r/run
 cp /tsx-data.src /r/etc/init.d/tsx-data; chmod 755 /r/etc/init.d/tsx-data
 touch /r/etc/init.d/tsx-sendspin   # the ha profile has the player, so its state dir moves too
+touch /r/etc/init.d/tsx-voice      # and the voice satellite, so its state dir moves too
 
 # fake openrc logging functions + a driver that sources the real script and
 # calls start(), exactly as /sbin/openrc-run would
@@ -47,13 +48,14 @@ bad() { echo "  FAIL: $*"; F=$((F+1)); }
 
 seed() {   # seed R : populate the 5 tracked dirs under R with owned content
 	R=$1
-	mkdir -p "$R/var/lib/kiosk" "$R/var/log" "$R/var/lib/tsx" "$R/var/lib/sendspin" "$R/root/.ssh" "$R/home/nobody"
+	mkdir -p "$R/var/lib/kiosk" "$R/var/log" "$R/var/lib/tsx" "$R/var/lib/sendspin" "$R/var/lib/tsx-voice" "$R/root/.ssh" "$R/home/nobody"
 	head -c 20000 /dev/urandom > "$R/var/lib/kiosk/profile.bin"
 	ln -s profile.bin "$R/var/lib/kiosk/current"
 	chown -R 1000:1000 "$R/var/lib/kiosk"; chmod 755 "$R/var/lib/kiosk"
 	echo "boot 1" > "$R/var/log/messages"; chmod 755 "$R/var/log"
 	echo "installed=(card stage)" > "$R/var/lib/tsx/install.info"
 	echo "state" > "$R/var/lib/sendspin/state.json"; chown -R 1000:29 "$R/var/lib/sendspin"; chmod 750 "$R/var/lib/sendspin"
+	echo "{\"active_wake_words\": [\"okay_computer\"]}" > "$R/var/lib/tsx-voice/preferences.json"; chown -R 1000:18 "$R/var/lib/tsx-voice"
 	echo "ssh-ed25519 AAAAtest" > "$R/root/.ssh/authorized_keys"; chmod 700 "$R/root" "$R/root/.ssh"
 	echo "hi" > "$R/home/nobody/file"; chmod 755 "$R/home"
 }
@@ -71,15 +73,16 @@ grep -q "moving /var/lib/kiosk" /tmp/out1.txt && ok "moved /var/lib/kiosk (logge
 [ "$(sha256sum /r/data/var/lib/kiosk/profile.bin | cut -d" " -f1)" = "$K0" ] && ok "content on /data matches the original (sha256)"
 [ "$(readlink /r/data/var/lib/kiosk/current)" = profile.bin ] && ok "symlink carried over correctly"
 chroot /r /bin/sh -c "grep -q \" /var/lib/kiosk \" /proc/mounts" && ok "/var/lib/kiosk is now a mountpoint (bind)"
-chroot /r /bin/sh -c "grep -q \" /var/log \" /proc/mounts && grep -q \" /var/lib/tsx \" /proc/mounts && grep -q \" /var/lib/sendspin \" /proc/mounts && grep -q \" /root \" /proc/mounts && grep -q \" /home \" /proc/mounts" \
-	&& ok "all 6 dirs bind-mounted (kiosk, log, tsx, sendspin, root, home)"
+chroot /r /bin/sh -c "grep -q \" /var/log \" /proc/mounts && grep -q \" /var/lib/tsx \" /proc/mounts && grep -q \" /var/lib/sendspin \" /proc/mounts && grep -q \" /var/lib/tsx-voice \" /proc/mounts && grep -q \" /root \" /proc/mounts && grep -q \" /home \" /proc/mounts" \
+	&& ok "all 7 dirs bind-mounted (kiosk, log, tsx, sendspin, tsx-voice, root, home)"
 [ "$(cat /r/var/lib/kiosk/profile.bin | sha256sum | cut -c1-64)" = "$K0" ] && ok "content readable through the bind mount at the original path"
 [ "$(stat -c %u:%g:%a /r/var/lib/kiosk)" = "1000:1000:755" ] && ok "ownership+mode preserved on /var/lib/kiosk (1000:1000 0755)"
 [ "$(stat -c %a /r/root)" = 700 ] && ok "mode preserved on /root (0700)"
 [ "$(stat -c %u:%g:%a /r/var/lib/sendspin)" = "1000:29:750" ] && ok "ownership+mode preserved on /var/lib/sendspin (1000:29 0750)"
+grep -q okay_computer /r/data/var/lib/tsx-voice/preferences.json && [ "$(stat -c %u:%g /r/var/lib/tsx-voice)" = "1000:18" ] && ok "voice preferences moved to /data with their owner (1000:18)"
 
 echo "== 2: rootfs copy actually freed (unmount and look underneath)"
-for d in var/lib/kiosk var/log var/lib/tsx var/lib/sendspin root home; do umount "/r/$d"; done
+for d in var/lib/kiosk var/log var/lib/tsx var/lib/sendspin var/lib/tsx-voice root home; do umount "/r/$d"; done
 [ -z "$(find /r/var/lib/kiosk -mindepth 1 2>/dev/null)" ] && ok "rootfs copy of /var/lib/kiosk is empty (content actually moved, not duplicated)"
 [ -z "$(find /r/root -mindepth 1 2>/dev/null)" ] && ok "rootfs copy of /root is empty"
 
@@ -88,7 +91,7 @@ echo "grown after first boot" > /r/data/var/lib/kiosk/grown-while-mounted
 chroot /r /bin/sh /run/drive.sh > /tmp/out2.txt 2>&1 || { cat /tmp/out2.txt; bad "start() (2nd boot) exited nonzero"; }
 grep -q "moving /var/lib/kiosk" /tmp/out2.txt && bad "second boot re-ran the move (should have used the marker)" || ok "second boot: no re-copy of /var/lib/kiosk (marker honoured)"
 [ "$(cat /r/var/lib/kiosk/grown-while-mounted)" = "grown after first boot" ] && ok "data written on /data between boots survived across the second boot bind mount"
-for d in var/lib/kiosk var/log var/lib/tsx var/lib/sendspin root home; do umount "/r/$d" 2>/dev/null || true; done
+for d in var/lib/kiosk var/log var/lib/tsx var/lib/sendspin var/lib/tsx-voice root home; do umount "/r/$d" 2>/dev/null || true; done
 umount /r/dev /r/proc /r/data
 
 echo "== 4: no /data mounted: service does nothing, no data loss"
@@ -131,7 +134,7 @@ chroot /r3 /bin/sh /run/drive.sh > /tmp/out4.txt 2>&1 || { cat /tmp/out4.txt; ba
 [ "$(sha256sum /r3/data/var/lib/tsx/install.info | cut -d" " -f1)" = "$K1" ] && ok "interrupted move resumed: source re-copied over the stale partial content"
 [ -f /r3/data/var/lib/tsx/.tsx-moved ] && ok "resume: marker written on completion"
 chroot /r3 /bin/sh -c "grep -q \" /var/lib/tsx \" /proc/mounts" && ok "resume: /var/lib/tsx bind-mounted after completing the interrupted move"
-umount /r3/var/lib/tsx /r3/var/lib/kiosk /r3/var/log /r3/var/lib/sendspin /r3/root /r3/home 2>/dev/null || true
+umount /r3/var/lib/tsx /r3/var/lib/kiosk /r3/var/log /r3/var/lib/sendspin /r3/var/lib/tsx-voice /r3/root /r3/home 2>/dev/null || true
 umount /r3/dev /r3/proc /r3/data 2>/dev/null || true
 
 echo "== $N ok, $F failed"
