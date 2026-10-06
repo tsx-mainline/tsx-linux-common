@@ -88,6 +88,8 @@ The `tsx-hw` program of the board writes the facts of the panel to `/run/tsx/hw.
 | `tsx-mqtt` | It publishes the discovery topic of the LED bar light when the bar comes. It publishes an empty retained payload when the bar goes. It also clears the retained state topics of the light. |
 | `tsx-voice-hook` | It sets the LED bar color only while `has ledbar` is yes. |
 
+While the bar is off, `tsx-mqtt` publishes the brightness and the color of the last color that was not black. An `ON` command without a brightness or a color runs `tsx-ledbar on`, which shows this color again. The ESPHome light does the same. See "LED bar entities" in `esphome.md`.
+
 `tsx-mqtt` also follows `LEDBAR=no`. It publishes no LED bar state topic and ignores each LED bar command. It logs one line for each ignored command. The same holds for a panel without a bar.
 
 Home Assistant removes an entity that the device does not list. A removed light also loses the name, the area and the settings that you gave it in Home Assistant. A bar that comes back gets the same entity again, with the same unique id. The entity key does not change.

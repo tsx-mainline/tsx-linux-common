@@ -276,6 +276,22 @@ class PanelBackend:
         bb = (b * 255 + mx // 2) // mx
         return True, bri, rr, gg, bb
 
+    def get_ledbar_last(self):
+        """(brightness 0..255, r,g,b 0..255) of the last color of the bar that was not
+        black (ledbar.state "last R G B", 0..100), else None. tsx-ledbar keeps it
+        when the bar goes off. The light of Home Assistant shows it while the bar is
+        off, so a turn on without a value brings it back."""
+        raw = (_field(self.run_dir / "ledbar.state", "last") or "").split()
+        try:
+            r, g, b = (int(x) for x in raw[:3])
+        except ValueError:
+            return None
+        mx = max(r, g, b)
+        if len(raw) < 3 or min(r, g, b) < 0 or mx <= 0:
+            return None
+        return ((mx * 255 + 50) // 100, (r * 255 + mx // 2) // mx, (g * 255 + mx // 2) // mx,
+                (b * 255 + mx // 2) // mx)
+
     def ledbar_fx_present(self) -> bool:
         """The LED bar runs the firmware TSX-LEDBAR, which has effects
         (tsx-panelctl has ledbar-fx)."""

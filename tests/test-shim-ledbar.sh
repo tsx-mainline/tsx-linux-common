@@ -194,6 +194,10 @@ check("tsx poll: fade shows as None", d.ledbar.effect, "None")
 def bar_color(b):
     on, bri, r, g, b_ = b.get_ledbar(True)
     return round(bri / 255.0, 3), round(r / 255.0, 3), round(g / 255.0, 3), round(b_ / 255.0, 3)
+def bar_color_of(r, g, b_):
+    mx = max(r, g, b_)
+    return (round(((mx * 255 + 50) // 100) / 255.0, 3), round(((r * 255 + mx // 2) // mx) / 255.0, 3),
+            round(((g * 255 + mx // 2) // mx) / 255.0, 3), round(((b_ * 255 + mx // 2) // mx) / 255.0, 3))
 def ha_color(d):
     return round(d.ledbar.brightness, 3), round(d.ledbar.red, 3), round(d.ledbar.green, 3), round(d.ledbar.blue, 3)
 state("want 10 20 30\nfx none\n")
@@ -233,6 +237,61 @@ check("fxoff: a new color is a color", b.sent, ["ledbar set 100 0 0"])
 d.ledbar.command(effect="Breathe", red=0.0, green=0.0, blue=1.0, brightness=0.8)
 b.sent.clear(); d.ledbar.command(is_on=False)
 check("fxoff: off during an effect", b.sent, ["ledbar off"])
+# ---- off and on again: the light comes back with the brightness and color from before ----
+# A turn on without brightness or color (Home Assistant sends only the state) restores
+# the last color of the bar that was not black. Before, the light showed brightness 0 while
+# the bar was off, and the turn on switched the bar off again (1 % in Home Assistant).
+for fxfw in (False, True):
+    tag = "restore (" + ("TSX-LEDBAR" if fxfw else "stock") + ")"
+    state("want 0 0 0\nlast 3 21 28\nfx none\n")
+    b = Backend(); b.fx_firmware = fxfw
+    d = dev.build_entities(None, b)
+    check(tag + ": the bar is off, the light has the last color", (d.ledbar.is_on, ha_color(d)), (False, bar_color_of(3, 21, 28)))
+    d.ledbar.command(is_on=True, brightness=0.6, red=1.0, green=0.0, blue=0.0)
+    check(tag + ": on at 60 %", b.sent[-1], "ledbar set 60 0 0")
+    state("want 60 0 0\nlast 60 0 0\nfx none\n")
+    out = []; dev.poll(d, out.extend)
+    d.ledbar.command(is_on=False)
+    check(tag + ": off", b.sent[-1], "ledbar off")
+    state("want 0 0 0\nlast 60 0 0\nfx none\n")      # tsx-ledbar keeps last
+    out = []; dev.poll(d, out.extend)
+    check(tag + ": off, the light keeps brightness and color", (d.ledbar.is_on, ha_color(d)), (False, (0.6, 1.0, 0.0, 0.0)))
+    check(tag + ": off, the state message has them", len(light_msgs(out)), 1)
+    b.sent.clear(); d.ledbar.command(is_on=True)       # only the state, like Home Assistant
+    check(tag + ": on without a value restores 60 %", b.sent, ["ledbar set 60 0 0"])
+    state("want 60 0 0\nlast 60 0 0\nfx none\n")
+    out = []; dev.poll(d, out.extend)
+    check(tag + ": on, the light shows 60 % red", (d.ledbar.is_on, ha_color(d)), (True, (0.6, 1.0, 0.0, 0.0)))
+    # brightness alone while off keeps the color, color alone keeps the brightness
+    d.ledbar.command(is_on=False); state("want 0 0 0\nlast 60 0 0\nfx none\n"); dev.poll(d, out.extend)
+    b.sent.clear(); d.ledbar.command(is_on=True, brightness=0.3)
+    check(tag + ": on with brightness only keeps the color", b.sent, ["ledbar set 30 0 0"])
+    state("want 30 0 0\nlast 30 0 0\nfx none\n"); dev.poll(d, out.extend)
+    d.ledbar.command(is_on=False); state("want 0 0 0\nlast 30 0 0\nfx none\n"); dev.poll(d, out.extend)
+    b.sent.clear(); d.ledbar.command(is_on=True, red=0.0, green=1.0, blue=0.0)
+    check(tag + ": on with a color only keeps the brightness", b.sent, ["ledbar set 0 30 0"])
+    # tsx-esphome or tsx-voice restarts while the bar is off: the new light has the last color
+    state("want 0 0 0\nlast 60 0 0\nfx none\n")
+    d2 = dev.build_entities(None, b)
+    b.sent.clear(); d2.ledbar.command(is_on=True)
+    check(tag + ": after a restart, on restores 60 %", b.sent, ["ledbar set 60 0 0"])
+    # the bar goes off by another way (a front key, tsx-ledbar off): the light follows
+    state("want 10 20 30\nlast 10 20 30\nfx none\n")
+    dev.poll(d2, out.extend)
+    state("want 0 0 0\nlast 10 20 30\nfx none\n")
+    out = []; dev.poll(d2, out.extend)
+    check(tag + ": off by another way: the light keeps the last color", (d2.ledbar.is_on, ha_color(d2)), (False, bar_color_of(10, 20, 30)))
+    b.sent.clear(); d2.ledbar.command(is_on=True)
+    check(tag + ": on restores the last color", b.sent, ["ledbar set 10 20 30"])
+# no last color (the bar never had one): the light keeps its own values, and on shows them
+for last in ("last -1 -1 -1\n", "last 0 0 0\n", ""):
+    state("want 0 0 0\n" + last + "fx none\n")
+    b = Backend(); d = dev.build_entities(None, b)
+    check("restore, no last color (" + last.strip() + "): the light keeps its default", (d.ledbar.is_on, round(d.ledbar.brightness, 2)), (False, 0.66))
+    out = []; dev.poll(d, out.extend)
+    b.sent.clear(); d.ledbar.command(is_on=True)
+    check("restore, no last color (" + last.strip() + "): on is not off", (len(b.sent), b.sent[0].startswith("ledbar set ")), (1, True))
+
 # ---- TSX-LEDBAR 0.1.2: effects, but no zone effects and no actions ------------
 from tsx_panel import entities as ent
 from aioesphomeapi import api_pb2

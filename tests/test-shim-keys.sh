@@ -175,7 +175,7 @@ class Backend:
     def __getattr__(self, name):
         if name.endswith("_present"):
             return lambda: self.parts[name[:-len("_present")]]
-        values = {"get_ledbar": (False, 255, 255, 255, 255),
+        values = {"get_ledbar": (False, 255, 255, 255, 255), "get_ledbar_last": None,
                   "get_keypad": (False, 0), "get_screen": (True, 10), "get_backlight_max": 255,
                   "get_orientation": "landscape", "get_ledbar_effect": "None", "key_names": list(self.keys),
                   "get_update_status": {}, "poll_key_event": None, "poll_nfc_tag": None}

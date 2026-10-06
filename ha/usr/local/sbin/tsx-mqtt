@@ -215,13 +215,24 @@ discovery() {
 }
 
 # ---- state -----------------------------------------------------------------
-# LED bar: panel keeps "want R G B" (0..100). HA sees rgb (max channel 255) + brightness
+# LED bar: panel keeps "want R G B" (0..100). HA sees rgb (max channel 255) + brightness.
+# While the bar is off, HA sees "last R G B", the last color that was not black, so
+# the brightness and the color are not lost. A turn on without a value restores them.
 ledbar_state() {
 	w=$(field "$R/ledbar.state" want); [ -n "$w" ] || w="0 0 0"
 	set -- $w
 	mx=$1; [ "$2" -gt "$mx" ] && mx=$2; [ "$3" -gt "$mx" ] && mx=$3
 	if [ "$mx" -gt 0 ]; then
 		echo "ON $(( (mx * 255 + 50) / 100 )) $(( ($1 * 255 + mx / 2) / mx )),$(( ($2 * 255 + mx / 2) / mx )),$(( ($3 * 255 + mx / 2) / mx ))"
+		return
+	fi
+	w=$(field "$R/ledbar.state" last)
+	case $w in ''|*[!0-9\ ]*) w="0 0 0";; esac
+	set -- $w
+	[ $# -eq 3 ] || set -- 0 0 0
+	mx=$1; [ "$2" -gt "$mx" ] && mx=$2; [ "$3" -gt "$mx" ] && mx=$3
+	if [ "$mx" -gt 0 ]; then
+		echo "OFF $(( (mx * 255 + 50) / 100 )) $(( ($1 * 255 + mx / 2) / mx )),$(( ($2 * 255 + mx / 2) / mx )),$(( ($3 * 255 + mx / 2) / mx ))"
 	else
 		echo "OFF 0 0,0,0"
 	fi
@@ -351,7 +362,11 @@ check_ledbar() {
 ledbar_set() {  # r g b bri
 	"$PCTL" send ledbar set $(( ($1 * $4 * 100 + 32512) / 65025 )) $(( ($2 * $4 * 100 + 32512) / 65025 )) $(( ($3 * $4 * 100 + 32512) / 65025 ))
 }
-led_rgb() { c=$(cat "$M/rgb" 2>/dev/null); echo "${c:-255,255,255}"; }
+led_rgb() {  # the last rgb from HA, else the color of the bar (or its last color), else white
+	c=$(cat "$M/rgb" 2>/dev/null)
+	[ -n "$c" ] || { cur=$(ledbar_state); c=${cur##* }; [ "$c" != 0,0,0 ] || c=255,255,255; }
+	echo "$c"
+}
 split_rgb() { c=$1; r=${c%%,*}; c=${c#*,}; g=${c%%,*}; b=${c#*,}; }
 led_bri() { b=$(cat "$M/bri" 2>/dev/null); echo "${b:-255}"; }
 
@@ -363,7 +378,7 @@ handle() {  # topic payload
 	case $t in
 	ledbar/set)
 		case $p in
-		OFF) "$PCTL" send ledbar off;;
+		OFF) rm -f "$M/pending"; "$PCTL" send ledbar off;;
 		ON)  if [ -e "$M/pending" ]; then rm -f "$M/pending"
 		     else
 			cur=$(ledbar_state); [ "${cur%% *}" = ON ] || "$PCTL" send ledbar on

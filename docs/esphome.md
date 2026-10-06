@@ -71,6 +71,10 @@ The device information stays the same, so Home Assistant keeps the device. The o
 
 A removed LED bar light loses the name, the area and the settings that you gave it in Home Assistant. A bar that comes back gets a light with the same unique id and the same key. A change of the bar firmware (for example from TSX-LEDBAR 0.1.2 to 0.1.3) changes the effects and the actions. It gives one reconnect too. A bar that goes to the bootloader and the removal of a bar in the bootloader give no reconnect, because the list stays without LED bar entities.
 
+The light follows the rule of a Home Assistant light: a turn on without a value brings back the brightness and the color from before the turn off. `tsx-ledbar` keeps the last color that was not black (the `last` line of `/run/tsx/ledbar.state`). While the bar is off, the light reports this color and its brightness. A turn on with only the state then sets the bar to this color. A turn on with only a brightness keeps the color. A turn on with only a color keeps the brightness.
+
+The state file stays when `tsx-esphome` or `tsx-voice` restarts, so the light also restores the color after a restart. After a reboot, or when the bar never had a color, the light keeps its own default color and brightness. The code is `ledbar_shown` in `device.py`.
+
 The code is `sync_ledbar` in `ha/voice/shim/tsx_panel/device.py` and `ha/voice/shim/tsx_panel/reconnect.py`. Both services use it. `tsx-esphome` replaces `device.entities`. The voice satellite also changes `state.entities`, in the thread of the connections. The tests are `tests/test-shim-ledbar.sh` and `tests/test-esphome-ledbar.sh`.
 
 ## Plugins

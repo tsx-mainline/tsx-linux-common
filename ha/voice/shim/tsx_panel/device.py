@@ -347,6 +347,18 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
     )
 
 
+def ledbar_shown(backend: PanelBackend, fx: bool):
+    """(on, brightness 0..255, r,g,b 0..255) that the light shows. While the bar is off
+    this is the last color that was not black, so a turn on without a value (brightness or
+    color) brings it back. Without a last color the brightness is None: the light keeps
+    the values that it has."""
+    on, bri, r, g, b = backend.get_ledbar(fx)
+    if not on:
+        last = backend.get_ledbar_last()
+        bri, r, g, b = last if last is not None else (None, 0, 0, 0)
+    return on, bri, r, g, b
+
+
 def make_ledbar(server, backend: PanelBackend, key_for: Keys):
     """The entities of the LED bar for a bar that is attached now, or nothing.
     Returns (light, fx, leds, actions): light and actions are None where the
@@ -357,14 +369,16 @@ def make_ledbar(server, backend: PanelBackend, key_for: Keys):
         return None, False, False, None
     ledbar_fx = backend.ledbar_fx_present()
     ledbar_leds = ledbar_fx and backend.ledbar_leds_present()
-    on, bri, r, g, b = backend.get_ledbar(ledbar_fx)
+    on, bri, r, g, b = ledbar_shown(backend, ledbar_fx)
     ledbar = PanelLight(
         server, key_for("ledbar"), "LED bar", "ledbar",
         effects=LEDBAR_EFFECTS + (list(LEDBAR_FX) if ledbar_fx else [])
         + (list(LEDBAR_LEDS_FX) if ledbar_leds else []),
         supports_rgb=True, supports_brightness=True, icon="mdi:led-strip-variant",
     )
-    ledbar.is_on, ledbar.brightness = on, bri / 255.0
+    ledbar.is_on = on
+    if bri is not None:
+        ledbar.brightness = bri / 255.0
     if r or g or b:
         ledbar.red, ledbar.green, ledbar.blue = r / 255.0, g / 255.0, b / 255.0
     if ledbar_fx:
@@ -489,15 +503,18 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
         backend.set_ledbar(True, round(device.ledbar.brightness * 255 * level),
                             round(device.ledbar.red * 255), round(device.ledbar.green * 255), round(device.ledbar.blue * 255))
     elif device.ledbar is not None:
-        on, bri, r, g, b = backend.get_ledbar(device.ledbar_fx)
-        cur = (on, round(bri / 255.0, 3), round(r / 255.0, 3), round(g / 255.0, 3), round(b / 255.0, 3))
+        on, bri, r, g, b = ledbar_shown(backend, device.ledbar_fx)
+        cur = (on, None if bri is None else round(bri / 255.0, 3),
+               round(r / 255.0, 3), round(g / 255.0, 3), round(b / 255.0, 3))
         # the effect on the bar (TSX-LEDBAR), for example ended by a front key
         effect = backend.get_ledbar_effect() if device.ledbar_fx else None
         if (cur, effect) != (device._last_ledbar, device._last_ledbar_fx):
             device._last_ledbar, device._last_ledbar_fx = cur, effect
-            device.ledbar.is_on, device.ledbar.brightness = on, bri / 255.0
+            device.ledbar.is_on = on
+            if bri is not None:
+                device.ledbar.brightness = bri / 255.0
             # Rainbow and Spectrum keep the color of Home Assistant (the bar records white)
-            if on and effect not in LEDBAR_HUE_EFFECTS:
+            if (r or g or b) and effect not in LEDBAR_HUE_EFFECTS:
                 device.ledbar.red, device.ledbar.green, device.ledbar.blue = r / 255.0, g / 255.0, b / 255.0
             if effect is not None:
                 device.ledbar.effect = effect

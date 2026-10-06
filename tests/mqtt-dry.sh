@@ -137,6 +137,35 @@ ledbar_case NOFILE 'bootloader\n' cleared "LED bar tool, bar in the bootloader (
 grep -qE 'emmc' "$T/out" && { echo "FAIL: eMMC entities announced without emmc.state"; fail=1; }
 grep -qE 'presence|distance|usb_power|poe_class|/tag/' "$T/out" && { echo "FAIL: entities announced for parts this panel does not have"; fail=1; }
 
+# The bar is off and has a last color. HA sees that color (not brightness 0) while the bar is
+# off, and ON without brightness or color asks tsx-panelctl for "ledbar on", which restores it.
+# A brightness command, ON, then OFF, then ON again must not swallow the second ON.
+T4=$T/restore; mkdir -p "$T4/run"
+printf 'want 0 0 0\nlast 60 0 0\nout 0 0 0\n' > "$T4/run/ledbar.state"
+printf '%s\n' 'tsx/tsx-kiosk/ledbar/set ON' 'tsx/tsx-kiosk/ledbar/brightness/set 128' 'tsx/tsx-kiosk/ledbar/set ON' \
+	'tsx/tsx-kiosk/ledbar/set OFF' 'tsx/tsx-kiosk/ledbar/set ON' |
+PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T4/run TSX_IDLED_STATE=$T/idled \
+	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
+	TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_PANEL_BOARD_CONF=$TSX_BOARD_DIR/panel-board.conf TSX_BACKLIGHT_DIR=$T/bl \
+	sh "$(P usr/local/sbin/tsx-mqtt)" > "$T4/out" 2>&1
+chk4() { grep -qF -- "$1" "$T4/out" || { echo "FAIL: restore: missing: $1"; fail=1; }; }
+chk4 'PUB (retained) tsx/tsx-kiosk/ledbar/state OFF'
+chk4 'PUB (retained) tsx/tsx-kiosk/ledbar/brightness 153'
+chk4 'PUB (retained) tsx/tsx-kiosk/ledbar/rgb 255,0,0'
+chk4 'CALL tsx-panelctl send ledbar on'
+chk4 'CALL tsx-panelctl send ledbar set 50 0 0'   # brightness 128 keeps the last color (red)
+[ "$(grep -c 'CALL tsx-panelctl send ledbar on' "$T4/out")" = 2 ] || { echo "FAIL: restore: ON after OFF must send ledbar on (the first ON and the last ON, not the one after brightness)"; fail=1; }
+for bad in 'ledbar/brightness 0' 'ledbar/rgb 0,0,0'; do
+	grep -qF "PUB (retained) tsx/tsx-kiosk/$bad" "$T4/out" && { echo "FAIL: restore: the bar is off with a last color, but HA got $bad"; fail=1; }
+done
+# no last color: HA gets brightness 0 as before
+printf 'want 0 0 0\nlast -1 -1 -1\n' > "$T4/run/ledbar.state"
+PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T4/run TSX_IDLED_STATE=$T/idled \
+	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T4/out2" 2>&1
+grep -qF 'PUB (retained) tsx/tsx-kiosk/ledbar/brightness 0' "$T4/out2" && grep -qF 'PUB (retained) tsx/tsx-kiosk/ledbar/rgb 0,0,0' "$T4/out2" \
+	|| { echo "FAIL: restore: no last color must give brightness 0 and rgb 0,0,0"; fail=1; }
+
 # eMMC health from /run/tsx/emmc.state (tsx-emmc-state)
 T3=$T/hw; mkdir -p "$T3/run"
 printf 'life_a 0x01\nlife_b 0x0b\neol 0x02\n' > "$T3/run/emmc.state"
