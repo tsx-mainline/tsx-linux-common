@@ -74,7 +74,7 @@ Every name in this table is optional. The neutral default applies when a board d
 
 | Name | Used by | Meaning |
 |---|---|---|
-| `TSX_SERIAL_CONSOLE` | `serial.sh`, `tsx-config` service | Serial console name, for example `ttyS0`. Without it, `serial.sh` reads `/proc/consoles`. The `tsx-config` service adds the name to `/etc/securetty` at each start, if the file does not list it. Then root can log in there. The package list names no board console |
+| `TSX_SERIAL_CONSOLE` | `serial.sh`, `tsx-config` service | Serial console name, for example `ttyS0`. Without it, `serial.sh` reads `/proc/consoles`. Root can log in on this console only when `/etc/securetty` lists it. The board package ships that file (see "Serial login") |
 | `TSX_RENDER_ENV` | `kiosk-session` | `NAME=value` words for the GPU driver |
 | `TSX_BROWSER_GL_FLAGS` | `kiosk-session` | Extra Chromium flags for GPU rendering |
 | `/usr/local/lib/tsx/kiosk.d/*.sh` | `kiosk-session` | Hooks of the board. A hook can change the compositor, the browser mode, the GPU flags and the disabled features. See [Kiosk hooks](kiosk-hooks.md) |
@@ -98,7 +98,7 @@ Every name in this table is optional. The neutral default applies when a board d
 
 ### Values that a board sets
 
-- the serial console name (inittab, kiosk init, `tsx-ip.start`, securetty)
+- the serial console name (inittab, kiosk init, `tsx-ip.start`) and `/etc/securetty`
 - the display and render driver names
 - the GPU variables and the Chromium flags
 - the browser rules for a GPU (a hook in `kiosk.d`)
@@ -117,6 +117,12 @@ Every name in this table is optional. The neutral default applies when a board d
 - the start curve of the light service (`als.conf`) and the top and lowest backlight level (`panel-board.conf`)
 
 `tsx-idled` can apply `als-level` at once. This is the board key `ALS_WATCH=1`. It is off by default, because the light service of a board can ramp the backlight itself (for example `tsx-als` of the xx60).
+
+### Serial login
+
+Root can log in on the serial console only when `/etc/securetty` names it. The login program reads only this file. The board package ships it: the list of the Alpine `busybox` package plus the serial console of the board. The board package declares `replaces="busybox"` for it. No package of `tsx-linux-common` ships or changes `/etc/securetty`, and no boot script edits it.
+
+The same rule holds for each file of a package. When a script changes such a file, `apk` writes a `.apk-new` file at each upgrade of the package. So `/etc/motd` has no owner among the TSX packages: `tsx-banner` writes it at boot.
 
 ### Bluetooth chip file
 

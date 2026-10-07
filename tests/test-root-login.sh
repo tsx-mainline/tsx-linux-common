@@ -123,55 +123,34 @@ grep -q 'no password is set' "$T/issue" && ok "check: the password removed, the 
 grep -q 'tsx-banner watch' "$HERE/base/etc/local.d/tsx-banner.start" && ok "the boot hook starts the watch" || bad "boot hook does not start the watch"
 busybox sh -n "$BAN" && ok "tsx-banner passes busybox sh -n" || bad "tsx-banner: busybox sh -n"
 
-echo "== the serial console is a line of /etc/securetty =="
-# The package ships the list with no board console. The start of the
-# tsx-config service adds the TSX_SERIAL_CONSOLE of the board file (the made-up
-# board here: ttyFAKE0). The file is the securetty of the package.
+echo "== no package file is changed by a boot script (securetty, motd) =="
+# A script that changes a file of a package makes apk write a .apk-new file at
+# each upgrade of that package. So no package of tsx-linux-common ships
+# /etc/securetty (the board package ships it, with the serial console of the
+# board) or /etc/motd (tsx-banner writes it), and no boot script edits them.
 SER=$HERE/base/usr/local/lib/tsx/serial.sh
 INIT=$HERE/base/etc/init.d/tsx-config
-PKG_TTY=$HERE/base/etc/securetty
 busybox sh -n "$SER" && ok "serial.sh passes busybox sh -n" || bad "serial.sh: busybox sh -n"
 busybox sh -n "$INIT" && ok "the tsx-config init script passes busybox sh -n" || bad "tsx-config init script: busybox sh -n"
 eq "$(sh -c ". '$TSX_BOARD_CONF'; echo \"\$TSX_SERIAL_CONSOLE\"")" "ttyFAKE0" "the made-up board names ttyFAKE0"
-grep -qx ttyFAKE0 "$PKG_TTY" && bad "the package list already names the console of the made-up board" || ok "the package list has no console of the made-up board"
-[ "$(grep -c '^ttyAMA0$' "$PKG_TTY")" = 1 ] && grep -qx console "$PKG_TTY" && ok "the package list keeps the generic Alpine names" || bad "the package list lost its generic names"
-# allow FILE CONSOLE: run the function of serial.sh on FILE
-allow() { env TSX_SERIAL_CONSOLE="$2" busybox sh -c ". '$SER'; tsx_serial_allow_root '$1'"; }
-cp "$PKG_TTY" "$T/securetty"; n0=$(wc -l < "$T/securetty")
-allow "$T/securetty" ttyFAKE0; rc=$?
-[ $rc = 0 ] && [ "$(tail -n 1 "$T/securetty")" = ttyFAKE0 ] && [ "$(wc -l < "$T/securetty")" = $((n0 + 1)) ] && ok "the console is added as the last line" || bad "console not added: rc $rc, $(tail -n 2 "$T/securetty" | tr '\n' ' ')"
-allow "$T/securetty" ttyFAKE0; allow "$T/securetty" ttyFAKE0
-[ "$(grep -cx ttyFAKE0 "$T/securetty")" = 1 ] && ok "a second and a third run add no duplicate" || bad "duplicate lines: $(grep -cx ttyFAKE0 "$T/securetty")"
-printf 'console\ntty1' > "$T/securetty.nonl"
-allow "$T/securetty.nonl" ttyFAKE0
-eq "$(tr '\n' ' ' < "$T/securetty.nonl")" "console tty1 ttyFAKE0 " "a file with no final newline: the new name is on its own line"
-printf 'console\n' > "$T/securetty.two"
-allow "$T/securetty.two" "ttyFAKE0 ttyFAKE1"
-eq "$(tr '\n' ' ' < "$T/securetty.two")" "console ttyFAKE0 ttyFAKE1 " "a board with two console names: both are added"
-cp "$PKG_TTY" "$T/securetty.none"; allow "$T/securetty.none" ""
-cmp -s "$PKG_TTY" "$T/securetty.none" && ok "a board with no console: the file stays as it is" || bad "an empty console changed the file"
-cp "$PKG_TTY" "$T/securetty.bad"; allow "$T/securetty.bad" "tty/../x"; rc=$?
-[ $rc = 1 ] && cmp -s "$PKG_TTY" "$T/securetty.bad" && ok "a name that is not a device name: no change, exit 1" || bad "bad name: rc $rc"
-rm -f "$T/securetty.missing"; allow "$T/securetty.missing" ttyFAKE0; rc=$?
-[ $rc = 0 ] && [ ! -e "$T/securetty.missing" ] && ok "no securetty file: none is made (root may log in on every tty)" || bad "a missing file: rc $rc"
-# The init script: its start() runs the function. The test moves the
+for f in etc/securetty etc/motd; do
+	found=$(find "$HERE" -path "$HERE/.git" -prune -o -path "$HERE/tests" -prune -o -path "*/$f" -print | tr '\n' ' ')
+	eq "$found" "" "no package ships /$f"
+done
+grep -q 'tsx_serial_allow_root' "$SER" "$INIT" "$HERE/base/usr/local/sbin/tsx-config" && bad "a script still edits securetty (tsx_serial_allow_root)" || ok "no script has tsx_serial_allow_root"
+grep -rn 'securetty' "$HERE/base" "$HERE/kiosk" "$HERE/ha" "$HERE/setup" "$HERE/rescue" 2>/dev/null | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' | grep -q . && bad "a script or file in a package names securetty outside a comment" || ok "no package code touches securetty"
+# The init script: start() leaves /etc/securetty and /etc/motd as they are. The test moves the
 # absolute tool paths into a temporary folder and stubs the OpenRC helpers.
 mkdir -p "$T/bin"
 for tool in tsx-hw tsx-emmc-state tsx-config; do printf '#!/bin/sh\necho "%s $*" >> "%s/calls"\n' "$tool" "$T" > "$T/bin/$tool"; chmod 755 "$T/bin/$tool"; done
-sed -e "s|/usr/local/sbin/|$T/bin/|g" -e "s|/usr/local/lib/tsx/serial.sh|$SER|g" "$INIT" > "$T/init.sh"
+sed -e "s|/usr/local/sbin/|$T/bin/|g" "$INIT" > "$T/init.sh"
 OPENRC='. "$1"; checkpath() { :; }; ebegin() { :; }; eend() { :; }; ewarn() { echo "ewarn: $*"; }; start'
-initrun() { # initrun [BOARD]: run start() with the stubs on the securetty file $T/securetty.init
-	: > "$T/calls"
-	env TSX_BOARD_CONF="${1:-$TSX_BOARD_CONF}" TSX_SECURETTY="$T/securetty.init" busybox sh -c "$OPENRC" sh "$T/init.sh"
-}
-cp "$PKG_TTY" "$T/securetty.init"
-out=$(initrun); rc=$?
-[ $rc = 0 ] && [ -z "$out" ] && [ "$(tail -n 1 "$T/securetty.init")" = ttyFAKE0 ] && ok "start() of the tsx-config service adds the console of the board" || bad "init start: rc $rc, out '$out', $(tail -n 1 "$T/securetty.init")"
+printf 'console\ntty1\n' > "$T/securetty.init"; cp "$T/securetty.init" "$T/securetty.before"
+: > "$T/calls"
+out=$(env TSX_BOARD_CONF="$TSX_BOARD_CONF" TSX_SECURETTY="$T/securetty.init" busybox sh -c "$OPENRC" sh "$T/init.sh" 2>&1); rc=$?
+[ $rc = 0 ] && [ -z "$out" ] && ok "start() of the tsx-config service runs with no warning" || bad "init start: rc $rc, out '$out'"
+cmp -s "$T/securetty.init" "$T/securetty.before" && ok "start() does not change a securetty file (also with a board console set)" || bad "start() changed securetty: $(cat "$T/securetty.init")"
 grep -q '^tsx-hw detect' "$T/calls" && grep -q '^tsx-config apply' "$T/calls" && ok "start() still runs tsx-hw detect and tsx-config apply" || bad "init start calls: $(cat "$T/calls")"
-initrun >/dev/null
-[ "$(grep -cx ttyFAKE0 "$T/securetty.init")" = 1 ] && ok "a second start adds no duplicate" || bad "a second start duplicates the console"
-out=$(initrun "$T/no-board.sh" 2>/dev/null); rc=$?
-case "$out" in *"ewarn: Could not add the serial console to /etc/securetty"*) [ $rc = 0 ] && ok "no board file: one warning, the start goes on" || bad "no board file: rc $rc";; *) bad "no board file: rc $rc, out '$out'";; esac
 
 echo "$N passed, $F failed"
 [ "$F" = 0 ]

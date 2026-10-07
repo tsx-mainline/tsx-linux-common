@@ -8,14 +8,15 @@
 #   - the rescue screen (tsx-rescue-status) loads the font. The family repos
 #     check that their own text consoles do the same, and that the initramfs
 #     ships the fonts.
-#   - the rescue screen banner and /etc/motd show Tux and the figlet smslant
+#   - the rescue screen banner and the art of /etc/motd (banner.art, which
+#     tsx-banner writes into /etc/motd) show Tux and the figlet smslant
 #     "TSX - LINUX" (spaces around the dash), at most 80 columns. Both use the
 #     same art. test-rescue-screen.sh checks the whole screen.
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 CF=$HERE/rescue/usr/sbin/tsx-confont
 RS=$HERE/rescue/usr/sbin/tsx-rescue-status
-MOTD=$HERE/kiosk/etc/motd
+MOTD=$HERE/base/etc/tsx/banner.art
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 N=0 F=0
 ok()  { N=$((N + 1)); echo "  ok: $*"; }
