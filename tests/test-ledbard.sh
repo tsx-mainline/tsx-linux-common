@@ -458,8 +458,9 @@ kill "$DPID"; wait "$DPID" 2>/dev/null; DPID=
 
 # 11. the firmware file $T/run/ledbar.fw for the users without root
 # (tsx-panelctl has ledbar-fx and ledbar-leds): the lines of "tsx-ledbar
-# fw" and "caps". Only the service writes it. It goes away with the bar, in
-# bootloader mode and when the service stops.
+# fw" and "caps". Only the service writes it. It goes away with the attached
+# file when the bar is gone for GONE seconds (just after it), in bootloader
+# mode and when the service stops.
 FWF=$T/run/ledbar.fw
 OWN15L="$OWN15
 leds yes"
@@ -493,10 +494,17 @@ a=$(callno fw); b=$(callno boot)
 [ -n "$a" ] && [ "$a" -lt "$b" ] && ok "fw file: written before the boot color" || bad "fw file: order fw $a boot $b"
 ls "$T/run" | grep -q '\.tmp$' && bad "fw file: a temp file is left: $(ls "$T/run")" || ok "fw file: no temp file left"
 
-# 11b. the bar goes away: no file. A stock bar comes: no CAPS query, "caps none".
+# 11b. the bar goes away: the file stays until the bar is gone for GONE
+# seconds (5), and it goes just after the attached file. A stock bar comes:
+# no CAPS query, "caps none".
 unplug
 waitfor 'grep -q "LED bar removed" "$T/log"' >/dev/null
-[ ! -e "$FWF" ] && ok "fw file: removed with the bar" || bad "fw file: kept after the removal"
+[ -e "$FWF" ] && ok "fw file: still there when the removal is logged" || bad "fw file: removed at once"
+sleep 2
+[ -e "$FWF" ] && [ -e "$T/run/ledbar.usb" ] && ok "fw file: still there 2 s after the removal, with the attached file" || bad "fw file: gone before the attached file"
+waitfor '[ ! -e "$T/run/ledbar.usb" ]' >/dev/null
+waitfor '[ ! -e "$FWF" ]' >/dev/null
+[ ! -e "$FWF" ] && ok "fw file: removed after the bar was gone for GONE seconds" || bad "fw file: kept after the removal"
 : > "$T/calls"; echo "$STOCKL" > "$T/fw"
 plug 6
 waitfor 'grep -qx apply "$T/calls"' >/dev/null
@@ -588,8 +596,12 @@ ls "$T/run" | grep -q '\.tmp$' && bad "attached file: a temp file is left: $(ls 
 unplug
 sleep 2
 usb_is app && ok "attached file: still app 2 s after the removal (GONE=4)" || bad "attached file: gone too early: $(cat "$USBF" 2>&1)"
+[ -e "$FWF" ] && ok "attached file: the firmware file stays with it (GONE=4)" || bad "attached file: the firmware file went too early"
 waitfor '[ ! -e "$USBF" ]' >/dev/null
 [ ! -e "$USBF" ] && ok "attached file: removed after the bar was gone for GONE seconds" || bad "attached file: kept: $(cat "$USBF")"
+# the firmware file never goes before the attached file, so the entity list changes once
+waitfor '[ ! -e "$FWF" ]' >/dev/null
+[ ! -e "$FWF" ] && ok "attached file: the firmware file goes after the attached file" || bad "attached file: the firmware file is kept"
 
 # 12d. a short removal (a USB reset, less than GONE): the file never goes
 : > "$T/calls"

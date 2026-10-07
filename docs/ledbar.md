@@ -70,6 +70,7 @@ One file tells whether a bar is attached: `/run/tsx/ledbar.usb`. The service `ts
 
 - The daemon writes `app` after the check, the settings and the firmware file. A reader that sees `app` can also read `/run/tsx/ledbar.fw`.
 - The daemon removes the file `TSX_LEDBAR_GONE` seconds after the bar goes (default 5). A short USB reset of the bar does not remove the light. During a restart of the controller by the daemon itself, the file stays unchanged.
+- At the same time, and just after it, the daemon removes `/run/tsx/ledbar.fw`. So the entity list of the ESPHome device changes once when the bar goes. It does not first lose the effects and the actions of the light and then the light.
 - The daemon removes a file of an earlier run when it starts, and it removes the file when it stops. `tsx-ledbard check` does not change the file.
 - A USB device with `authorized` 0 in sysfs does not count. The kernel does not use such a device. Use this to remove a bar without a person: `echo 0 > /sys/bus/usb/devices/<device>/authorized`. Write `1` to bring it back.
 - A bar in the bootloader gives no light. The bar has no application then, and it shows nothing. The light comes back when the application runs again, for example after the recovery in "Bootloader mode".

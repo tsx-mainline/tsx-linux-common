@@ -43,9 +43,11 @@
 # CAPS ("caps none" when the bar has no CAPS). Only root can open the USB
 # device of the bar, and the CAPS query needs it. With this file, a program
 # that does not run as root (tsx-panelctl has, for the voice satellite) can
-# tell what the bar can do. The daemon removes the file when the bar goes
-# away, when the bar is in bootloader mode and when the service stops. So
-# the file exists only while the service runs. "tsx-ledbard check" does not
+# tell what the bar can do. The daemon removes the file just after the
+# attached file (below) when the bar is gone for TSX_LEDBAR_GONE seconds.
+# That way the entities of Home Assistant change once. It also removes the
+# file when the bar is in bootloader mode and when the service stops. So the
+# file exists only while the service runs. "tsx-ledbard check" does not
 # change it.
 #
 # Attached file: the service tells the rest of the panel whether a bar is
@@ -420,12 +422,17 @@ while :; do
 	else
 		# no bar: the attached file stays for GONE seconds, so a short USB
 		# reset does not change the entities of Home Assistant
+		# The firmware file stays as long as the attached file, so a reader
+		# sees one change when the bar goes: the attached file first, then
+		# the firmware file.
 		gone=$((gone + 1))
-		[ "$gone" -lt "$GONE" ] || usb_drop
+		if [ "$gone" -ge "$GONE" ]; then
+			usb_drop
+			fw_drop
+		fi
 		if [ -n "$cur" ]; then
 			log "LED bar removed"
 			cur=
-			fw_drop
 		elif [ -z "$told" ]; then
 			log "LED bar not found yet (USB 14be:001b). Waiting for it"
 			told=1
