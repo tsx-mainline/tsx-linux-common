@@ -91,6 +91,16 @@ The `tsx-hw` program of the board writes the facts of the panel to `/run/tsx/hw.
 
 While the bar is off, `tsx-mqtt` publishes the brightness and the color of the last color that was not black. An `ON` command without a brightness or a color runs `tsx-ledbar on`, which shows this color again. The ESPHome light does the same. See "LED bar entities" in `esphome.md`.
 
+With the bar firmware TSX-LEDBAR, the MQTT light also has the effects of the bar. The list is the one of the ESPHome light, without `Pulse`. `Pulse` is a software effect of the ESPHome device, and `tsx-mqtt` has no such loop. The discovery topic has these effects:
+
+| Effect | Needs | Command that `tsx-mqtt` sends |
+|---|---|---|
+| `None` | the firmware has effects | `tsx-panelctl send ledbar fx off` (only while an effect runs) |
+| `Breathe`, `Blink`, `Rainbow` | `tsx-panelctl has ledbar-fx` | `fx breathe`, `fx blink`, `fx rainbow` with the color and the brightness of the light |
+| `Chase`, `Fill`, `Spectrum` | `tsx-panelctl has ledbar-leds` | `fx chase`, `fx fill`, `fx spectrum` |
+
+The effect topics are `<base>/ledbar/effect` (state) and `<base>/ledbar/effect/set` (command). While an effect runs, the light shows the color of the effect. `Rainbow` and `Spectrum` keep the last color of Home Assistant. The bar shows white for them. `tsx-mqtt` reads `/run/tsx/ledbar.fw` too. When the firmware changes, it publishes the discovery topic again with the new effect list. A bar with the stock firmware gets a light with no effects.
+
 `tsx-mqtt` also follows `LEDBAR=no`. It publishes no LED bar state topic and ignores each LED bar command. It logs one line for each ignored command. The same holds for a panel without a bar.
 
 Home Assistant removes an entity that the device does not list. A removed light also loses the name, the area and the settings that you gave it in Home Assistant. A bar that comes back gets the same entity again, with the same unique id. The entity key does not change.

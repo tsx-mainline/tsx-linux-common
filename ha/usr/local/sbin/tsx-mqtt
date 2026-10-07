@@ -9,7 +9,12 @@
 #                         the script publishes the discovery topic, or clears it
 #                         with an empty retained payload. Without a bar it
 #                         publishes no LED bar state and ignores LED bar
-#                         commands)
+#                         commands). With the bar firmware TSX-LEDBAR it also
+#                         has the effects of the bar: Breathe, Blink and
+#                         Rainbow (tsx-panelctl has ledbar-fx), and Chase,
+#                         Fill and Spectrum (has ledbar-leds). The list is
+#                         the one of the ESPHome light without Pulse, a
+#                         software effect of the shim
 #   light  "Key LEDs"     brightness 0..255 (tsx-keypad led N|off. Only where the
 #                         keys have LEDs: tsx-panelctl has keyleds)
 #   switch "Screen"       ON = lit, OFF = blanked (tsx-blank)
@@ -158,9 +163,26 @@ DEV="\"dev\":{\"ids\":[\"tsx_$NODE\"],\"name\":\"$DNAME\",\"mf\":\"Crestron\",\"
 AV="\"avty_t\":\"$BASE/availability\""
 
 # The LED bar light: announced while a bar is attached (has_ledbar), cleared
-# otherwise. P_BAR is yes or no: what Home Assistant has now.
-P_BAR=
+# otherwise. P_BAR is yes or no: what Home Assistant has now. P_FXL is the list
+# of effects that the light announces (JSON, empty for a bar without effects).
+P_BAR= P_FXL=
 ledbar_discovery() {
+	P_FXL= fxj=
+	if has_ledbar; then
+		P_BAR=yes
+		if "$PCTL" has ledbar-fx >/dev/null 2>&1; then
+			P_FXL='"None","Breathe","Blink","Rainbow"'
+			"$PCTL" has ledbar-leds >/dev/null 2>&1 && P_FXL="$P_FXL,\"Chase\",\"Fill\",\"Spectrum\""
+			fxj=",\"fx_cmd_t\":\"$BASE/ledbar/effect/set\",\"fx_stat_t\":\"$BASE/ledbar/effect\",\"fx_list\":[$P_FXL]"
+		fi
+		pub -r "$DP/light/$NODE/ledbar/config" "{\"name\":\"LED bar\",\"uniq_id\":\"${NODE}_ledbar\",\"cmd_t\":\"$BASE/ledbar/set\",\"stat_t\":\"$BASE/ledbar/state\",\"bri_cmd_t\":\"$BASE/ledbar/brightness/set\",\"bri_stat_t\":\"$BASE/ledbar/brightness\",\"bri_scl\":255,\"rgb_cmd_t\":\"$BASE/ledbar/rgb/set\",\"rgb_stat_t\":\"$BASE/ledbar/rgb\",\"on_cmd_type\":\"last\"$fxj,\"icon\":\"mdi:led-strip-variant\",$AV,$DEV}"
+	else
+		P_BAR=no
+		pub -r "$DP/light/$NODE/ledbar/config" ""
+	fi
+}
+
+discovery() {
 	if has_ledbar; then
 		P_BAR=yes
 		pub -r "$DP/light/$NODE/ledbar/config" "{\"name\":\"LED bar\",\"uniq_id\":\"${NODE}_ledbar\",\"cmd_t\":\"$BASE/ledbar/set\",\"stat_t\":\"$BASE/ledbar/state\",\"bri_cmd_t\":\"$BASE/ledbar/brightness/set\",\"bri_stat_t\":\"$BASE/ledbar/brightness\",\"bri_scl\":255,\"rgb_cmd_t\":\"$BASE/ledbar/rgb/set\",\"rgb_stat_t\":\"$BASE/ledbar/rgb\",\"on_cmd_type\":\"last\",\"icon\":\"mdi:led-strip-variant\",$AV,$DEV}"
@@ -218,12 +240,45 @@ discovery() {
 # LED bar: panel keeps "want R G B" (0..100). HA sees rgb (max channel 255) + brightness.
 # While the bar is off, HA sees "last R G B", the last color that was not black, so
 # the brightness and the color are not lost. A turn on without a value restores them.
+# While an effect of the bar firmware runs, HA sees the color of the effect (the effect
+# does not change "want"), and the name of the effect as a fourth word.
+
+# ledbar_fx: the effect that runs on the bar (ledbar.state "fx NAME N... [WORD]"),
+# as "NAME R G B" with R G B 0..100 as the bar shows them, or nothing when no
+# effect runs. Rainbow and spectrum have no color of their own: the bar shows
+# white at their level, so they give "NAME L L L".
+ledbar_fx() {
+	set -- $(field "$R/ledbar.state" fx)
+	fx_n=${1:-}; [ -n "$fx_n" ] || return 0
+	shift
+	fx_nums=
+	for fx_x in "$@"; do case $fx_x in ''|*[!0-9]*) ;; *) fx_nums="$fx_nums $fx_x";; esac; done
+	set -- $fx_nums
+	case $fx_n in
+	fade|breathe|blink|chase) [ $# -ge 3 ] && echo "$fx_n $1 $2 $3";;
+	fill) [ $# -ge 4 ] && echo "$fx_n $(( ($1 * $4 + 50) / 100 )) $(( ($2 * $4 + 50) / 100 )) $(( ($3 * $4 + 50) / 100 ))";;
+	rainbow|spectrum) fx_l=100; [ $# -ge 2 ] && fx_l=$2; echo "$fx_n $fx_l $fx_l $fx_l";;
+	esac
+	return 0
+}
+
 ledbar_state() {
+	fxl=$(ledbar_fx); fxn=None; hue=
 	w=$(field "$R/ledbar.state" want); [ -n "$w" ] || w="0 0 0"
+	if [ -n "$fxl" ]; then
+		set -- $fxl; w="$2 $3 $4"
+		case $1 in
+		breathe) fxn=Breathe;; blink) fxn=Blink;; chase) fxn=Chase;; fill) fxn=Fill;;
+		rainbow) fxn=Rainbow hue=1;; spectrum) fxn=Spectrum hue=1;;
+		esac
+	fi
 	set -- $w
 	mx=$1; [ "$2" -gt "$mx" ] && mx=$2; [ "$3" -gt "$mx" ] && mx=$3
 	if [ "$mx" -gt 0 ]; then
-		echo "ON $(( (mx * 255 + 50) / 100 )) $(( ($1 * 255 + mx / 2) / mx )),$(( ($2 * 255 + mx / 2) / mx )),$(( ($3 * 255 + mx / 2) / mx ))"
+		rgb="$(( ($1 * 255 + mx / 2) / mx )),$(( ($2 * 255 + mx / 2) / mx )),$(( ($3 * 255 + mx / 2) / mx ))"
+		# rainbow and spectrum keep the color of Home Assistant (the bar shows white)
+		[ -z "$hue" ] || { rgb=$(cat "$M/rgb" 2>/dev/null); [ -n "$rgb" ] || rgb=255,255,255; }
+		echo "ON $(( (mx * 255 + 50) / 100 )) $rgb $fxn"
 		return
 	fi
 	w=$(field "$R/ledbar.state" last)
@@ -232,9 +287,9 @@ ledbar_state() {
 	[ $# -eq 3 ] || set -- 0 0 0
 	mx=$1; [ "$2" -gt "$mx" ] && mx=$2; [ "$3" -gt "$mx" ] && mx=$3
 	if [ "$mx" -gt 0 ]; then
-		echo "OFF $(( (mx * 255 + 50) / 100 )) $(( ($1 * 255 + mx / 2) / mx )),$(( ($2 * 255 + mx / 2) / mx )),$(( ($3 * 255 + mx / 2) / mx ))"
+		echo "OFF $(( (mx * 255 + 50) / 100 )) $(( ($1 * 255 + mx / 2) / mx )),$(( ($2 * 255 + mx / 2) / mx )),$(( ($3 * 255 + mx / 2) / mx )) None"
 	else
-		echo "OFF 0 0,0,0"
+		echo "OFF 0 0,0,0 None"
 	fi
 }
 key_leds_state() {  # the level while the screen is awake. An older tsx-buttons: the level now
@@ -300,7 +355,9 @@ publish_states() {  # $1 = force
 	f=${1:-}
 	if [ "$P_BAR" = yes ]; then
 		v=$(ledbar_state); if [ "$v" != "$P_LED" ] || [ -n "${1:-}" ]; then
-			set -- $v; pub -r "$BASE/ledbar/state" "$1"; pub -r "$BASE/ledbar/brightness" "$2"; pub -r "$BASE/ledbar/rgb" "$3"; P_LED=$v; fi
+			set -- $v; pub -r "$BASE/ledbar/state" "$1"; pub -r "$BASE/ledbar/brightness" "$2"; pub -r "$BASE/ledbar/rgb" "$3"
+			[ -z "$P_FXL" ] || pub -r "$BASE/ledbar/effect" "$4"
+			P_LED=$v; fi
 	fi
 	v=$(key_leds_state); if [ "$v" != "$P_KL" ] || [ -n "${1:-}" ]; then
 		set -- $v; pub -r "$BASE/key_leds/state" "$1"; pub -r "$BASE/key_leds/brightness" "$2"; P_KL=$v; fi
@@ -336,23 +393,27 @@ publish_states() {  # $1 = force
 		pub -r "$BASE/update/state" "$v"; P_UPD=$v; fi
 }
 
-# The bar comes or goes: tsx-ledbard writes /run/tsx/ledbar.usb. When the
-# file changes, ask has_ledbar again. The light is then announced and its state
-# published, or the discovery topic and the retained state are cleared.
+# The bar comes or goes: tsx-ledbard writes /run/tsx/ledbar.usb. It also writes
+# /run/tsx/ledbar.fw, which says what the bar firmware can do (effects). When
+# one of the two files changes, ask has_ledbar and the effect checks again. The
+# light is then announced and its state published, or the discovery topic and the
+# retained state are cleared. ledbar_stamp is what tells a change.
 P_USBF=
+ledbar_stamp() { head -n 1 "$R/ledbar.usb" 2>/dev/null; cat "$R/ledbar.fw" 2>/dev/null; }
 check_ledbar() {
-	v=$(head -n 1 "$R/ledbar.usb" 2>/dev/null)
+	v=$(ledbar_stamp)
 	[ "$v" != "$P_USBF" ] || return 0
 	P_USBF=$v
-	old=$P_BAR
+	old=$P_BAR$P_FXL
 	ledbar_discovery
-	[ "$P_BAR" != "$old" ] || return 0
+	[ "$P_BAR$P_FXL" != "$old" ] || return 0
 	if [ "$P_BAR" = yes ]; then
-		log "LED bar attached: light announced"
+		case $old in yes*) log "LED bar firmware changed: effects updated";; *) log "LED bar attached: light announced";; esac
 		P_LED=; publish_states
 	else
 		log "LED bar gone: light cleared"
 		pub -r "$BASE/ledbar/state" ""; pub -r "$BASE/ledbar/brightness" ""; pub -r "$BASE/ledbar/rgb" ""
+		pub -r "$BASE/ledbar/effect" ""
 		P_LED=
 	fi
 }
@@ -362,9 +423,26 @@ check_ledbar() {
 ledbar_set() {  # r g b bri
 	"$PCTL" send ledbar set $(( ($1 * $4 * 100 + 32512) / 65025 )) $(( ($2 * $4 * 100 + 32512) / 65025 )) $(( ($3 * $4 * 100 + 32512) / 65025 ))
 }
+# An effect of the bar firmware in the color r g b (HA 0..255) at the brightness
+# bri (0..255). The numbers are the ones of the ESPHome light (backend.py): one
+# breath 4000 ms, blink 500 ms on and 500 off, one hue cycle 10000 ms, one run
+# of the chase 1500 ms. Fill takes the color at full level, and the brightness
+# is its height.
+ledbar_fx_send() {  # NAME r g b bri
+	fxlv=$(( ($5 * 100 + 127) / 255 ))
+	fr=$(( ($2 * $5 * 100 + 32512) / 65025 )) fg=$(( ($3 * $5 * 100 + 32512) / 65025 )) fb=$(( ($4 * $5 * 100 + 32512) / 65025 ))
+	case $1 in
+	Breathe) "$PCTL" send ledbar fx breathe $fr $fg $fb 4000;;
+	Blink) "$PCTL" send ledbar fx blink $fr $fg $fb 500 500;;
+	Rainbow) "$PCTL" send ledbar fx rainbow 10000 $fxlv;;
+	Chase) "$PCTL" send ledbar fx chase $fr $fg $fb 1500;;
+	Fill) "$PCTL" send ledbar fx fill $(( ($2 * 100 + 127) / 255 )) $(( ($3 * 100 + 127) / 255 )) $(( ($4 * 100 + 127) / 255 )) $fxlv;;
+	Spectrum) "$PCTL" send ledbar fx spectrum 10000 $fxlv;;
+	esac
+}
 led_rgb() {  # the last rgb from HA, else the color of the bar (or its last color), else white
 	c=$(cat "$M/rgb" 2>/dev/null)
-	[ -n "$c" ] || { cur=$(ledbar_state); c=${cur##* }; [ "$c" != 0,0,0 ] || c=255,255,255; }
+	[ -n "$c" ] || { cur=$(ledbar_state); set -- $cur; c=$3; [ "$c" != 0,0,0 ] || c=255,255,255; }
 	echo "$c"
 }
 split_rgb() { c=$1; r=${c%%,*}; c=${c#*,}; g=${c%%,*}; b=${c#*,}; }
@@ -395,6 +473,23 @@ handle() {  # topic payload
 		cur=$(ledbar_state); set -- $cur
 		bri=$(led_bri); [ "$1" = ON ] && bri=$2; [ "$bri" -gt 0 ] || bri=255
 		ledbar_set "$r" "$g" "$b" "$bri"; : > "$M/pending";;
+	ledbar/effect/set)
+		# The color and the brightness are the last ones of Home Assistant (the
+		# same turn on sent them first), else the ones of the bar now.
+		case $p in
+		None) [ -z "$(ledbar_fx)" ] || "$PCTL" send ledbar fx off;;
+		Breathe|Blink|Rainbow|Chase|Fill|Spectrum)
+			case $p in
+			Chase|Fill|Spectrum) "$PCTL" has ledbar-leds >/dev/null 2>&1 || { log "ignored effect $p: the LED bar firmware has no zone effects"; return; };;
+			*) "$PCTL" has ledbar-fx >/dev/null 2>&1 || { log "ignored effect $p: the LED bar firmware has no effects"; return; };;
+			esac
+			split_rgb "$(led_rgb)"
+			cur=$(ledbar_state); set -- $cur
+			bri=$(led_bri); { [ "$1" = ON ] && [ ! -e "$M/pending" ]; } && bri=$2
+			[ "$bri" -gt 0 ] || bri=255
+			ledbar_fx_send "$p" "$r" "$g" "$b" "$bri"; : > "$M/pending";;
+		*) return;;
+		esac;;
 	usb_power/set)
 		case $p in ON) "$PCTL" send usbpower on;; OFF) "$PCTL" send usbpower off;; esac;;
 	key_leds/set)
@@ -498,7 +593,7 @@ HANDLER=$!
 
 sleep 1
 kill -0 $SUB 2>/dev/null || { log "cannot connect to $BROKER:$PORT"; exit 1; }
-P_USBF=$(head -n 1 "$R/ledbar.usb" 2>/dev/null)   # before discovery: a change in between is not missed
+P_USBF=$(ledbar_stamp)   # before discovery: a change in between is not missed
 discovery
 pub -r "$BASE/availability" online
 publish_states force

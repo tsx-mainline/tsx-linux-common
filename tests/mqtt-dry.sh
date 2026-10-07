@@ -8,7 +8,7 @@ set -eu
 . "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$(dirname "$0")/lib/paths.sh"
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; mkdir -p "$T/bin" "$T/run" "$T/bl/x"
+T=${KEEPT:-$(mktemp -d)}; [ -n "${KEEPT:-}" ] || trap 'rm -rf "$T"' EXIT; mkdir -p "$T/bin" "$T/run" "$T/bl/x"
 # the stub of tsx-panelctl: the LED bar and the key LEDs are there, `send` logs, `get volume` has no value
 cat > "$T/bin/tsx-panelctl" <<'EOF'
 #!/bin/sh
@@ -165,6 +165,92 @@ PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T4/run 
 	sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T4/out2" 2>&1
 grep -qF 'PUB (retained) tsx/tsx-kiosk/ledbar/brightness 0' "$T4/out2" && grep -qF 'PUB (retained) tsx/tsx-kiosk/ledbar/rgb 0,0,0' "$T4/out2" \
 	|| { echo "FAIL: restore: no last color must give brightness 0 and rgb 0,0,0"; fail=1; }
+
+# The effects of the LED bar firmware TSX-LEDBAR. The light announces the effects that the firmware
+# has (tsx-panelctl has ledbar-fx, ledbar-leds), shows the running effect and the color of
+# the effect, and an effect command runs "tsx-panelctl send ledbar fx ...". The stub of
+# tsx-panelctl answers "has ledbar-fx" with the file fx and "has ledbar-leds" with the file leds.
+T5=$T/fx; mkdir -p "$T5/bin" "$T5/run/mqtt"
+cat > "$T5/bin/tsx-panelctl" <<'EOF'
+#!/bin/sh
+case "$1" in
+has) case "$2" in ledbar|keyleds) exit 0;; ledbar-fx) [ -e "$FXDIR/fx" ];; ledbar-leds) [ -e "$FXDIR/leds" ];; *) exit 1;; esac; exit $?;;
+get) exit 1;;
+send) echo "CALL tsx-panelctl $*" >&2;;
+esac
+EOF
+chmod +x "$T5/bin/tsx-panelctl"
+fxrun() {  # fxrun OUT  (the state file $T5/run/ledbar.state, the stdin commands)
+	rm -f "$T5/run/mqtt/pending"   # the service removes it at its start
+	PATH=$T5/bin:$PATH FXDIR=$T5 TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T5/run TSX_IDLED_STATE=$T/idled \
+		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+		sh "$(P usr/local/sbin/tsx-mqtt)" > "$1" 2>&1
+}
+chk5() { grep -qF -- "$2" "$1" || { echo "FAIL: effects: missing: $2"; fail=1; }; }
+no5() { grep -qF -- "$2" "$1" && { echo "FAIL: effects: found: $2"; fail=1; }; return 0; }
+eq5() { [ "$1" = "$2" ] || { echo "FAIL: effects: $3 (got '$1', want '$2')"; fail=1; }; }
+cfg5() { grep -F 'PUB (retained) homeassistant/light/tsx-kiosk/ledbar/config ' "$1" | sed 's/^[^{]*//'; }
+B5=tsx/tsx-kiosk/ledbar
+# a bar with effects but no zone effects (TSX-LEDBAR 0.1.2)
+: > "$T5/fx"; rm -f "$T5/leds"
+printf 'want 0 0 100\nlast 0 0 100\nfx none\n' > "$T5/run/ledbar.state"; rm -f "$T5/run/mqtt/rgb"
+printf '%s\n' "$B5/rgb/set 255,0,0" "$B5/brightness/set 128" "$B5/effect/set Breathe" "$B5/set ON" \
+	"$B5/effect/set Blink" "$B5/effect/set Rainbow" "$B5/effect/set Chase" "$B5/effect/set Bogus" "$B5/effect/set None" | fxrun "$T5/out1"
+cfg5 "$T5/out1" | jq -e . >/dev/null || { echo "FAIL: effects: the light config is not JSON"; fail=1; }
+eq5 "$(cfg5 "$T5/out1" | jq -c '.fx_list')" '["None","Breathe","Blink","Rainbow"]' "effect list without zone effects"
+eq5 "$(cfg5 "$T5/out1" | jq -r '.fx_cmd_t, .fx_stat_t' | tr '\n' ' ')" "$B5/effect/set $B5/effect " "effect topics"
+chk5 "$T5/out1" "PUB (retained) $B5/effect None"
+chk5 "$T5/out1" 'CALL tsx-panelctl send ledbar fx breathe 50 0 0 4000'
+chk5 "$T5/out1" 'CALL tsx-panelctl send ledbar fx blink 100 0 0 500 500'   # no brightness command before it: the brightness of the bar (255)
+chk5 "$T5/out1" 'CALL tsx-panelctl send ledbar fx rainbow 10000 50'
+no5 "$T5/out1" 'fx chase'
+chk5 "$T5/out1" 'ignored effect Chase: the LED bar firmware has no zone effects'
+no5 "$T5/out1" 'fx bogus'
+no5 "$T5/out1" 'fx off'   # no effect runs: None changes nothing
+# the ON after an effect is the last command of the same turn on of Home Assistant: no second send
+eq5 "$(grep -c 'CALL tsx-panelctl send ledbar' "$T5/out1")" 5 "calls: two colors and three effects, the ON after an effect sends nothing"
+
+# a bar with the zone effects too (0.1.3 and later): all six effects, an effect alone takes the color and brightness of the bar
+: > "$T5/leds"
+printf 'want 0 0 100\nlast 0 0 100\nfx none\n' > "$T5/run/ledbar.state"; rm -f "$T5/run/mqtt/rgb"
+printf '%s\n' "$B5/effect/set Chase" "$B5/set ON" "$B5/effect/set Fill" "$B5/set ON" "$B5/effect/set Spectrum" "$B5/set ON" | fxrun "$T5/out2"
+eq5 "$(cfg5 "$T5/out2" | jq -c '.fx_list')" '["None","Breathe","Blink","Rainbow","Chase","Fill","Spectrum"]' "effect list with zone effects"
+chk5 "$T5/out2" 'CALL tsx-panelctl send ledbar fx chase 0 0 100 1500'
+chk5 "$T5/out2" 'CALL tsx-panelctl send ledbar fx fill 0 0 100 100'
+chk5 "$T5/out2" 'CALL tsx-panelctl send ledbar fx spectrum 10000 100'
+eq5 "$(grep -c 'CALL tsx-panelctl send ledbar' "$T5/out2")" 3 "calls: three effects, no extra ON"
+
+# the state while an effect runs: the color of the effect, and the name
+printf 'want 0 0 100\nlast 0 0 100\nfx breathe 0 50 0 4000\n' > "$T5/run/ledbar.state"
+fxrun "$T5/out3" < /dev/null
+chk5 "$T5/out3" "PUB (retained) $B5/state ON"
+chk5 "$T5/out3" "PUB (retained) $B5/brightness 128"
+chk5 "$T5/out3" "PUB (retained) $B5/rgb 0,255,0"
+chk5 "$T5/out3" "PUB (retained) $B5/effect Breathe"
+# rainbow and spectrum keep the color of Home Assistant, the brightness is the level of the effect
+printf 'want 0 0 100\nlast 0 0 100\nfx rainbow 10000 60\n' > "$T5/run/ledbar.state"; echo 10,200,30 > "$T5/run/mqtt/rgb"
+fxrun "$T5/out4" < /dev/null
+chk5 "$T5/out4" "PUB (retained) $B5/brightness 153"
+chk5 "$T5/out4" "PUB (retained) $B5/rgb 10,200,30"
+chk5 "$T5/out4" "PUB (retained) $B5/effect Rainbow"
+# a running effect that Home Assistant does not list (fade) shows its color and the effect None
+printf 'want 0 0 100\nlast 0 0 100\nfx fade 100 0 0 500\n' > "$T5/run/ledbar.state"; rm -f "$T5/run/mqtt/rgb"
+fxrun "$T5/out5" < /dev/null
+chk5 "$T5/out5" "PUB (retained) $B5/rgb 255,0,0"
+chk5 "$T5/out5" "PUB (retained) $B5/effect None"
+# effect None ends a running effect: fx off
+printf 'want 0 0 100\nlast 0 0 100\nfx chase 100 0 0 1500\n' > "$T5/run/ledbar.state"
+printf '%s\n' "$B5/effect/set None" | fxrun "$T5/out6"
+chk5 "$T5/out6" 'CALL tsx-panelctl send ledbar fx off'
+# the firmware has no effects: no effect in the config, no effect topic, an effect command is refused
+rm -f "$T5/fx" "$T5/leds"
+printf 'want 0 0 100\nlast 0 0 100\nfx none\n' > "$T5/run/ledbar.state"
+printf '%s\n' "$B5/effect/set Breathe" | fxrun "$T5/out7"
+cfg5 "$T5/out7" | jq -e 'has("fx_list") or has("fx_cmd_t") or has("fx_stat_t")' >/dev/null && { echo "FAIL: effects: the config has effect keys for a firmware without effects"; fail=1; }
+no5 "$T5/out7" "$B5/effect"
+no5 "$T5/out7" 'CALL tsx-panelctl send ledbar fx'
+chk5 "$T5/out7" 'ignored effect Breathe: the LED bar firmware has no effects'
+eq5 "$(grep -c '/config ' "$T5/out2")" "$(grep -c '/config ' "$T5/out7")" "the effects add no discovery topic"
 
 # eMMC health from /run/tsx/emmc.state (tsx-emmc-state)
 T3=$T/hw; mkdir -p "$T3/run"
