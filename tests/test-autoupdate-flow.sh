@@ -80,6 +80,32 @@ grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 2: reboot not called inside t
 [ -e "$T/state/reboot-marker" ] || { echo "FAIL: 2: reboot-marker not written"; fail=1; }
 chk "$(jf "$T/run/update.json" .last_result)" ok "2: last_result ok"
 
+# ---- 2a: only a tsx-* package is pending (a new common release): the services keep the old code, so reboot
+rm -f "$T/state/reboot-marker"
+printf '(1/1) Upgrading tsx-ha (0.2.1-r0 -> 0.2.2-r0)\n' > "$T/sim.txt"
+reset_calls
+NOWDATE=2026-01-01 NOWHHMM=04:00 run >/dev/null
+chk "$(jf "$T/run/update.json" .reboot_pending)" true "2a: a tsx-ha upgrade needs a reboot"
+grep -q '^APK upgrade$' "$T/apk.calls" || { echo "FAIL: 2a: apk upgrade not run"; fail=1; }
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 2a: no reboot after a tsx-ha install inside the window"; fail=1; }
+[ -e "$T/state/reboot-marker" ] || { echo "FAIL: 2a: reboot-marker not written (no health check after the reboot)"; fail=1; }
+rm -f "$T/state/reboot-marker"
+# the same upgrade with REBOOT=never: installed, no reboot, the reboot stays pending
+printf 'ENABLED=1\nWINDOW=03:00-05:00\nREBOOT=never\n' > "$T/autoupdate.conf"
+reset_calls
+NOWDATE=2026-01-01 NOWHHMM=04:00 run >/dev/null
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 2a: rebooted with REBOOT=never"; fail=1; }
+chk "$(jf "$T/run/update.json" .reboot_pending)" true "2a: REBOOT=never: the reboot stays pending"
+printf 'ENABLED=1\nWINDOW=03:00-05:00\nREBOOT=auto\n' > "$T/autoupdate.conf"
+rm -f "$T/state/reboot-marker"
+# tsx-keys is a public key: no reboot
+printf '(1/1) Upgrading tsx-keys (1-r0 -> 1-r1)\n' > "$T/sim.txt"
+reset_calls
+NOWDATE=2026-01-01 NOWHHMM=04:00 run >/dev/null
+chk "$(jf "$T/run/update.json" .reboot_pending)" false "2a: a tsx-keys upgrade needs no reboot"
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 2a: rebooted for tsx-keys"; fail=1; }
+printf '(1/2) Upgrading musl (1.2.5-r0 -> 1.2.5-r1)\n(2/2) Upgrading libfoo (1.0-r0 -> 1.1-r0)\n' > "$T/sim.txt"
+
 # ---- 3: same pending list, outside the window: must not install -----------
 rm -f "$T/state/reboot-marker"
 reset_calls

@@ -4,8 +4,9 @@
 # Daily: run `apk update` and compute the pending upgrades. It installs only
 # inside the night window (/etc/tsx/autoupdate.conf WINDOW) and only while the
 # screen is idle (the state file of tsx-idled). It reboots only if the upgrade
-# changed the kernel, musl, openrc or busybox or the init system, and only
-# inside the window.
+# changed the kernel, musl, openrc or busybox or the init system, or a tsx-*
+# package (the services and shared code of the panel), and only inside the
+# window.
 #
 # Repositories: apk refuses to upgrade anything while a listed repository is
 # unavailable. Sometimes only the own repositories of this project cannot be
@@ -84,10 +85,23 @@ in_window() {  # in_window HH:MM start-end  (window may cross midnight)
 	fi
 }
 
+# The package of the kernel, musl, openrc and busybox, and every tsx-* package
+# except two, need a reboot. The tsx-* packages hold the services, the init
+# scripts and the shared code of the panel (tsx-base, tsx-ha, tsx-ledbar,
+# tsx-kiosk, the board package). An upgrade writes the new files, but the
+# running services keep the old code until they start again. So the panel would
+# run half old and half new code until the next boot. A reboot inside the
+# window is simpler and safer than a restart of single services: the
+# services depend on each other, and a restart of the kiosk or the ESPHome
+# device in the middle of the night has more ways to fail. tsx-keys (a public
+# key) and tsx-ledbar-fw (a tool for a person) have no running code. The
+# kernel package of another family needs no reboot here.
 needs_reboot() {  # needs_reboot "pkg1 pkg2 ..." -> exit 0 if any needs a reboot
 	for n in $1; do
 		case $n in
 		linux*|musl*|openrc*|busybox*|tsx-$TSX_FAMILY-kernel*) return 0;;
+		tsx-*-kernel*|tsx-keys|tsx-ledbar-fw) ;;
+		tsx-*) return 0;;
 		esac
 	done
 	return 1
@@ -265,7 +279,7 @@ do_install() {
 		last_result="$([ $rc -eq 0 ] && echo ok || echo "apk upgrade rc=$rc")"
 	write_update_json; write_ha_json
 	if [ "$rb" = 1 ] && [ "${REBOOT:-auto}" != never ] && in_window "$(nowhhmm)" "${WINDOW:-03:00-05:00}"; then
-		log "rebooting for a kernel/musl/openrc/busybox update"
+		log "rebooting for a kernel, musl, openrc, busybox or tsx package update"
 		mkdir -p "$STATE" 2>/dev/null; : > "$STATE/reboot-marker"
 		sync
 		reboot
