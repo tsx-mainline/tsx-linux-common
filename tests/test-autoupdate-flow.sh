@@ -100,6 +100,15 @@ chk "$rc" 0 "8: status exits 0"
 echo "$out" | grep -q '^pending:' || { echo "FAIL: 8: status missing 'pending:'"; fail=1; }
 echo "$out" | grep -q '^chromium' && { echo "FAIL: 8: status has a chromium line"; fail=1; }
 
+# ---- 8a: status of a panel that never ran an install or a health check -------
+# (the health field and the last install have no value: the lines must say so, not stay blank)
+mkdir -p "$T/state-new"; printf 'installed_hash abc123\npending_count 0\n' > "$T/state-new/fields"
+out=$(PATH="$T/bin:$PATH" TSX_AUTOUPDATE_CONF="$T/autoupdate.conf" TSX_RUN_DIR="$T/run-new" TSX_STATE_DIR="$T/state-new" \
+	TSX_LOG="$T/tsx-autoupdate-new.log" TSX_IDLED_STATE="$T/idled" TSX_KIOSK_CONF="$T/kiosk.conf" TSX_BUILD_ID_FILE="$T/buildid" TSX_INITD="$T/initd" \
+	sh "$BIN" status)
+echo "$out" | grep -q '^health: *none yet' || { echo "FAIL: 8a: status health line is blank or wrong: $(echo "$out" | grep '^health')"; fail=1; }
+echo "$out" | grep -q '^last install: *never$' || { echo "FAIL: 8a: status last install line: $(echo "$out" | grep '^last install')"; fail=1; }
+
 # ---- 9: post-reboot health check, OK then FAILED ---------------------------
 : > "$T/state/reboot-marker"
 cat > "$T/bin/curl" <<EOF
@@ -110,6 +119,7 @@ EOF
 chmod +x "$T/bin/curl"
 NOWDATE=2026-01-09 NOWHHMM=04:00 CURL_CODE=200 run healthcheck >/dev/null
 chk "$(jf "$T/run/update.json" .health)" OK "9: healthy after reboot"
+run status | grep -q '^health: *OK$' || { echo "FAIL: 9: status does not show the health result: $(run status | grep '^health')"; fail=1; }
 [ -e "$T/state/reboot-marker" ] && { echo "FAIL: 9: reboot-marker not cleared"; fail=1; }
 
 : > "$T/state/reboot-marker"

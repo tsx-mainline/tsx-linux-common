@@ -22,7 +22,9 @@
 #   tsx-autoupdate now         check + install right away (the window still
 #                              gates the reboot itself, never the install)
 #   tsx-autoupdate check       refresh the status only, never installs
-#   tsx-autoupdate status      print the current state
+#   tsx-autoupdate status      print the current state. "health" shows "none
+#                              yet" until a healthcheck has run, and "last
+#                              install" shows "never" until an install ran
 #   tsx-autoupdate healthcheck post-reboot check (the background job of the
 #                              init.d script calls it. It does nothing unless
 #                              an automatic update rebooted the panel)
@@ -293,8 +295,12 @@ cmd_status() {
 	pl=$(get_field "$f" pending_list); [ -n "$pl" ] && echo "  $pl"
 	rb=$(get_field "$f" reboot_pending); echo "reboot pending: $([ "$rb" = 1 ] && echo yes || echo no)"
 	echo "last check:     $(get_field "$f" last_check)"
-	echo "last install:   $(get_field "$f" last_install) ($(get_field "$f" last_result))"
-	echo "health:         $(get_field "$f" health)"
+	li=$(get_field "$f" last_install)
+	if [ -n "$li" ]; then echo "last install:   $li ($(get_field "$f" last_result))"; else echo "last install:   never"; fi
+	# The health field has a value only after the check that follows a reboot
+	# of an automatic update. A panel that never rebooted this way has none.
+	hl=$(get_field "$f" health)
+	echo "health:         ${hl:-none yet (the check runs after a reboot that an automatic update starts)}"
 	rw=$(get_field "$f" repo_warning)
 	echo "repositories:   ${rw:-ok}"
 	return 0
