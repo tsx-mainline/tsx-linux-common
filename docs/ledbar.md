@@ -91,6 +91,8 @@ The `tsx-hw` program of the board writes the facts of the panel to `/run/tsx/hw.
 
 While the bar is off, `tsx-mqtt` publishes the brightness and the color of the last color that was not black. An `ON` command without a brightness or a color runs `tsx-ledbar on`, which shows this color again. The ESPHome light does the same. See "LED bar entities" in `esphome.md`.
 
+Home Assistant sends the color and the brightness of the MQTT light as separate messages (`rgb/set`, `brightness/set`, then `set ON`), and the color is always at full level. `tsx-mqtt` waits 0.2 seconds for the messages that belong together. Then it sends one `ledbar set` command with the final color. So the bar never shows the color at full level before the brightness applies. An `OFF` or an effect command in the same wait replaces the pending color. The ESPHome light gets the state, the color and the brightness in one message, so it sends one command without a wait.
+
 With the bar firmware TSX-LEDBAR, the MQTT light also has the effects of the bar. The list is the one of the ESPHome light, without `Pulse`. `Pulse` is a software effect of the ESPHome device, and `tsx-mqtt` has no such loop. The discovery topic has these effects:
 
 | Effect | Needs | Command that `tsx-mqtt` sends |
@@ -232,7 +234,7 @@ tsx_board_ledbar_map() {
 - `tests/ledbar-host-test.sh` builds `tsx-ledbar` without libusb. It checks the packets, the kernel back end, the state file, the effects and the 16 LEDs.
 - `tests/test-ledbard.sh` runs `tsx-ledbard` against a fake bar, a fake console and the made-up test board. It also checks the file `ledbar.usb`: a bar at the start, a plug-in, a removal, a short reset, the bootloader and a stop of the service.
 - `tests/test-panelctl.sh` checks `has ledbar` with each form of the file and of `LEDBAR`.
-- `tests/mqtt-dry.sh` checks the LED bar light of `tsx-mqtt` with the real `tsx-panelctl`. `tests/mqtt-ledbar-live.sh` runs `tsx-mqtt` and changes the file while it runs.
+- `tests/mqtt-dry.sh` checks the LED bar light of `tsx-mqtt` with the real `tsx-panelctl`. `tests/mqtt-ledbar-live.sh` runs `tsx-mqtt` and changes the file while it runs. It also sends a color, a brightness and `ON` to the running `tsx-mqtt` and counts the commands that reach the bar.
 - `tests/test-shim-ledbar.sh` and `tests/test-esphome-ledbar.sh` check the entities of the ESPHome device, also while the bar comes and goes.
 
 The libusb back end needs a bar.

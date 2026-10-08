@@ -448,6 +448,44 @@ led_rgb() {  # the last rgb from HA, else the color of the bar (or its last colo
 split_rgb() { c=$1; r=${c%%,*}; c=${c#*,}; g=${c%%,*}; b=${c#*,}; }
 led_bri() { b=$(cat "$M/bri" 2>/dev/null); echo "${b:-255}"; }
 
+# A turn on from Home Assistant with a color and a brightness comes as separate
+# messages: rgb/set, brightness/set, then set ON. HA sends the color at full
+# level and the brightness apart. If each message ran its own command, the bar
+# would show the color at full level first, and the scaled color after that.
+# So rgb/set and brightness/set only store their value (led_queue). One command
+# with the final color runs when no other message came for LED_WAIT seconds
+# (led_apply). OFF and an effect cancel it (led_cancel). The files led.rgb and
+# led.bri say which messages came, led.seq numbers the waits, and "pending" makes
+# the ON that follows send nothing.
+LED_WAIT=${TSX_MQTT_LED_WAIT:-0.2}
+led_seq() { s=$(cat "$M/led.seq" 2>/dev/null); echo "${s:-0}"; }
+led_queue() {  # rgb|bri
+	: > "$M/led.$1"; : > "$M/pending"
+	[ "$DRY" = 1 ] && return 0   # the dry run applies when the input has a pause (see the main part)
+	led_n=$(( $(led_seq) + 1 )); echo "$led_n" > "$M/led.seq"
+	# Not in the pipe of the handler: it must not hold up the next message.
+	( sleep "$LED_WAIT"; [ "$(led_seq)" = "$led_n" ] && led_apply ) >/dev/null 2>&1 &
+}
+led_cancel() {
+	rm -f "$M/led.rgb" "$M/led.bri"
+	echo $(( $(led_seq) + 1 )) > "$M/led.seq"
+}
+led_apply() {
+	[ -e "$M/led.rgb" ] || [ -e "$M/led.bri" ] || return 0
+	led_hb=; [ -e "$M/led.bri" ] && led_hb=1
+	rm -f "$M/led.rgb" "$M/led.bri"
+	split_rgb "$(led_rgb)"
+	bri=$(led_bri)
+	if [ -z "$led_hb" ]; then
+		# only a color came: it keeps the brightness of the bar
+		cur=$(ledbar_state); set -- $cur
+		[ "$1" = ON ] && bri=$2
+		[ "$bri" -gt 0 ] || bri=255
+	fi
+	ledbar_set "$r" "$g" "$b" "$bri"
+	: > "$M/poke"
+}
+
 handle() {  # topic payload
 	t=${1#"$BASE"/}; p=$2
 	# no bar attached, or LEDBAR=no: no LED bar command. This runs in a
@@ -456,7 +494,7 @@ handle() {  # topic payload
 	case $t in
 	ledbar/set)
 		case $p in
-		OFF) rm -f "$M/pending"; "$PCTL" send ledbar off;;
+		OFF) rm -f "$M/pending"; led_cancel; "$PCTL" send ledbar off;;
 		ON)  if [ -e "$M/pending" ]; then rm -f "$M/pending"
 		     else
 			cur=$(ledbar_state); [ "${cur%% *}" = ON ] || "$PCTL" send ledbar on
@@ -464,25 +502,22 @@ handle() {  # topic payload
 		esac;;
 	ledbar/brightness/set)
 		case $p in *[!0-9]*|'') return;; esac
-		echo "$p" > "$M/bri"; split_rgb "$(led_rgb)"
-		ledbar_set "$r" "$g" "$b" "$p"; : > "$M/pending";;
+		echo "$p" > "$M/bri"; led_queue bri;;
 	ledbar/rgb/set)
 		split_rgb "$p"
 		case "$r$g$b" in *[!0-9]*|'') return;; esac
-		echo "$r,$g,$b" > "$M/rgb"
-		cur=$(ledbar_state); set -- $cur
-		bri=$(led_bri); [ "$1" = ON ] && bri=$2; [ "$bri" -gt 0 ] || bri=255
-		ledbar_set "$r" "$g" "$b" "$bri"; : > "$M/pending";;
+		echo "$r,$g,$b" > "$M/rgb"; led_queue rgb;;
 	ledbar/effect/set)
 		# The color and the brightness are the last ones of Home Assistant (the
 		# same turn on sent them first), else the ones of the bar now.
 		case $p in
-		None) [ -z "$(ledbar_fx)" ] || "$PCTL" send ledbar fx off;;
+		None) led_apply; [ -z "$(ledbar_fx)" ] || "$PCTL" send ledbar fx off;;
 		Breathe|Blink|Rainbow|Chase|Fill|Spectrum)
 			case $p in
 			Chase|Fill|Spectrum) "$PCTL" has ledbar-leds >/dev/null 2>&1 || { log "ignored effect $p: the LED bar firmware has no zone effects"; return; };;
 			*) "$PCTL" has ledbar-fx >/dev/null 2>&1 || { log "ignored effect $p: the LED bar firmware has no effects"; return; };;
 			esac
+			led_cancel   # the effect has the color: no command with the plain color first
 			split_rgb "$(led_rgb)"
 			cur=$(ledbar_state); set -- $cur
 			bri=$(led_bri); { [ "$1" = ON ] && [ ! -e "$M/pending" ]; } && bri=$2
@@ -556,13 +591,19 @@ check_tag() {
 # ---- main ------------------------------------------------------------------
 if [ "$DRY" = 1 ]; then
 	discovery; publish_states force
-	while read -r topic payload; do handle "$topic" "$payload"; done
+	# A color or a brightness waits for the messages that come with it. Any
+	# other message, and the end of the input, ends the wait.
+	while read -r topic payload; do
+		handle "$topic" "$payload"
+		case $topic in */ledbar/rgb/set|*/ledbar/brightness/set) ;; *) led_apply;; esac
+	done
+	led_apply
 	P_KEY=${TSX_MQTT_PREV_KEY:-}; check_keys
 	P_TAGC=${TSX_MQTT_PREV_TAG:-}; check_tag
 	exit 0
 fi
 
-rm -f "$M/pending" "$M/poke" "$M/republish" "$M/pub.pids"
+rm -f "$M/pending" "$M/poke" "$M/republish" "$M/pub.pids" "$M/led.rgb" "$M/led.bri"
 mkfifo "$M/sub.fifo" 2>/dev/null || { rm -f "$M/sub.fifo"; mkfifo "$M/sub.fifo"; }
 mosquitto_sub -i "$NODE-sub" -q 1 -v -t "$BASE/+/set" -t "$BASE/+/+/set" -t "$DP/status" \
 	--will-topic "$BASE/availability" --will-payload offline --will-retain > "$M/sub.fifo" &

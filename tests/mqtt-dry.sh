@@ -45,8 +45,10 @@ chk 'PUB (retained) tsx/tsx-kiosk/ledbar/rgb 0,0,255'
 chk 'PUB (retained) tsx/tsx-kiosk/key_leds/brightness 128'
 chk 'PUB (retained) tsx/tsx-kiosk/screen/state ON'
 chk 'PUB (retained) tsx/tsx-kiosk/backlight/state 17'
-chk 'CALL tsx-panelctl send ledbar set 40 0 0'
+# The color (255,0,0) and the brightness (128) come one after the other: ONE command with the final
+# color, never the color at full level first (the bar would flash)
 chk 'CALL tsx-panelctl send ledbar set 50 0 0'
+grep -qF 'CALL tsx-panelctl send ledbar set 40 0 0' "$T/out" && { echo "FAIL: the color was sent alone before the brightness (set 40 0 0)"; fail=1; }
 chk 'CALL tsx-panelctl send ledbar off'
 chk 'CALL tsx-panelctl send keypad led 40'
 chk 'CALL tsx-panelctl send keypad led off'
@@ -60,7 +62,7 @@ chk 'PUB (retained) tsx/tsx-kiosk/touched_recently/state ON'
 chk 'CALL tsx-panelctl send blank-timeout 600'
 chk 'CALL tsx-panelctl send backlight 15'
 grep -q 'blank-timeout 99999' "$T/out" && { echo "FAIL: blank timeout above 86400 accepted"; fail=1; }
-[ "$(grep -c 'CALL tsx-panelctl send ledbar' "$T/out")" = 3 ] || { echo "FAIL: ON after brightness must not send again"; fail=1; }
+[ "$(grep -c 'CALL tsx-panelctl send ledbar' "$T/out")" = 2 ] || { echo "FAIL: color and brightness are one command (set 50 0 0) and OFF, and ON after them sends nothing"; fail=1; }
 # the base system sets the backlight (tsx-panelctl backlight), so tsx-mqtt writes no file and no device
 [ ! -e "$T/run/brightness" ] || { echo "FAIL: tsx-mqtt wrote the brightness override itself"; fail=1; }
 [ "$(cat "$T/bl/x/brightness")" = 0 ] || { echo "FAIL: tsx-mqtt wrote the backlight device itself"; fail=1; }
@@ -158,6 +160,33 @@ chk4 'CALL tsx-panelctl send ledbar set 50 0 0'   # brightness 128 keeps the las
 for bad in 'ledbar/brightness 0' 'ledbar/rgb 0,0,0'; do
 	grep -qF "PUB (retained) tsx/tsx-kiosk/$bad" "$T4/out" && { echo "FAIL: restore: the bar is off with a last color, but HA got $bad"; fail=1; }
 done
+# HA turns the light on with a color and a brightness (rgb/set, brightness/set, then ON): ONE
+# command with the scaled color. The old code sent "set 100 24 0" (the color at full level)
+# and then "set 78 18 0", and the bar flashed. The same from a lit bar. OFF right after the
+# values cancels them.
+ledcase() {  # ledcase NAME STATE-TEXT COMMANDS...  (the output is in $T4/NAME.out)
+	lc=$1; printf "$2" > "$T4/run/ledbar.state"; shift 2
+	rm -f "$T4/run/mqtt/pending" "$T4/run/mqtt/rgb" "$T4/run/mqtt/bri"
+	printf '%s\n' "$@" |
+	PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T4/run TSX_IDLED_STATE=$T/idled \
+		TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
+		TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_PANEL_BOARD_CONF=$TSX_BOARD_DIR/panel-board.conf TSX_BACKLIGHT_DIR=$T/bl \
+		sh "$(P usr/local/sbin/tsx-mqtt)" > "$T4/$lc.out" 2>&1
+}
+sends4() { grep 'CALL tsx-panelctl send ledbar' "$T4/$1.out" | sed 's/^CALL tsx-panelctl send //' | tr '\n' ';'; }
+L=tsx/tsx-kiosk/ledbar
+ledcase on-off 'want 0 0 0\nlast 0 0 40\nout 0 0 0\n' "$L/rgb/set 255,60,0" "$L/brightness/set 200" "$L/set ON"
+eq4() { [ "$1" = "$2" ] || { echo "FAIL: turn on: $3 (got '$1', want '$2')"; fail=1; }; }
+eq4 "$(sends4 on-off)" 'ledbar set 78 18 0;' "from off with a color and a brightness: one command with the scaled color"
+ledcase on-lit 'want 40 10 0\nlast 40 10 0\nout 40 10 0\n' "$L/rgb/set 0,255,0" "$L/brightness/set 100" "$L/set ON"
+eq4 "$(sends4 on-lit)" 'ledbar set 0 39 0;' "from a lit bar with a color and a brightness: one command"
+ledcase bri-first 'want 0 0 0\nlast 0 0 40\nout 0 0 0\n' "$L/brightness/set 200" "$L/rgb/set 255,60,0" "$L/set ON"
+eq4 "$(sends4 bri-first)" 'ledbar set 78 18 0;' "the brightness before the color: one command with the scaled color"
+ledcase off-after 'want 0 0 0\nlast 0 0 40\nout 0 0 0\n' "$L/rgb/set 255,60,0" "$L/brightness/set 200" "$L/set OFF"
+eq4 "$(sends4 off-after)" 'ledbar off;' "values and OFF at once: only off"
+ledcase two-turns 'want 0 0 0\nlast 0 0 40\nout 0 0 0\n' "$L/rgb/set 255,60,0" "$L/brightness/set 200" "$L/set ON" "$L/set OFF" "$L/rgb/set 0,255,0" "$L/brightness/set 255" "$L/set ON"
+eq4 "$(sends4 two-turns)" 'ledbar set 78 18 0;ledbar off;ledbar set 0 100 0;' "two turns on, an OFF between"
+
 # no last color: HA gets brightness 0 as before
 printf 'want 0 0 0\nlast -1 -1 -1\n' > "$T4/run/ledbar.state"
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T4/run TSX_IDLED_STATE=$T/idled \
@@ -208,7 +237,8 @@ chk5 "$T5/out1" 'ignored effect Chase: the LED bar firmware has no zone effects'
 no5 "$T5/out1" 'fx bogus'
 no5 "$T5/out1" 'fx off'   # no effect runs: None changes nothing
 # the ON after an effect is the last command of the same turn on of Home Assistant: no second send
-eq5 "$(grep -c 'CALL tsx-panelctl send ledbar' "$T5/out1")" 5 "calls: two colors and three effects, the ON after an effect sends nothing"
+no5 "$T5/out1" 'ledbar set'   # an effect has the color: no plain color command before it
+eq5 "$(grep -c 'CALL tsx-panelctl send ledbar' "$T5/out1")" 3 "calls: three effects, the ON after an effect sends nothing"
 
 # a bar with the zone effects too (0.1.3 and later): all six effects, an effect alone takes the color and brightness of the bar
 : > "$T5/leds"

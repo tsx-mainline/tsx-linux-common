@@ -10,6 +10,9 @@
 #   - the bar is removed later: the discovery topic and the retained state are cleared
 #   - a bar in the bootloader: no light
 #   - LEDBAR=no in hw.conf: no light, also with a bar attached, and no state topic
+#   - a turn on from Home Assistant with a color and a brightness (rgb/set,
+#     brightness/set, set ON) runs ONE command with the scaled color, never the
+#     color at full level first. OFF right after the values cancels them.
 set -u
 . "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -110,6 +113,65 @@ mark; echo bootloader > "$T/run/ledbar.usb"; sleep 1.5; echo app > "$T/run/ledba
 grep -q "^PUB (retained) $CFG {" "$T/pubs" && bad "LEDBAR=no: the light is announced after a change of the file" || ok "LEDBAR=no: a change of the file does not announce the light"
 [ "$(state_pubs)" = 0 ] && ok "LEDBAR=no: still no LED bar state topic" || bad "LEDBAR=no: state topics: $(grep ledbar/ "$T/pubs")"
 stop
+
+echo "== a turn on with a color and a brightness: one command =="
+# Home Assistant sends the color at full level, then the brightness, then ON.
+# The first version of tsx-mqtt ran "ledbar set" for each message, so the bar
+# showed the color at full level and then the scaled color (a flash). The fake
+# tsx-panelctl logs each send. The fake mosquitto_sub prints the lines that the
+# test appends to the file feed.
+rm -f "$T/feed"
+cat > "$T/bin/pctl-fake" <<EOS
+#!/bin/sh
+case "\$1" in send) echo "\$*" >> "$T/sends";; *) exec sh "$(P usr/local/sbin/tsx-panelctl)" "\$@";; esac
+EOS
+cat > "$T/bin/mosquitto_sub" <<EOS
+#!/bin/sh
+while :; do
+	if mv "$T/feed" "$T/feed.now" 2>/dev/null; then cat "$T/feed.now"; fi
+	sleep 0.05
+done
+EOS
+chmod +x "$T/bin/pctl-fake" "$T/bin/mosquitto_sub"
+export TSX_PANELCTL_BIN=$T/bin/pctl-fake
+printf 'want 0 0 0\nlast 0 0 40\nout 0 0 0\n' > "$T/run/ledbar.state"
+: > "$T/sends"
+start 'app\n' || exit 1
+B=tsx/tsx-kiosk/ledbar
+# HA: off to 255,60,0 at brightness 200. The values: 255*200/255 = 200 of 255 = 78 percent.
+printf '%s\n' "$B/rgb/set 255,60,0" "$B/brightness/set 200" "$B/set ON" >> "$T/feed"
+waitfor '[ -s "$T/sends" ]' || bad "turn on: no command reached tsx-panelctl"
+sleep 1
+[ "$(cat "$T/sends")" = "send ledbar set 78 18 0" ] && ok "turn on from off: one command, the scaled color" || bad "turn on from off: sends were: $(cat "$T/sends")"
+# the bar is on now (the fake does not change the state file): a new color and brightness
+: > "$T/sends"; printf 'want 78 18 0\nlast 78 18 0\nout 78 18 0\n' > "$T/run/ledbar.state"
+printf '%s\n' "$B/rgb/set 0,255,0" "$B/brightness/set 100" "$B/set ON" >> "$T/feed"
+waitfor '[ -s "$T/sends" ]' || bad "color change: no command reached tsx-panelctl"
+sleep 1
+[ "$(cat "$T/sends")" = "send ledbar set 0 39 0" ] && ok "color change on a lit bar: one command, the scaled color" || bad "color change: sends were: $(cat "$T/sends")"
+# a brightness alone, and a color alone, still work
+: > "$T/sends"
+printf '%s\n' "$B/brightness/set 255" "$B/set ON" >> "$T/feed"
+waitfor '[ -s "$T/sends" ]'; sleep 0.5
+[ "$(cat "$T/sends")" = "send ledbar set 0 100 0" ] && ok "brightness alone: one command" || bad "brightness alone: sends were: $(cat "$T/sends")"
+: > "$T/sends"
+printf '%s\n' "$B/rgb/set 255,0,0" "$B/set ON" >> "$T/feed"
+waitfor '[ -s "$T/sends" ]'; sleep 0.5
+[ "$(cat "$T/sends")" = "send ledbar set 78 0 0" ] && ok "color alone: one command, the brightness of the bar" || bad "color alone: sends were: $(cat "$T/sends")"
+# values and OFF at once: only OFF reaches the bar
+: > "$T/sends"
+printf '%s\n' "$B/rgb/set 255,60,0" "$B/brightness/set 200" "$B/set OFF" >> "$T/feed"
+waitfor '[ -s "$T/sends" ]'; sleep 1
+[ "$(cat "$T/sends")" = "send ledbar off" ] && ok "values and OFF at once: only off" || bad "values and OFF: sends were: $(cat "$T/sends")"
+# two values far apart (more than the wait) are two commands
+: > "$T/sends"
+printf '%s\n' "$B/rgb/set 255,0,0" >> "$T/feed"
+sleep 0.8
+printf '%s\n' "$B/brightness/set 100" >> "$T/feed"
+waitfor '[ "$(wc -l < "$T/sends")" -ge 2 ]'; sleep 0.5
+[ "$(wc -l < "$T/sends")" = 2 ] && ok "values 0.8 s apart: two commands" || bad "values far apart: sends were: $(cat "$T/sends")"
+stop
+unset TSX_PANELCTL_BIN
 
 [ $fail = 0 ] && echo "PASS mqtt-ledbar-live"
 exit $fail

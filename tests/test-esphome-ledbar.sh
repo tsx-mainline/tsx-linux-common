@@ -104,6 +104,10 @@ check_leds() {
 		"clear" "led ALL 7 7 7" "fx chase 100 0 0 1500" "fx fill 100 0 0 50" "fx spectrum 10000 40"; do
 		grep -qxF "tsx-ledbar $want" "$F/cmds.log" && echo "OK: $1: tsx-ledbar $want" || { echo "FAIL: $1: tsx-ledbar $want missing"; rc=1; }
 	done
+	# the turn on with a color and a brightness (one command of Home Assistant): ONE set, the scaled color
+	[ "$(grep -c '^tsx-ledbar set ' "$F/cmds.log")" = 1 ] && grep -qxF "tsx-ledbar set 78 18 0" "$F/cmds.log" \
+		&& echo "OK: $1: turn on with a color and a brightness: one set, the scaled color" \
+		|| { echo "FAIL: $1: turn on with a color and a brightness: want one 'tsx-ledbar set 78 18 0', got: $(grep '^tsx-ledbar set ' "$F/cmds.log" | tr '\n' ';')"; rc=1; }
 	grep -qwE 'R9|101|150|up' "$F/cmds.log" && { echo "FAIL: $1: a refused action reached tsx-ledbar"; rc=1; } || echo "OK: $1: no refused action reached tsx-ledbar"
 	grep -q 'Unknown message type' "$2" && { echo "FAIL: $1: Unknown message type in $2"; rc=1; } || echo "OK: $1: no Unknown message type"
 }

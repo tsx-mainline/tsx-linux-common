@@ -91,6 +91,14 @@ async def main(args) -> int:
         client.light_command(key=light.key, effect="Spectrum", brightness=0.4)
         await asyncio.sleep(0.5)
         print("OK: light commands Chase, Fill, Spectrum sent")
+        # A turn on from off with a color and a brightness is ONE command of Home
+        # Assistant. The bar must get one "set" with the scaled color (the shell
+        # part counts the lines in the log of the fake tsx-ledbar).
+        client.light_command(key=light.key, state=False)
+        await asyncio.sleep(0.3)
+        client.light_command(key=light.key, state=True, rgb=(1.0, 60 / 255, 0.0), brightness=200 / 255, effect="None")
+        await asyncio.sleep(0.5)
+        print("OK: light command off, then on with a color and a brightness sent")
         return 0
     finally:
         await client.disconnect()
