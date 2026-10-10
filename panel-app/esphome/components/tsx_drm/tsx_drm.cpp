@@ -164,13 +164,33 @@ void TsxDrm::setup() {
     this->mark_failed();
     return;
   }
-  if (drmModeSetCrtc(this->fd_, this->crtc_id_, this->buf_[0].fb, 0, 0, &this->conn_id_, 1, &this->mode_) != 0) {
-    // EACCES: another program is DRM master (a compositor, an SDL app).
-    this->failed_("set the display mode (is another program on the display?)");
+  // The first frame sets the mode (present_). Until then the screen keeps
+  // what it shows (the boot splash), with no black frame in between.
+  if (!drmIsMaster(this->fd_)) {
+    ESP_LOGE(TAG, "%s: another program is on the display (DRM master)", this->device_.c_str());
     this->mark_failed();
     return;
   }
   this->front_ = 0;
+  this->mode_set_ = false;
+}
+
+// The first frame: put the full picture into the front buffer and set the
+// mode with it. Return false if the driver refused the mode.
+bool TsxDrm::show_first_() {
+  uint32_t t0 = mono_us();
+  Buffer &b = this->buf_[this->front_];
+  this->copy_rects_(b, this->dirty_, true);
+  if (drmModeSetCrtc(this->fd_, this->crtc_id_, b.fb, 0, 0, &this->conn_id_, 1, &this->mode_) != 0)
+    return this->failed_("set the display mode");
+  this->mode_set_ = true;
+  this->dirty_.clear();
+  this->dirty_full_ = false;
+  this->last_.clear();
+  this->last_full_ = true;  // the other buffer is empty: the next frame copies all
+  this->frames_++;
+  ESP_LOGI(TAG, "first frame: display mode set (%.1f ms)", (mono_us() - t0) / 1000.0);
+  return true;
 }
 
 void TsxDrm::dump_config() {
@@ -356,6 +376,10 @@ void TsxDrm::present_(int wait_ms) {
     this->handle_events_(0);
   if (!this->dirty_full_ && this->dirty_.empty())
     return;
+  if (!this->mode_set_) {
+    this->show_first_();
+    return;
+  }
   if (this->flip_pending_) {
     // The screen still shows the buffer before the last one: wait for the
     // vertical blank (at most wait_ms), or try again in the next loop().
@@ -442,7 +466,10 @@ bool TsxDrm::flip_to_(Buffer &b, int wait_ms) {
     return !this->flip_pending_;
   }
   this->flip_pending_ = false;
-  return drmModeSetCrtc(this->fd_, this->crtc_id_, b.fb, 0, 0, &this->conn_id_, 1, &this->mode_) == 0;
+  if (drmModeSetCrtc(this->fd_, this->crtc_id_, b.fb, 0, 0, &this->conn_id_, 1, &this->mode_) != 0)
+    return false;
+  this->mode_set_ = true;
+  return true;
 }
 
 bool TsxDrm::set_power(bool on) {

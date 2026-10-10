@@ -76,6 +76,12 @@ binary_sensor:
 The size of the display comes from the preferred mode of the output. The
 snapshot action (`snapshot.take`) writes the screen copy to a BMP file.
 
+The component sets the display mode with the first frame of the app, not at
+the start. Until then the screen keeps its picture, for example the boot
+splash on the framebuffer. So the glass goes from the splash to the first
+frame with no black frame between them. The log line `first frame: display
+mode set` gives the time.
+
 `set_power(false)` makes the screen dark. With `off_mode: dpms` it turns the
 display output off with the DPMS property of the connector. A driver can
 also cut the panel supply then. A panel that comes on again can show a
@@ -137,9 +143,10 @@ events.
 
 ## Requirements
 
-- The panel app must be the only program on the display. It becomes DRM
-  master when it sets the mode. A compositor or another KMS program on the
-  same output makes the start fail with "set the display mode".
+- The panel app must be the only program on the display. It must be DRM
+  master when it opens the device. A compositor or another KMS program on
+  the same output makes the start fail with "another program is on the
+  display".
 - The binary needs `libdrm` at run time. The build needs the libdrm headers
   (`libdrm-dev` on Alpine).
 - Only rotation 0 uses the fast copy. Rotate in the `lvgl:` block, not in
@@ -175,7 +182,8 @@ single-core ARM CPU. A plain card page is 1.0.
 
 | Log line | Cause | Fix |
 |---|---|---|
-| `set the display mode (is another program on the display?)` | Another program is DRM master. | Stop the compositor or the other app. |
+| `another program is on the display (DRM master)` | Another program is DRM master. | Stop the compositor or the other app. |
+| `set the display mode: ...` | The driver refused the mode of the first frame. | Check the output with `modetest` and the kernel log. |
 | `no DRM device with a connected output in /dev/dri` | No display driver, or the output is not connected. | Check `/sys/class/drm/*/status`. |
 | `page flip failed` | The output is off. | The component writes into the shown buffer until a flip works again. |
 | `no input device ... yet` | The input device is missing. | The component tries again every 5 s. Check `name` against `/proc/bus/input/devices`. |

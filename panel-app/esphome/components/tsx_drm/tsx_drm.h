@@ -106,6 +106,7 @@ class TsxDrm final : public display::Display, public snapshot::Snapshot {
   bool failed_(const char *what);
   bool dpms_(bool on);
   bool flip_to_(Buffer &b, int wait_ms);
+  bool show_first_();
 
   std::string device_;
   bool flip_{true};
@@ -118,6 +119,7 @@ class TsxDrm final : public display::Display, public snapshot::Snapshot {
   int front_{0};
   bool flip_pending_{false};
   bool flip_failed_{false};
+  bool mode_set_{false};    // the first frame set the display mode
   bool powered_{true};
   bool dpms_off_{false};    // the output is off (DPMS)
   bool black_shown_{false}; // OFF_BLACK: the black buffer is on the output
