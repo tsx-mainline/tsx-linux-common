@@ -8,7 +8,7 @@ The repo has one directory for each package. A package directory holds the files
 |---|---|---|
 | base | tsx-base | `tsx-config`, `tsx-hostname`, `tsx-setup`, `tsx-data`, `tsx-panelctl`, `tsx-board`, `tsx-rootpw`, the clock files (chrony, udhcpc hooks, `tsx-savetime`), the console banner, sysctl, sshd, profile, `serial.sh`, and `tsx_brightness.py` ([adaptive brightness](adaptive-brightness.md)) |
 | kiosk | tsx-kiosk | `kiosk-session` (with the `kiosk.d` hook loader), `tsx-orientation`, `tsx-osk`, `tsx-kiosk-url`, `tsx-kiosk-page`, `tsx-kiosk-reveal`, `tsx-display-power`, `tsx-blank`, `kiosk.conf`, the Chromium policy, `tsx-idled` and `tsx-overlay` (C, with the header `tsx-level.h`) |
-| setup | tsx-setup | `tsx-setupd`, `tsx-setup-helper`, their init scripts, `setup.conf` |
+| setup | tsx-setup | `tsx-setupd`, `tsx-setup-helper`, their init scripts, `setup.conf`. See [Setup page without a kiosk](#setup-page-without-a-kiosk) |
 | ha | tsx-ha | `tsx-mqtt`, `tsx-bt`, the voice scripts, the ESPHome shim (`tsx_panel`, `tsx_lva`), the setup page plugin, `install-lva.sh` |
 | buttons | tsx-buttons | `tsx-buttons` (C), `tsx-keypad`, `buttons.conf` (a template with no keys). See [Front keys](buttons.md) |
 | autoupdate | tsx-autoupdate | `tsx-autoupdate`, its init script, its conf, its logrotate file |
@@ -219,6 +219,44 @@ A panel without the plugin does not know its keys. `tsx-config set` refuses them
 
 A host run from a checkout, for example the installer, has no `/usr/local/lib/tsx`. There `tsx-config` reads `config.d` next to the script (`../lib/tsx/config.d`), as it does for `board.sh`. For a user that is not root, it does not check the owner of this folder. Root always checks it.
 
+## Setup page without a kiosk
+
+A panel can run with no browser kiosk. The package tsx-kiosk is not installed, and a native panel app owns the screen. The key `TSX_SETUP_KIOSK` of `/etc/tsx/setup.conf` sets the mode of `tsx-setupd`. Its values are `auto`, `on` and `off`. With `auto` (the default), the mode is on when `/etc/kiosk.conf` exists. The environment variable `TSX_SETUP_KIOSK` replaces the key. Tests use it.
+
+With the mode off, the setup page changes in these ways:
+
+| Part | With no kiosk |
+|---|---|
+| Page URL card (`KIOSK_URL`) | Hidden. A save does not need a URL, and it ignores a URL that a client sends. No kiosk loads a page. |
+| Screen blank timeout (`BLANK_TIMEOUT`) | Hidden. Only `tsx-idled` reads it, and `tsx-idled` is a service of tsx-kiosk. A save leaves the key as it is. |
+| Login method and token (`HA_LOGIN_METHOD`, `HA_TOKEN`, from the plugin of tsx-ha) | Hidden. Only the browser of the kiosk reads them. A save leaves the keys as they are. |
+| Panel name, time zone, orientation, sensors, root login, updates | Shown. Services outside tsx-kiosk read these keys: `tsx-hostname`, `tsx-setup`, `tsx-splash`, `tsx-buttons`, the console and the sensor services of the board. |
+| Configured | `panel.conf` has at least one key. |
+| First save | While the panel is not configured, a save always sends `TZ_NAME`, also when it did not change. The page selects the time zone of the browser, or UTC. So the first save makes `panel.conf` and closes the LAN listener, as on a panel with a kiosk. |
+| After a save | No kiosk restarts. The end of the LAN window restarts no kiosk. |
+
+A plugin names the keys that only the kiosk reads in `KIOSK_ONLY_KEYS`. The slot `kiosk` of the script of the page hides the fields of the plugin.
+
+### screen.json
+
+A native screen cannot read the pairing code from the page. So `tsx-setupd` writes the code to the file `screen.json` in its state folder. The folder is `/run/tsx-setup` (mode 0700, owner `tsx-setup`). The init script makes it. The environment variable `TSX_SETUP_STATE_DIR` changes it for tests.
+
+The daemon writes the file while `lan_allowed()` is true. That is the case while the panel is not configured and for the window after `tsx-config setup`. It writes the file at least every 5 s (every 2 s in practice). It writes a temporary file with mode 600 and renames it, so a reader never sees half a file. It removes the file when the LAN window closes, when the process ends and at the start. The file is one JSON object:
+
+```json
+{"code": "123456", "port": 8080, "path": "/setup", "addresses": ["192.0.2.10"], "remaining": 840, "uptime": 1234}
+```
+
+| Key | Meaning |
+|---|---|
+| `code` | The pairing code. |
+| `port`, `path` | The port of `tsx-setupd` and the path of the setup page. |
+| `addresses` | The IPv4 addresses of the panel that are not loopback. The list can be empty. |
+| `remaining` | The seconds until the code expires. |
+| `uptime` | The seconds of `/proc/uptime` at the write, as an integer. |
+
+A native app shows "Setup: http://ADDR:PORT/setup  code CODE" while the file exists and its `uptime` is less than 30 s older than `/proc/uptime`. The code stays on the state API of the loopback address, as on a panel with a kiosk.
+
 ## Tests
 
 | Command | Runs |
@@ -232,7 +270,7 @@ A host run from a checkout, for example the installer, has no `/usr/local/lib/ts
 
 A test that needs a board file uses the made-up board in `tests/boards/fake`. A test sources `tests/lib/board.sh`, which sets `TSX_BOARD_CONF` and `TSX_BOARD_BIN`. The board holds `board.sh`, `panel-board.conf`, `buttons-board.conf` and `motd.board`. It also holds a fake plugin for each plugin folder: `config.d/fakeopt.sh` and `esphome.d/fakeent.py`. A test of a loader sets the test hook of the folder to a copy of the folder. `test-config-plugins.sh` covers `config.d`. `test-shim-plugins.sh` and `test-esphome.sh` cover `esphome.d`. The values of the board differ from the values of every real family. So a test fails when shared code has a family value built in. `test-board-fake.sh` runs the shared scripts against this board and against a second made-up board. It also runs `kiosk-session` with fake `kiosk.d` hooks.
 
-`test-panel-app-run.sh` covers the start script of the panel app: the identity from the host name and the MAC, the saved identity, the board file. `test-setup.sh` covers the presence fields of the setup page (shown with `PRESENCE=yes`, hidden with `PRESENCE=no`). It also covers the save rule: a save writes only the changed fields, and the server refuses a page with an old revision of `panel.conf`. `test-setup-page.sh` runs the script of the setup page in node, with a small fake DOM. It checks the changed fields that a save sends and the refresh every 20 s. Without node, it prints SKIPPED. `test-panel-board.sh` covers the board layer of `kiosk.conf`.
+`test-panel-app-run.sh` covers the start script of the panel app: the identity from the host name and the MAC, the saved identity, the board file. `test-panel-editor.sh` covers the setup page of a panel with no kiosk and `screen.json`. It starts the real `tsx-setup-helper` and the real `tsx-setupd`. `test-setup.sh` covers the presence fields of the setup page (shown with `PRESENCE=yes`, hidden with `PRESENCE=no`). It also covers the save rule: a save writes only the changed fields, and the server refuses a page with an old revision of `panel.conf`. `test-setup-page.sh` runs the script of the setup page in node, with a small fake DOM. It checks the changed fields that a save sends and the refresh every 20 s. Without node, it prints SKIPPED. It also covers the hidden fields of a panel with no kiosk. `test-panel-board.sh` covers the board layer of `kiosk.conf`.
 
 ### Tests of a family
 

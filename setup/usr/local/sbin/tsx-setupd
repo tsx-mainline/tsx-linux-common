@@ -60,16 +60,51 @@ page shows the light sensor settings (AUTO_BRIGHTNESS and ALS_SCALE) as not
 available. A submit then leaves them as they are. A plugin can report more
 settings in the same way (tsx-ha: no microphone and no Bluetooth module).
 
+A panel can run with no browser kiosk. A native panel app then owns the
+screen, and the package tsx-kiosk is not installed. The setup.conf key
+TSX_SETUP_KIOSK (auto, on or off) sets the mode. With "auto" (the default),
+the mode is "on" when /etc/kiosk.conf exists. With the mode "off":
+
+  * The page has no page URL card, and a save does not need KIOSK_URL. The
+    page also hides the fields that only a service of tsx-kiosk reads:
+    KIOSK_URL and BLANK_TIMEOUT (tsx-idled). A plugin names its own such
+    keys in KIOSK_ONLY_KEYS. A save leaves these keys as they are.
+  * The panel is "configured" when panel.conf has at least one key. While
+    it is not configured, a save always sends TZ_NAME, so the first save
+    makes panel.conf and closes the LAN listener.
+  * A save restarts no kiosk.
+  * The screen of the panel is not a browser. So the pairing code goes to
+    the native app in the file screen.json (see write_screen below).
+
+screen.json: while lan_allowed() is true, this process writes the file
+STATE_DIR/screen.json (mode 600, one JSON object, atomic: a temporary file
+and a rename) and writes it again at least every 5 s (every REFRESH_S). It
+removes the file when the LAN window closes and when the process ends:
+
+  {"code": "123456", "port": 8080, "path": "/setup",
+   "addresses": ["192.0.2.10"], "remaining": 840, "uptime": 1234}
+
+addresses are the IPv4 addresses of the panel that are not loopback.
+remaining is the number of seconds until the code expires. uptime is the
+integer seconds of /proc/uptime at the write. A native app shows the text
+only while the file exists and its uptime is less than 30 s old. Loopback
+clients get the code from the state API too, as in the kiosk mode.
+
 Env overrides for host tests (tests/test-setup.sh): TSX_SETUP_PORT,
 TSX_SETUP_CONF, TSX_HW_CONF, TSX_RUN_DIR, TSX_CONFIG_BIN, TSX_SETUP_HELPER_REQ,
 TSX_SETUP_HELPER_RESP, TSX_ZONEINFO_DIR, TSX_SETUP_NO_ZEROCONF=1,
-TSX_SETUP_PLUGIN_DIR (default /usr/local/share/tsx/setup.d).
+TSX_SETUP_PLUGIN_DIR (default /usr/local/share/tsx/setup.d), TSX_KIOSK_CONF,
+TSX_SETUP_KIOSK (replaces the setup.conf key), TSX_SETUP_STATE_DIR (default
+/run/tsx-setup).
 """
 import importlib.util
 import json
 import os
+import re
 import secrets
 import select
+import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -85,6 +120,7 @@ CONF_PATH = os.environ.get("TSX_SETUP_CONF", "/etc/tsx/setup.conf")
 KIOSK_CONF_PATH = os.environ.get("TSX_KIOSK_CONF", "/etc/kiosk.conf")
 NO_ZEROCONF = os.environ.get("TSX_SETUP_NO_ZEROCONF", "0") == "1"
 PLUGIN_DIR = os.environ.get("TSX_SETUP_PLUGIN_DIR", "/usr/local/share/tsx/setup.d")
+STATE_DIR = os.environ.get("TSX_SETUP_STATE_DIR", "/run/tsx-setup")
 
 
 def load_conf(path):
@@ -115,6 +151,19 @@ try:
     WINDOW = int(_conf.get("TSX_SETUP_WINDOW") or "900")
 except ValueError:
     WINDOW = 900
+KIOSK_MODE = (os.environ.get("TSX_SETUP_KIOSK") or _conf.get("TSX_SETUP_KIOSK") or "auto").strip().lower()
+if KIOSK_MODE not in ("auto", "on", "off"):
+    KIOSK_MODE = "auto"
+# the keys that only a service of tsx-kiosk reads (tsx-idled reads BLANK_TIMEOUT)
+BASE_KIOSK_ONLY_KEYS = ("KIOSK_URL", "BLANK_TIMEOUT")
+
+
+def kiosk_enabled():
+    """True when the panel runs the browser kiosk: TSX_SETUP_KIOSK=on, or
+    "auto" and /etc/kiosk.conf (the file of tsx-kiosk) exists."""
+    if KIOSK_MODE == "auto":
+        return os.path.exists(KIOSK_CONF_PATH)
+    return KIOSK_MODE == "on"
 
 
 # ---- tsx-config validate (needs no privilege: key_known and val_ok touch no
@@ -297,7 +346,7 @@ def tcfg_apply():
 # anyway. So the cache only delays the close of the LAN listener of a
 # freshly-configured panel by a few seconds. It does not delay the load of HA.
 _CONFIGURED_CACHE_S = 4.0
-_configured_cache = {"at": float("-inf"), "val": False}
+_configured_cache = {"at": float("-inf"), "val": False, "rev": None}
 _configured_cache_lock = threading.Lock()
 
 
@@ -312,11 +361,26 @@ def has_url(shown):
     return bool(v and v.strip())
 
 
+def is_configured_from(shown):
+    """Is the panel configured? shown is the output of tcfg_show. With a
+    kiosk, it needs a page URL. With no kiosk, panel.conf needs at least one
+    key (a line of tcfg_show that is not a comment of tsx-config)."""
+    if kiosk_enabled():
+        return has_url(shown)
+    return any(re.fullmatch(r"[A-Z][A-Z0-9_]*", k) for k in shown)
+
+
 def is_configured():
+    # tsx-config show takes seconds on a slow panel. So the check reads the
+    # values again only when the revision of panel.conf (one sha256 in the
+    # helper) has changed since the last read.
     with _configured_cache_lock:
         now = time.monotonic()
         if now - _configured_cache["at"] > _CONFIGURED_CACHE_S:
-            _configured_cache["val"] = has_url(tcfg_show())
+            rev = tcfg_rev()
+            if rev is None or rev != _configured_cache.get("rev"):
+                _configured_cache["val"] = is_configured_from(tcfg_show())
+                _configured_cache["rev"] = rev
             _configured_cache["at"] = now
         return _configured_cache["val"]
 
@@ -327,6 +391,7 @@ def _invalidate_configured_cache():
     state API to that same save would look stale."""
     with _configured_cache_lock:
         _configured_cache["at"] = float("-inf")
+        _configured_cache["rev"] = None
 
 
 def _run_flag_path():
@@ -526,6 +591,8 @@ STATE_KEYS = set(BASE_STATE_KEYS).union(*[set(getattr(p, "STATE_KEYS", getattr(p
 UNAVAILABLE_DROPS = dict(BASE_UNAVAILABLE_DROPS)
 for _p in PLUGINS:
     UNAVAILABLE_DROPS.update(getattr(_p, "UNAVAILABLE_DROPS", {}))
+# the keys that only a service of tsx-kiosk reads (used when the mode has no kiosk)
+KIOSK_ONLY_KEYS = set(BASE_KIOSK_ONLY_KEYS).union(*[set(getattr(p, "KIOSK_ONLY_KEYS", ())) for p in PLUGINS])
 
 _TEXT_DEFAULTS = {
     "url_label": "Page URL",
@@ -534,9 +601,17 @@ _TEXT_DEFAULTS = {
     "submit_label": "Save",
     "done_text": "Saved. This panel will load the page now.",
 }
+# With no kiosk, the panel loads no page. These words replace the words of a
+# plugin for the save button and for the text after a save.
+_TEXT_NO_KIOSK = {
+    "submit_label": "Save",
+    "done_text": "Saved. The settings are in use now.",
+}
 
 
 def page_text(name):
+    if not kiosk_enabled() and name in _TEXT_NO_KIOSK:
+        return _TEXT_NO_KIOSK[name]
     for p in PLUGINS:
         v = getattr(p, "TEXT", {}).get(name)
         if v:
@@ -579,6 +654,9 @@ def handle_submit(fields, revision=None):
     for name in hw_unavailable():
         gone.add(name)
         gone.update(UNAVAILABLE_DROPS.get(name, ()))
+    kiosk = kiosk_enabled()
+    if not kiosk:
+        gone.update(KIOSK_ONLY_KEYS)    # no kiosk reads them: a save leaves them as they are
     fields = {k: v for k, v in fields.items() if k not in gone}
 
     # The revision first, then the values (see tcfg_show_rev). A change of
@@ -596,7 +674,9 @@ def handle_submit(fields, revision=None):
     to_unset = []
     post_unset = []
 
-    if "KIOSK_URL" in fields:
+    if not kiosk:
+        pass    # no page URL: the panel loads no page
+    elif "KIOSK_URL" in fields:
         url = fields["KIOSK_URL"]
         if not isinstance(url, str) or not url.strip():
             errors["KIOSK_URL"] = page_text("url_required")
@@ -678,7 +758,8 @@ def handle_submit(fields, revision=None):
     # the kiosk loads the page again.
     _invalidate_configured_cache()
     clear_setup_open()
-    restart_kiosk()
+    if kiosk:
+        restart_kiosk()
     return 200, {"ok": True, "changed": changed, "applied": bool(changed)}
 
 
@@ -757,7 +838,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self._loopback() and not lan_allowed():
                 self._send_html(403, PAGE_UNAVAILABLE)
                 return
-            self._send_html(200, PAGE)
+            self._send_html(200, PAGE if kiosk_enabled() else PAGE_NO_KIOSK)
             return
         if path == "/setup/api/state":
             self._api_state()
@@ -802,10 +883,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"need_pairing": True, "window_seconds": WINDOW})
             return
         shown, rev = tcfg_show_rev()
+        kiosk = kiosk_enabled()
         fields = {}
         for k, v in shown.items():
             if k not in STATE_KEYS:
                 continue    # a key of a package that this panel does not have
+            if not kiosk and k in KIOSK_ONLY_KEYS:
+                continue    # a key that no service of this panel reads
             if v == "********":
                 fields[k] = None
                 fields[k + "__set"] = True
@@ -813,7 +897,8 @@ class Handler(BaseHTTPRequestHandler):
                 fields[k] = v
         resp = {
             "need_pairing": False,
-            "configured": is_configured(),
+            "configured": is_configured_from(shown),
+            "kiosk": kiosk,
             "loopback": loop,
             "lan_allowed": lan_allowed(),
             "window_seconds": WINDOW,
@@ -989,7 +1074,7 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
   </div>
 
   <form id="form">
-    <div class="card">
+    <div class="card" id="url-card">
       <label for="f-url">@@URL_LABEL@@</label>
       <input id="f-url" name="KIOSK_URL" type="url" placeholder="@@URL_PLACEHOLDER@@" required>
       <!--SLOT:url_buttons-->
@@ -1017,8 +1102,10 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
         <option value="portrait-flipped">Portrait, flipped (keys above)</option>
       </select>
       <div class="hint">How the panel hangs on the wall. The screen turns as soon as you save.</div>
+      <div id="blank-wrap">
       <label for="f-blank">Screen blank timeout (seconds, 0 = never)</label>
       <input id="f-blank" name="BLANK_TIMEOUT" type="number" min="0" max="86400" placeholder="(default)">
+      </div>
     </div>
 
     <details id="sensors-wrap"><summary>Sensors</summary>
@@ -1190,6 +1277,24 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     /*SLOT:unavailable*/
   }
 
+  // A panel with no kiosk loads no page. Hide the settings that only a
+  // service of the kiosk reads, and do not send them (a disabled field is
+  // not sent). Without a time zone, the first save sends the time zone of
+  // this browser, so that it makes panel.conf.
+  function applyKiosk(on, s){
+    $("url-card").style.display = on ? "block" : "none";
+    $("blank-wrap").style.display = on ? "block" : "none";
+    $("f-url").disabled = !on;
+    $("f-blank").disabled = !on;
+    if (!on && !s.configured && !$("f-tz").value) {
+      var zone = "";
+      try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) {}
+      var names = (s.tz_list || []);
+      $("f-tz").value = names.indexOf(zone) >= 0 ? zone : (names.indexOf("UTC") >= 0 ? "UTC" : "");
+    }
+    /*SLOT:kiosk*/
+  }
+
   function loadState(){
     api("GET", "/setup/api/state").then(function(r){
       var s = r.body || {};
@@ -1209,6 +1314,7 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
       f.tz_list = s.tz_list;
       applyFields(f);
       applyUnavailable(s.unavailable || {});
+      applyKiosk(s.kiosk !== false, s);
       initial = fieldValues();
       loaded = true;
     }).catch(function(){});
@@ -1262,6 +1368,8 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     btn.disabled = true;
     document.querySelectorAll(".status.bad").forEach(function(e){ e.textContent=""; e.className="status"; });
     var payload = changedFields();
+    // no kiosk and not configured: the first save always sends the time zone
+    if (state && state.kiosk === false && !state.configured && $("f-tz").value) payload.TZ_NAME = $("f-tz").value;
     /*SLOT:payload*/
     api("POST", "/setup/api/submit", {revision: state && state.revision, fields: payload}).then(function(r){
       btn.disabled = false;
@@ -1321,10 +1429,13 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
 """
 
 
-def build_page(template, plugins):
+def build_page(template, plugins, kiosk=True):
     """Put the words, the HTML and the script of the plugins into the slots of
-    the template. A slot that no plugin fills stays empty."""
+    the template. A slot that no plugin fills stays empty. kiosk=False gives
+    the words of a panel with no kiosk."""
     def words(name):
+        if not kiosk and name in _TEXT_NO_KIOSK:
+            return _TEXT_NO_KIOSK[name]
         for p in plugins:
             v = getattr(p, "TEXT", {}).get(name)
             if v:
@@ -1337,12 +1448,104 @@ def build_page(template, plugins):
         out = out.replace(key, words(name))
     for slot in ("url_buttons", "after_url", "panel", "details"):
         out = out.replace("<!--SLOT:%s-->" % slot, "".join(getattr(p, "HTML", {}).get(slot, "") for p in plugins))
-    for slot in ("apply", "unavailable", "payload", "init"):
+    for slot in ("apply", "unavailable", "kiosk", "payload", "init"):
         out = out.replace("/*SLOT:%s*/" % slot, "".join(getattr(p, "JS", {}).get(slot, "") for p in plugins))
     return out
 
 
 PAGE = build_page(PAGE_MAIN, PLUGINS)
+PAGE_NO_KIOSK = build_page(PAGE_MAIN, PLUGINS, kiosk=False)
+
+
+# ---- screen.json: the pairing code for a native screen -----------------------
+# A panel with no kiosk has no browser that shows the setup page, so the
+# native app of the screen cannot read the code from the page. While the LAN
+# window is open, this process writes the code, the address and the time that
+# is left to STATE_DIR/screen.json (the docstring at the top has the format).
+
+REFRESH_S = 2.0
+_screen = {"at": float("-inf"), "on": False, "err": False}
+
+
+def local_addresses():
+    """The IPv4 addresses of this panel that are not loopback (stdlib only).
+    The kernel lists them in /proc/net/fib_trie as the entries "/32 host
+    LOCAL". The fallback asks the kernel for the source address of a route to
+    a documentation address (a UDP connect sends no packet). A list may be
+    empty."""
+    found = []
+    try:
+        last = None
+        with open("/proc/net/fib_trie") as f:
+            for line in f:
+                m = re.search(r"\|-- (\d+\.\d+\.\d+\.\d+)\s*$", line)
+                if m:
+                    last = m.group(1)
+                elif "/32 host LOCAL" in line and last and last not in found:
+                    found.append(last)
+    except OSError:
+        pass
+    if not found:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("192.0.2.1", 9))
+                found.append(s.getsockname()[0])
+            finally:
+                s.close()
+        except OSError:
+            pass
+    return [a for a in found if not a.startswith("127.") and a != "0.0.0.0"]
+
+
+def screen_path():
+    return os.path.join(STATE_DIR, "screen.json")
+
+
+def write_screen():
+    """Write screen.json: a temporary file with mode 600, then a rename."""
+    code, code_at = PAIRING.current_code()
+    obj = {"code": code, "port": PORT, "path": "/setup", "addresses": local_addresses(),
+           "remaining": max(0, int(WINDOW - (time.monotonic() - code_at))), "uptime": _uptime_seconds()}
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    tmp = os.path.join(STATE_DIR, ".screen.json.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, (json.dumps(obj) + "\n").encode())
+    finally:
+        os.close(fd)
+    os.rename(tmp, screen_path())
+
+
+def screen_remove():
+    _screen["on"] = False
+    _screen["at"] = float("-inf")
+    try:
+        os.unlink(screen_path())
+    except OSError:
+        pass
+
+
+def screen_update():
+    """Called once a second. Write screen.json while the LAN window is open,
+    at least every REFRESH_S. Remove it when the window closes."""
+    try:
+        if not lan_allowed():
+            if _screen["on"]:
+                screen_remove()
+            return
+        now = time.monotonic()
+        if _screen["on"] and now - _screen["at"] < REFRESH_S:
+            return
+        write_screen()
+        _screen["on"] = True
+        _screen["at"] = now
+        _screen["err"] = False
+    except OSError as e:
+        if not _screen["err"]:
+            sys.stderr.write("tsx-setupd: cannot write %s: %s\n" % (screen_path(), e))
+        _screen["err"] = True
 
 
 # ---- listening address: loopback-only unless a LAN window is open --------
@@ -1405,15 +1608,19 @@ class ServerManager:
                 self.ensure()
             except OSError as e:
                 sys.stderr.write("tsx-setupd: bind failed: %s (retrying)\n" % e)
+            screen_update()
             # A reopened window (tsx-config setup or overlay "Setup") can
             # simply run out on a configured panel. Then take the kiosk back
             # to Home Assistant. kiosk-session picks the URL only at start,
             # so without this the page stayed up until the next restart.
             now_open = setup_open_fresh()
             if was_open and not now_open and is_configured():
-                sys.stderr.write("tsx-setupd: setup window expired: back to Home Assistant\n")
                 clear_setup_open()
-                restart_kiosk()
+                if kiosk_enabled():
+                    sys.stderr.write("tsx-setupd: setup window expired: back to Home Assistant\n")
+                    restart_kiosk()
+                else:
+                    sys.stderr.write("tsx-setupd: setup window expired\n")
             was_open = now_open
             time.sleep(POLL_S)
 
@@ -1422,12 +1629,18 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
         sys.stdout.write(__doc__)
         return 0
+    # SIGTERM (rc-service stop) ends the process through SystemExit, so that
+    # the finally block removes screen.json.
+    signal.signal(signal.SIGTERM, lambda _sig, _frame: sys.exit(0))
     mgr = ServerManager()
-    mgr.ensure()
+    screen_remove()    # a file from an earlier run is stale
     try:
+        mgr.ensure()
         mgr.watch_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        screen_remove()
     return 0
 
 

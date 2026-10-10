@@ -33,6 +33,7 @@
 #  - no secret ever appears in a JSON response or in the log of either daemon
 set -uo pipefail
 export PYTHONDONTWRITEBYTECODE=1   # the test imports tsx-setupd: no .pyc next to it
+export TSX_SETUP_KIOSK=on          # these tests cover the panel with a kiosk (tests/test-panel-editor.sh has the other)
 # The made-up board (tests/boards/fake) for the scripts that read a board file.
 . "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -45,6 +46,7 @@ command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-setup: no busybox on 
 command -v python3 >/dev/null 2>&1 || { echo "SKIPPED test-setup: no python3 on this host"; exit 0; }
 
 T=$(mktemp -d)
+export TSX_SETUP_STATE_DIR="$T/setup-state"
 SETUPD_PID= HELPER_PID= HELPER2_PID=
 cleanup() {
 	[ -n "$SETUPD_PID" ] && kill "$SETUPD_PID" 2>/dev/null

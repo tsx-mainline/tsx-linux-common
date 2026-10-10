@@ -25,5 +25,8 @@ depend() {
 # before it runs.
 start_pre() {
 	checkpath -d -m 0755 /run/tsx
+	# screen.json (the pairing code for a native screen) and layout.new
+	# (a layout that waits for tsx-setup-helper) go here
+	checkpath -d -o tsx-setup:tsx-setup -m 0700 /run/tsx-setup
 	checkpath -f -o tsx-setup:tsx-setup -m 0640 /var/log/tsx-setupd.log
 }

@@ -11,7 +11,7 @@ PLAIN="test-brightness-learn test-autoupdate-logic test-autoupdate-flow test-boa
 test-panelctl test-rescue-backlight test-rescue-login test-rescue-screen test-root-login test-setup test-setup-page test-shim-keypad test-shim-keys test-shim-ledbar test-shim-sensors test-shim-wakewords
 test-tsx-config test-tsx-config-apply test-tsx-data test-tsx-setup-mac test-kiosk-page test-missing-parts
 test-voice-esphome-run mqtt-dry mqtt-ledbar-live mqtt-stop-timeout
-test-config-plugins test-shim-plugins test-generic-gate test-panel-layout test-panel-app-run"
+test-config-plugins test-shim-plugins test-generic-gate test-panel-layout test-panel-app-run test-panel-editor"
 CTESTS="ledbar-host-test test-buttons test-idled test-idled-als test-idled-display test-idled-ramp test-idled-runtime test-level test-orientation test-overlay-max test-splash"
 NET="test-esphome test-esphome-ledbar test-esphome-wakewords"
 list=$PLAIN

@@ -27,6 +27,9 @@ What a plugin gives to tsx-setupd (all names are optional except NAME):
                      the keys of the base page
   CLEARABLE_BLANK    the keys among them that an empty value removes
   STATE_KEYS         the keys that the state API reports to the page
+  KIOSK_ONLY_KEYS    the keys that only a service of tsx-kiosk reads. A panel
+                     with no kiosk (setup.conf TSX_SETUP_KIOSK) hides their
+                     fields, and a save leaves them as they are.
   UNAVAILABLE_DROPS  {name: (keys...)}: when unavailable(hw) reports the name,
                      a save leaves these keys as they are
   unavailable(hw)    {name: reason} for the settings that this panel cannot use
@@ -38,8 +41,11 @@ What a plugin gives to tsx-setupd (all names are optional except NAME):
                      "submit_label", "done_text"}: words of the page
   HTML               {slot: html} for the slots url_buttons, after_url, panel
                      and details of the page
-  JS                 {slot: js} for the slots apply, unavailable, payload and
-                     init (the script of the page). apply runs once, at load
+  JS                 {slot: js} for the slots apply, unavailable, kiosk, payload
+                     and init (the script of the page). kiosk runs once at load
+                     time, after apply, with on (false for a panel with no
+                     kiosk) and s (the state). A field that kiosk hides must
+                     also be disabled, so that the page does not send it. apply runs once, at load
                      time. It must set each field of the plugin, also to
                      empty, off or unchecked. The page then keeps these
                      values and sends only the fields that differ from them.
@@ -80,6 +86,8 @@ SIMPLE_KEYS = ["VOICE", "WAKE_WORD", "MQTT_HOST", "MQTT_PORT", "MQTT_USER", "MQT
 # An empty BT_PROXY is the default of the board.
 CLEARABLE_BLANK = {"MQTT_HOST", "MQTT_PORT", "MQTT_USER", "BT_PROXY"}
 STATE_KEYS = SIMPLE_KEYS + ["HA_LOGIN_METHOD", "HA_TOKEN"]
+# The login method and the token are for the browser of the kiosk.
+KIOSK_ONLY_KEYS = ["HA_LOGIN_METHOD", "HA_TOKEN"]
 UNAVAILABLE_DROPS = {"VOICE": ("VOICE", "WAKE_WORD"), "BT_PROXY": ("BT_PROXY",)}
 
 TEXT = {
@@ -155,6 +163,7 @@ HTML = {
         <button type="button" id="check-btn" class="secondary">Check</button>
       </div>""",
     "after_url": """
+    <div id="login-wrap">
     <h2>How this panel logs in</h2>
     <div class="card">
       <label class="choice"><input type="radio" name="HA_LOGIN_METHOD" value="form" checked>
@@ -171,6 +180,7 @@ HTML = {
         <input id="f-token" name="HA_TOKEN" type="password" autocomplete="off">
         <div class="hint">Never shown again once saved.</div>
       </div>
+    </div>
     </div>
 """,
     "panel": """
@@ -242,6 +252,11 @@ JS = {
       notes.push("Bluetooth proxy: not available, " + u.BT_PROXY + ".");
     }
     if (notes.length) { $("hw-hint").textContent = notes.join(" "); $("hw-hint").style.display = "block"; }
+""",
+    "kiosk": """
+    $("login-wrap").style.display = on ? "block" : "none";
+    document.querySelectorAll('input[name=HA_LOGIN_METHOD]').forEach(function(r){ r.disabled = !on; });
+    $("f-token").disabled = !on;
 """,
     "init": """
   document.querySelectorAll('input[name=HA_LOGIN_METHOD]').forEach(function(r){

@@ -10,6 +10,8 @@
 #  - the refresh every 20 s reads only /setup/api/status and never changes a
 #    field, also a field that the user changed and did not save
 #  - a new revision in the refresh, or a 409 reply, shows the reload notice
+#  - a panel with no kiosk hides the page URL and the blank timeout, and the
+#    first save sends the time zone
 # It needs node. Without node it prints SKIPPED.
 set -uo pipefail
 export PYTHONDONTWRITEBYTECODE=1
@@ -102,7 +104,7 @@ class El {
   get textContent() { return this._text + this.children.map(c => c.textContent).join(""); }
   set textContent(v) { this._text = String(v); this.children = []; }
   set innerHTML(v) { this._text = ""; this.children = []; this._noMatch = false; }
-  optValue() { return this.attrs.value !== undefined ? this.attrs.value : this.textContent; }
+  optValue() { return this._valueSet ? this._value : (this.attrs.value !== undefined ? this.attrs.value : this.textContent); }
   options() { return this.descendants().filter(e => e.tag === "option"); }
   get value() {
     if (this.tag === "select") {
@@ -123,7 +125,7 @@ class El {
       this._noMatch = !found;
       return;
     }
-    this._value = v;
+    this._value = v; this._valueSet = true;
   }
   get checked() { return this._checked; }
   set checked(v) {
@@ -345,6 +347,30 @@ const STORED = {
   p.$("f-blank").value = "42";
   let k = p.calls.length; p.tick(); await flush();
   ok(same(p.calls.slice(k).map(c => c.path), ["/setup/api/status"]) && p.$("f-blank").value === "42", "then the refresh asks only the status and keeps the edit");
+
+  console.log("== a panel with no kiosk: no page URL, no blank timeout, the first save sends the time zone ==");
+  const bz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const zones = ["UTC", "America/Denver", "America/New_York", bz];
+  p = load({ state: stateWith({}, { kiosk: false, configured: false, revision: "rev-nk", tz_list: zones }), status: {} });
+  await flush();
+  ok(p.$("url-card").style.display === "none" && p.$("blank-wrap").style.display === "none", "the page URL card and the blank timeout are hidden");
+  ok(p.$("f-url").disabled && p.$("f-blank").disabled, "their fields are disabled, so a save does not send them");
+  ok(p.$("login-wrap").style.display === "none" && p.$("f-token").disabled, "the login method of the browser is hidden and disabled (plugin of tsx-ha)");
+  ok(p.$("f-tz").value === bz, "the time zone shows the zone of this browser: " + p.$("f-tz").value);
+  p.$("f-url").value = "https://example.org"; p.$("f-blank").value = "99";
+  p.submit(); await flush();
+  ok(same(p.lastSubmit(), { revision: "rev-nk", fields: { TZ_NAME: bz } }), "an unconfigured save sends TZ_NAME although it did not change: " + JSON.stringify(p.lastSubmit()));
+  p = load({ state: stateWith({ TZ_NAME: "America/Denver" }, { kiosk: false, configured: true, tz_list: zones }), status: {} });
+  await flush();
+  ok(p.$("f-tz").value === "America/Denver", "a stored time zone shows");
+  p.submit(); await flush();
+  ok(same(p.lastSubmit().fields, {}), "a configured panel sends only changed fields: " + JSON.stringify(p.lastSubmit().fields));
+  p = load({ state: stateWith({}, { kiosk: false, configured: false, tz_list: ["Etc/Foo"] }), status: {} });
+  await flush();
+  ok(p.$("f-tz").value === "", "no UTC and no zone of the browser in the list: the field stays empty");
+  p = load({ state: stateWith(STORED, { kiosk: true }), status: {} });
+  await flush();
+  ok(p.$("url-card").style.display === "block" && !p.$("f-url").disabled && p.$("login-wrap").style.display === "block", "with a kiosk the URL card and the login method show");
 
   console.log("== " + N + " ok, " + F + " failed ==");
   process.exit(F ? 1 : 0);
