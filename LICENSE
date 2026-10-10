@@ -18,6 +18,10 @@ The Linux kernel that runs this software keeps its own license, GPL-2.0 with
 the syscall note. Third-party software that a build downloads keeps its own
 license.
 
+A build of the panel app links the ESPHome components of panel-app/esphome
+with the ESPHome runtime (GPL-3.0) and LVGL (MIT) into one program. The
+license of that program is GPL-3.0.
+
 The full text of the GNU General Public License version 2 follows.
 
 ------------------------------------------------------------------------------

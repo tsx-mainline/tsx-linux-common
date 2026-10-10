@@ -1,0 +1,75 @@
+# The icons of the panel app: the MDI name (without "mdi:") and the code point
+# in the Material Design Icons font 7.4.47. panel-app/esphome/mkicons.py writes
+# esphome/components/tsx_cards/icons.h and esphome/icon-glyphs.yaml from this
+# list. tsx-layout-check reads it to warn about an icon that is not in the font.
+# To add an icon: add a line, run panel-app/esphome/mkicons.py, and commit the
+# three files.
+account F0004
+air-conditioner F001B
+airplane F001D
+alert-circle-outline F05D6
+battery F0079
+bed F02E3
+ceiling-light F0769
+chef-hat F0B7C
+clock-outline F0150
+coffee F0176
+door F081A
+fan F0210
+fire F0238
+flash F0241
+floor-lamp F08DD
+garage F06D9
+gauge F029A
+grill F0E45
+help-circle-outline F0625
+home F02DC
+home-thermometer F0F54
+lamp F06B5
+led-strip-variant F1051
+light-recessed F179B
+lightbulb F0335
+lightbulb-group F1253
+lightbulb-on F06E8
+lightbulb-outline F0336
+lightning-bolt F140B
+lock F033E
+motion-sensor F0D91
+outdoor-lamp F1054
+palette F03D8
+play F040A
+power F0425
+radiator F0438
+robot-vacuum F070D
+script-text F0BC2
+silverware-fork-knife F0A70
+sofa F04B9
+solar-power F0A72
+speaker F04C3
+sprinkler F105F
+string-lights F12BA
+television F0502
+thermometer F050F
+toggle-switch F0521
+toggle-switch-off-outline F0A19
+tumble-dryer F0917
+wall-sconce-round F0748
+washing-machine F072A
+water F058C
+water-percent F058E
+weather-cloudy F0590
+weather-cloudy-alert F0F2F
+weather-fog F0591
+weather-hail F0592
+weather-lightning F0593
+weather-lightning-rainy F067E
+weather-night F0594
+weather-night-partly-cloudy F0F31
+weather-partly-cloudy F0595
+weather-pouring F0596
+weather-rainy F0597
+weather-snowy F0598
+weather-snowy-rainy F067F
+weather-sunny F0599
+weather-windy F059D
+weather-windy-variant F059E

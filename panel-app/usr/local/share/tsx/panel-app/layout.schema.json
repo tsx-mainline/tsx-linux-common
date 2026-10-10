@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tsx-panel-layout-1",
+  "title": "Panel app layout, version 1",
+  "description": "The layout file of the panel app (docs/panel-app.md of tsx-linux-common). The schema checks the form. tsx-layout-check also checks the placement of the cards on the grid.",
+  "type": "object",
+  "required": ["version", "pages"],
+  "properties": {
+    "version": {"const": 1},
+    "grid": {
+      "type": "object",
+      "properties": {
+        "columns": {"$ref": "#/$defs/gridSize"},
+        "rows": {"$ref": "#/$defs/gridSize"},
+        "gap": {"type": "integer", "minimum": 0, "maximum": 40}
+      }
+    },
+    "theme": {
+      "type": "object",
+      "properties": {
+        "background": {"$ref": "#/$defs/color"},
+        "card": {"$ref": "#/$defs/color"},
+        "card_on": {"$ref": "#/$defs/color"},
+        "text": {"$ref": "#/$defs/color"},
+        "text_dim": {"$ref": "#/$defs/color"}
+      }
+    },
+    "keys": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/keyAction"}
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {"$ref": "#/$defs/page"}
+    }
+  },
+  "$defs": {
+    "gridSize": {"type": "integer", "minimum": 1, "maximum": 12},
+    "color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+    "entityId": {"type": "string", "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$"},
+    "call": {
+      "type": "object",
+      "required": ["action"],
+      "additionalProperties": false,
+      "properties": {
+        "action": {"type": "string", "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$"},
+        "data": {
+          "type": "object",
+          "additionalProperties": {"type": ["string", "number", "boolean"]}
+        }
+      }
+    },
+    "tapAction": {
+      "oneOf": [
+        {"enum": ["default", "none"]},
+        {"$ref": "#/$defs/call"}
+      ]
+    },
+    "keyAction": {
+      "oneOf": [
+        {"enum": ["none", "next_page", "prev_page"]},
+        {"type": "string", "pattern": "^page:([1-9]|1[0-6])$"},
+        {"$ref": "#/$defs/call"}
+      ]
+    },
+    "page": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "columns": {"$ref": "#/$defs/gridSize"},
+        "rows": {"$ref": "#/$defs/gridSize"},
+        "cards": {"type": "array", "maxItems": 48, "items": {"$ref": "#/$defs/card"}}
+      }
+    },
+    "card": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"enum": ["light", "switch", "scene", "script", "sensor", "weather", "clock"]},
+        "entity_id": {"$ref": "#/$defs/entityId"},
+        "label": {"type": "string"},
+        "icon": {"type": "string", "pattern": "^mdi:[a-z0-9-]+$"},
+        "x": {"type": "integer", "minimum": 0, "maximum": 11},
+        "y": {"type": "integer", "minimum": 0, "maximum": 11},
+        "w": {"$ref": "#/$defs/gridSize"},
+        "h": {"$ref": "#/$defs/gridSize"},
+        "tap": {"$ref": "#/$defs/tapAction"},
+        "attribute": {"type": "string", "minLength": 1},
+        "unit": {"type": "string"},
+        "precision": {"type": "integer", "minimum": 0, "maximum": 6},
+        "format": {"type": "string", "minLength": 1},
+        "date_format": {"type": "string"}
+      },
+      "dependentRequired": {"x": ["y"], "y": ["x"]},
+      "allOf": [
+        {
+          "if": {"properties": {"type": {"not": {"const": "clock"}}}},
+          "then": {"required": ["entity_id"]}
+        },
+        {
+          "if": {"properties": {"type": {"const": "light"}}},
+          "then": {"properties": {"entity_id": {"pattern": "^light\\."}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "scene"}}},
+          "then": {"properties": {"entity_id": {"pattern": "^scene\\."}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "script"}}},
+          "then": {"properties": {"entity_id": {"pattern": "^script\\."}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "weather"}}},
+          "then": {"properties": {"entity_id": {"pattern": "^weather\\."}}}
+        }
+      ]
+    }
+  }
+}

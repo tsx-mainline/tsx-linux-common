@@ -15,6 +15,7 @@ The repo has one directory for each package. A package directory holds the files
 | ledbar | tsx-ledbar | `tsx-ledbar` (C), `tsx-ledbard`, its init script and `ledbar.conf`. See [LED bar](ledbar.md) |
 | rescue | tsx-rescue-ui | `tsx-rescue-status`, `tsx-confont`, `tsx-rescue-login` |
 | splash | tsx-splash | `tsx-splash` (C), the splash images and tools |
+| panel-app | none yet | The panel app: the ESPHome component `tsx_cards`, the generic ESPHome YAML, `tsx-layout-check` and the layout files. See [Panel app](panel-app.md) |
 | tests | none | host tests, fixtures (`tests/boards`), helper programs |
 
 `tsx_brightness.py` and `tsx-panelctl` are in tsx-base because every profile has tsx-base. The console profile has no tsx-kiosk. tsx-ha depends on `tsx-panelctl`.

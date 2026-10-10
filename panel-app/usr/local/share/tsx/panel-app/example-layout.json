@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "grid": {"columns": 4, "rows": 3, "gap": 10},
+  "keys": {
+    "home": "page:1",
+    "up": "prev_page",
+    "down": "next_page"
+  },
+  "pages": [
+    {
+      "name": "Home",
+      "cards": [
+        {"type": "clock", "w": 2},
+        {"type": "weather", "entity_id": "weather.home", "w": 2},
+        {"type": "light", "entity_id": "light.kitchen", "label": "Kitchen"},
+        {"type": "light", "entity_id": "light.living_room", "label": "Living Room", "icon": "mdi:floor-lamp"},
+        {"type": "switch", "entity_id": "switch.coffee_maker", "label": "Coffee", "icon": "mdi:coffee"},
+        {"type": "switch", "entity_id": "input_boolean.guest_mode", "label": "Guests", "icon": "mdi:account"},
+        {"type": "scene", "entity_id": "scene.movie_night", "label": "Movie Night", "icon": "mdi:television"},
+        {"type": "script", "entity_id": "script.good_night", "label": "Good Night", "icon": "mdi:bed"},
+        {"type": "sensor", "entity_id": "sensor.living_room_temperature", "label": "Living Room", "precision": 1},
+        {"type": "sensor", "entity_id": "sensor.living_room_humidity", "label": "Humidity", "precision": 0}
+      ]
+    },
+    {
+      "name": "Outside",
+      "columns": 3,
+      "rows": 2,
+      "cards": [
+        {"type": "light", "entity_id": "light.porch", "label": "Porch", "icon": "mdi:outdoor-lamp", "x": 0, "y": 0},
+        {"type": "sensor", "entity_id": "weather.home", "attribute": "wind_speed", "unit": "km/h", "label": "Wind", "icon": "mdi:weather-windy"},
+        {"type": "light", "entity_id": "light.garden", "label": "Garden", "tap": {"action": "light.turn_on", "data": {"brightness_pct": 50}}},
+        {"type": "switch", "entity_id": "switch.sprinkler", "label": "Sprinkler", "icon": "mdi:sprinkler", "w": 3}
+      ]
+    }
+  ]
+}

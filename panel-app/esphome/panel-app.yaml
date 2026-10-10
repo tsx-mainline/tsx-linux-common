@@ -1,0 +1,63 @@
+# panel-app.yaml: the generic part of the panel app, an ESPHome package.
+# See docs/panel-app.md. A board YAML includes it:
+#
+#   packages:
+#     panel_app: !include tsx-panel-app/panel-app.yaml
+#   external_components:
+#     - source: {type: local, path: tsx-panel-app/components}
+#       components: [tsx_cards]
+#
+# The board YAML gives:
+#   - esphome: name and friendly_name, and the platform (for example host:)
+#   - a display with the id panel_display and a touchscreen with the id
+#     panel_touch
+#   - the keys of the panel: each key calls id(panel_cards).key_press("NAME")
+#   - secrets.yaml with api_key (the API encryption key)
+
+logger:
+  level: INFO
+
+api:
+  # The default (15 min) ends the process when no client is connected.
+  reboot_timeout: 0s
+  encryption:
+    key: !secret api_key
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+font:
+  # Material Design Icons (Pictogrammers, Apache License 2.0), downloaded at
+  # build time. The font holds only the glyphs of icon-glyphs.yaml.
+  - file:
+      type: web
+      url: https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf
+    id: tsx_icon_font
+    size: 36
+    bpp: 4
+    glyphs: !include icon-glyphs.yaml
+
+lvgl:
+  displays: [panel_display]
+  touchscreens: [panel_touch]
+  buffer_size: 100%
+  log_level: WARN
+  # The default is big_endian when a display gives no byte order (the sdl
+  # display gives none). Then LVGL swaps the bytes of each flushed area, and
+  # the sdl display draws the area one pixel at a time. little_endian is the
+  # native order of the RGB565 texture: no swap, one texture update per area.
+  byte_order: little_endian
+  # tsx_cards makes all objects at run time. An empty list stops ESPHome
+  # from adding its demo page (an animated spinner under the cards).
+  widgets: []
+
+tsx_cards:
+  id: panel_cards
+  time_id: ha_time
+  fonts:
+    small: montserrat_16
+    label: montserrat_20
+    value: montserrat_28
+    clock: montserrat_48
+    icon: tsx_icon_font

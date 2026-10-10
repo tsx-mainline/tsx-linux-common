@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""tsx-layout-check: check a panel layout file of the panel app.
+
+  tsx-layout-check FILE            check FILE, print the errors and warnings
+  tsx-layout-check --placed FILE   also print the layout with the cell (x, y)
+                                   of each card, as the app places them
+
+Exit code: 0 when the file has no error, 1 when it has an error, 2 on a
+usage error. The format is in docs/panel-app.md of tsx-linux-common.
+
+The app (the ESPHome component tsx_cards) uses the same rules. It leaves out
+a card with an error and shows the other cards. This tool reports such a
+card as an error, so that an editor does not save it. A warning (an unknown
+key, an icon that is not in the icon font) does not stop the app.
+
+Other Python code can use check_text(text, icons=None). It returns
+(layout, errors, warnings). layout is None when the file cannot be used.
+"""
+import json
+import os
+import re
+import sys
+
+MAX_PAGES = 16
+MAX_CARDS = 48
+MAX_GRID = 12
+TYPES = ("light", "switch", "scene", "script", "sensor", "weather", "clock")
+NEEDS_DOMAIN = {"light": "light", "scene": "scene", "script": "script", "weather": "weather"}
+COMMON_KEYS = {"type", "entity_id", "label", "icon", "x", "y", "w", "h", "tap"}
+TYPE_KEYS = {"sensor": {"attribute", "unit", "precision"}, "clock": {"format", "date_format"}}
+THEME_KEYS = ("background", "card", "card_on", "text", "text_dim")
+ICON_FILE = "/usr/local/share/tsx/panel-app/icons.txt"
+ENTITY_RE = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
+ICON_RE = re.compile(r"mdi:[a-z0-9-]+")
+COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
+
+
+class CardError(Exception):
+    pass
+
+
+def is_int(v, lo, hi):
+    return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+
+
+def read_icons(path):
+    """The icon names of icons.txt, or None when the file is missing."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {line.split()[0] for line in f if line.strip() and not line.startswith("#")}
+    except OSError:
+        return None
+
+
+def check_action(v, is_key):
+    if isinstance(v, str):
+        if v == "none" or (not is_key and v == "default"):
+            return
+        if is_key and v in ("next_page", "prev_page"):
+            return
+        if is_key and re.fullmatch(r"page:[0-9]+", v) and 1 <= int(v[5:]) <= MAX_PAGES:
+            return
+        raise CardError(f'unknown action "{v}"')
+    if not isinstance(v, dict):
+        raise CardError("an action must be a text or an object")
+    if not isinstance(v.get("action"), str) or not ENTITY_RE.fullmatch(v["action"]):
+        raise CardError('an action object needs "action": "domain.service"')
+    for k, d in v.items():
+        if k == "action":
+            continue
+        if k != "data":
+            raise CardError(f'unknown key "{k}" in an action')
+        if not isinstance(d, dict):
+            raise CardError('"data" of an action must be an object')
+        for dk, dv in d.items():
+            if not isinstance(dv, (str, int, float, bool)):
+                raise CardError(f'data "{dk}" of an action must be a text, a number or true/false')
+
+
+def check_card(c, page, where, warnings, icons):
+    if not isinstance(c, dict):
+        raise CardError("a card must be an object")
+    t = c.get("type")
+    if not isinstance(t, str):
+        raise CardError('no "type"')
+    if t not in TYPES:
+        raise CardError(f'unknown type "{t}"')
+    for k in c:
+        if k not in COMMON_KEYS and k not in TYPE_KEYS.get(t, ()):
+            warnings.append(f'{where}: unknown key "{k}" (ignored)')
+    if t != "clock":
+        e = c.get("entity_id")
+        if not isinstance(e, str) or not ENTITY_RE.fullmatch(e):
+            raise CardError('no valid "entity_id" (domain.object_id)')
+        need = NEEDS_DOMAIN.get(t)
+        if need and e.split(".")[0] != need:
+            raise CardError(f"a {t} card needs a {need} entity")
+    elif "entity_id" in c:
+        warnings.append(f"{where}: a clock card has no entity_id (ignored)")
+    if "label" in c and not isinstance(c["label"], str):
+        raise CardError('"label" must be a text')
+    if "icon" in c:
+        if not isinstance(c["icon"], str) or not ICON_RE.fullmatch(c["icon"]):
+            raise CardError('"icon" must be "mdi:name"')
+        if icons is not None and c["icon"][4:] not in icons:
+            warnings.append(f'{where}: icon {c["icon"]} is not in the icon font (the card shows its default icon)')
+    card = {"w": 1, "h": 1, "x": -1, "y": -1}
+    if "w" in c:
+        if not is_int(c["w"], 1, page["columns"]):
+            raise CardError('"w" must be 1 to the columns of the page')
+        card["w"] = c["w"]
+    if "h" in c:
+        if not is_int(c["h"], 1, page["rows"]):
+            raise CardError('"h" must be 1 to the rows of the page')
+        card["h"] = c["h"]
+    if ("x" in c) != ("y" in c):
+        raise CardError('give both "x" and "y", or none')
+    if "x" in c:
+        if not is_int(c["x"], 0, page["columns"] - 1) or not is_int(c["y"], 0, page["rows"] - 1):
+            raise CardError('"x" or "y" is outside the grid of the page')
+        if c["x"] + card["w"] > page["columns"] or c["y"] + card["h"] > page["rows"]:
+            raise CardError("the card goes past the edge of the grid")
+        card["x"], card["y"] = c["x"], c["y"]
+    if t == "sensor":
+        if "attribute" in c and (not isinstance(c["attribute"], str) or not c["attribute"]):
+            raise CardError('"attribute" must be a text')
+        if "unit" in c and not isinstance(c["unit"], str):
+            raise CardError('"unit" must be a text')
+        if "precision" in c and not is_int(c["precision"], 0, 6):
+            raise CardError('"precision" must be 0 to 6')
+    if t == "clock":
+        if "format" in c and (not isinstance(c["format"], str) or not c["format"]):
+            raise CardError('"format" must be a text')
+        if "date_format" in c and not isinstance(c["date_format"], str):
+            raise CardError('"date_format" must be a text')
+    if "tap" in c:
+        try:
+            check_action(c["tap"], False)
+        except CardError as e:
+            raise CardError(f'"tap": {e}') from None
+    out = dict(c)
+    out.update(card)
+    return out
+
+
+def place(page, cards, where, errors):
+    """Give each card its cell: the cards with x/y first, then the others in
+    the first free cell, row by row. Returns the cards that fit."""
+    cols, rows = page["columns"], page["rows"]
+    used = [[False] * cols for _ in range(rows)]
+
+    def free(x, y, w, h):
+        return all(not used[j][i] for j in range(y, y + h) for i in range(x, x + w))
+
+    def take(x, y, w, h):
+        for j in range(y, y + h):
+            for i in range(x, x + w):
+                used[j][i] = True
+
+    keep = [True] * len(cards)
+    for n, (num, c) in enumerate(cards):
+        if c["x"] < 0:
+            continue
+        if not free(c["x"], c["y"], c["w"], c["h"]):
+            errors.append(f"{where} card {num}: overlaps an earlier card")
+            keep[n] = False
+            continue
+        take(c["x"], c["y"], c["w"], c["h"])
+    for n, (num, c) in enumerate(cards):
+        if c["x"] >= 0 or not keep[n]:
+            continue
+        spot = next(((x, y) for y in range(rows - c["h"] + 1) for x in range(cols - c["w"] + 1)
+                     if free(x, y, c["w"], c["h"])), None)
+        if spot is None:
+            errors.append(f"{where} card {num}: no free place on the page")
+            keep[n] = False
+            continue
+        c["x"], c["y"] = spot
+        take(spot[0], spot[1], c["w"], c["h"])
+    return [c for n, (num, c) in enumerate(cards) if keep[n]]
+
+
+def check_text(text, icons=None):
+    errors, warnings = [], []
+    try:
+        root = json.loads(text)
+    except ValueError as e:
+        return None, [f"not valid JSON: {e}"], warnings
+    if not isinstance(root, dict):
+        return None, ["the top level must be an object"], warnings
+    if root.get("version") != 1 or isinstance(root.get("version"), bool):
+        return None, ['"version" must be 1'], warnings
+    for k in root:
+        if k not in ("version", "grid", "theme", "keys", "pages"):
+            warnings.append(f'unknown key "{k}" (ignored)')
+    cols, rows = 4, 3
+    grid = root.get("grid", {})
+    if not isinstance(grid, dict):
+        return None, ['"grid" must be an object'], warnings
+    if ("columns" in grid and not is_int(grid["columns"], 1, MAX_GRID)) or \
+            ("rows" in grid and not is_int(grid["rows"], 1, MAX_GRID)) or \
+            ("gap" in grid and not is_int(grid["gap"], 0, 40)):
+        return None, ['"grid": columns and rows must be 1 to 12, gap 0 to 40'], warnings
+    cols, rows = grid.get("columns", cols), grid.get("rows", rows)
+    theme = root.get("theme", {})
+    if not isinstance(theme, dict):
+        return None, ['"theme" must be an object'], warnings
+    for k, v in theme.items():
+        if k not in THEME_KEYS:
+            warnings.append(f'theme: unknown key "{k}" (ignored)')
+        elif not isinstance(v, str) or not COLOR_RE.fullmatch(v):
+            return None, [f'theme "{k}" must be a color "#RRGGBB"'], warnings
+    keys = root.get("keys", {})
+    if not isinstance(keys, dict):
+        return None, ['"keys" must be an object'], warnings
+    for k, v in keys.items():
+        try:
+            check_action(v, True)
+        except CardError as e:
+            return None, [f'key "{k}": {e}'], warnings
+    pages = root.get("pages")
+    if not isinstance(pages, list) or not pages:
+        return None, ['"pages" must be a list with one page or more'], warnings
+    if len(pages) > MAX_PAGES:
+        return None, ["more than 16 pages"], warnings
+    out_pages = []
+    for pn, p in enumerate(pages, 1):
+        where = f"page {pn}"
+        if not isinstance(p, dict):
+            return None, [f"{where}: a page must be an object"], warnings
+        for k in p:
+            if k not in ("name", "columns", "rows", "cards"):
+                warnings.append(f'{where}: unknown key "{k}" (ignored)')
+        if "name" in p and not isinstance(p["name"], str):
+            return None, [f'{where}: "name" must be a text'], warnings
+        if ("columns" in p and not is_int(p["columns"], 1, MAX_GRID)) or \
+                ("rows" in p and not is_int(p["rows"], 1, MAX_GRID)):
+            return None, [f"{where}: columns and rows must be 1 to 12"], warnings
+        page = {"name": p.get("name", f"Page {pn}"), "columns": p.get("columns", cols), "rows": p.get("rows", rows)}
+        cards = p.get("cards", [])
+        if not isinstance(cards, list):
+            return None, [f'{where}: "cards" must be a list'], warnings
+        if len(cards) > MAX_CARDS:
+            return None, [f"{where}: more than 48 cards"], warnings
+        valid = []
+        for cn, c in enumerate(cards, 1):
+            cwhere = f"{where} card {cn}"
+            try:
+                valid.append((cn, check_card(c, page, cwhere, warnings, icons)))
+            except CardError as e:
+                errors.append(f"{cwhere}: {e}")
+        page["cards"] = place(page, valid, where, errors)
+        out_pages.append(page)
+    layout = {"version": 1, "grid": {"columns": cols, "rows": rows, "gap": grid.get("gap", 10)},
+              "theme": theme, "keys": keys, "pages": out_pages}
+    return layout, errors, warnings
+
+
+def main(argv):
+    placed = False
+    args = argv[1:]
+    if args and args[0] == "--placed":
+        placed, args = True, args[1:]
+    if len(args) != 1 or args[0].startswith("-"):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    try:
+        with open(args[0], encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"{args[0]}: {e}", file=sys.stderr)
+        return 1
+    icons = read_icons(os.environ.get("TSX_ICON_FILE", ICON_FILE))
+    layout, errors, warnings = check_text(text, icons)
+    for w in warnings:
+        print(f"{args[0]}: warning: {w}")
+    for e in errors:
+        print(f"{args[0]}: error: {e}")
+    if layout is not None and not errors:
+        n = sum(len(p["cards"]) for p in layout["pages"])
+        print(f"{args[0]}: OK, {len(layout['pages'])} pages, {n} cards")
+    if placed and layout is not None:
+        print(json.dumps(layout, indent=2, ensure_ascii=False))
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

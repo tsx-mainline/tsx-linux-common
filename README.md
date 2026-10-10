@@ -13,6 +13,7 @@ The software that every TSX panel family shares: the base services, the rescue s
 | [docs/esphome.md](docs/esphome.md) | The two services of the Home Assistant device, the fixed entity keys and the plugins of a board. |
 | [docs/kiosk-hooks.md](docs/kiosk-hooks.md) | The `kiosk.d` folder, with which a board changes the renderer choice and the browser flags. |
 | [docs/ledbar.md](docs/ledbar.md) | The USB RGB LED bar: the tools, the settings, the bootloader recovery, the effects, the 16 LEDs and the LED map. |
+| [docs/panel-app.md](docs/panel-app.md) | The native Home Assistant card screen (ESPHome and LVGL) and its JSON layout format. Experimental. |
 | [docs/wake-words.md](docs/wake-words.md) | The built-in wake words of the voice satellite, and how to add a custom wake word model. |
 
 ## Repository layout
@@ -28,6 +29,7 @@ The software that every TSX panel family shares: the base services, the rescue s
 | `ledbar/` | tsx-ledbar |
 | `rescue/` | tsx-rescue-ui |
 | `splash/` | tsx-splash |
+| `panel-app/` | none yet (the panel app, a test) |
 | `tests/` | The host tests. Run `tests/run-all.sh`. |
 | `ci/` | `lint.sh`, `check-generic.sh` (no family name outside `docs/`) and the other CI checks. Run `ci/lint.sh` and `ci/check-generic.sh`. |
 
