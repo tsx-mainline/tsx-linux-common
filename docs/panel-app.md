@@ -27,7 +27,7 @@ A board gives the parts that the generic YAML does not know. The board YAML does
 
 1. It sets `esphome: name` and `friendly_name`, and the platform (for example `host:`).
 2. It includes `panel-app.yaml` with `packages:` and the component with `external_components:`.
-3. It makes a display with the id `panel_display` and a touchscreen with the id `panel_touch`.
+3. It makes a display with the id `panel_display` and a touchscreen with the id `panel_touch`. On a slow CPU, use the `tsx_drm` display and the `tsx_evdev` touchscreen and keys (see [Panel app display and input](panel-accel.md)).
 4. It sends each key of the panel to the app: `id(panel_cards).key_press("NAME")`. Use the key names of `buttons-board.conf` (for example `home`, `up`, `down`). A key that is a binary sensor needs `trigger_on_initial_state: true`. Without it, ESPHome ignores the first press after the start.
 5. It gives `api_key` (the API encryption key) in `secrets.yaml`.
 
