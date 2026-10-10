@@ -117,6 +117,41 @@ TSX_CONF="$CFG" busybox sh "$SCRIPT" unset HA_API_KEY >/dev/null; applyp
 [ ! -e "$FX/run/tsx/esphome.key" ] && ok "unsetting HA_API_KEY removes esphome.key (plaintext again)" || bad "esphome.key left behind"
 [ "$(restarts)/$(vrestarts)" = 5/3 ] && ok "removing the key restarts both" || bad "key removal: $(restarts)/$(vrestarts) restarts"
 
+echo "== HA_API_KEY and the group kiosk: only a panel with the group gets the chgrp and its warning =="
+# The warning shows only for root, and busybox sh runs its own id and chgrp, so
+# a stub in PATH cannot make the script a root. A user namespace does it
+# (unshare -r): there id -u is 0 and chgrp kiosk fails, as the group is not
+# in the system group file of this host. Without unshare, the test skips the
+# cases that need it.
+FXK="$W/fixk"; CFGK="$W/panelk.conf"
+mkdir -p "$FXK/etc" "$FXK/root" "$FXK/var/lib/kiosk"
+echo 'root:!:19000:0:99999:7:::' > "$FXK/etc/shadow"
+applyk() { env PATH="$W/bin:$PATH" TSX_CONF="$CFGK" TSX_RUN="$FXK/run" TSX_STATE_DIR="$FXK/var/lib/tsx" TSX_APPLY_PREFIX="$FXK" TSX_APPLY_ALLOW_NONROOT=1 "$@" busybox sh "$SCRIPT" apply 2>&1; }
+KEYK=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+TSX_CONF="$CFGK" busybox sh "$SCRIPT" set HA_API_KEY "$KEYK" >/dev/null
+TSX_CONF="$CFGK" busybox sh "$SCRIPT" set HA_ALLOW_FROM 192.0.2.9 >/dev/null
+keyok() { [ "$(cat "$FXK/run/tsx/esphome.key" 2>/dev/null)" = "$KEYK" ] && [ "$(stat -c '%a' "$FXK/run/tsx/esphome.key")" = 640 ]; }
+ROOT=
+if unshare -r busybox sh -c '[ "$(id -u)" = 0 ]' 2>/dev/null; then ROOT=unshare-r; else echo "  (no user namespace here: the cases as root are skipped)"; fi
+runk() { if [ -n "$ROOT" ]; then applyk unshare -r; else applyk; fi; }
+rm -f "$FXK/etc/group" "$FXK/run/tsx/esphome.key"; OUT=$(runk)
+case "$OUT" in *"group kiosk"*) bad "no group file: apply warns about the group kiosk: $OUT";; *) ok "no group kiosk (no group file): no warning about the key file";; esac
+keyok && ok "no group kiosk: the key file is written with mode 640" || bad "no group kiosk: key file missing or wrong mode"
+printf 'root:x:0:\naudio:x:29:\nkioskx:x:1001:\n' > "$FXK/etc/group"
+rm -f "$FXK/run/tsx/esphome.key"; OUT=$(runk)
+case "$OUT" in *"group kiosk"*) bad "a group file with no kiosk line: apply warns: $OUT";; *) ok "a group file with other groups (also kioskx): no warning";; esac
+keyok && ok "a group file with no kiosk line: the key file is written with mode 640" || bad "no kiosk line: key file missing or wrong mode"
+printf 'root:x:0:\nkiosk:x:1000:\n' > "$FXK/etc/group"
+rm -f "$FXK/run/tsx/esphome.key"; OUT=$(applyk)
+case "$OUT" in *"group kiosk"*) bad "the group kiosk and no root: apply warns: $OUT";; *) ok "the group kiosk, run as a user: no warning (as before)";; esac
+if [ -n "$ROOT" ]; then
+	rm -f "$FXK/run/tsx/esphome.key"; OUT=$(runk)
+	case "$OUT" in *"WARNING: could not give group kiosk read access"*) ok "the group kiosk and chgrp fails (as root): the warning stays";; *) bad "the group kiosk and chgrp fails: no warning: $OUT";; esac
+	keyok && ok "the group kiosk and chgrp fails: the key file is still written with mode 640" || bad "the group kiosk and chgrp fails: key file missing or wrong mode"
+	rm -f "$FXK/etc/group" "$FXK/run/tsx/esphome.key"; OUT=$(runk)
+	case "$OUT" in *"group kiosk"*) bad "no group kiosk, as root: apply warns: $OUT";; *) ok "no group kiosk, as root: no warning (a panel with no kiosk package)";; esac
+fi
+
 echo "== apply warns while the API is open (no HA_API_KEY, no HA_ALLOW_FROM) =="
 TSX_CONF="$CFG" busybox sh "$SCRIPT" unset HA_ALLOW_FROM >/dev/null 2>&1 || true
 OUT=$(apply_ 2>&1)   # not piped into grep -q: pipefail would see the SIGPIPE

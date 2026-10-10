@@ -721,18 +721,23 @@ apply() {
 		esac
 	fi
 
-	# HA_API_KEY: /run/tsx/esphome.key, mode 640 group kiosk. tsx-esphome
+	# HA_API_KEY: /run/tsx/esphome.key, mode 640. tsx-esphome and tsx-panel-app
 	# (root) and the voice satellite (user kiosk) read it at start. If the
-	# file exists but cannot be read, both refuse to start rather than
+	# file exists but cannot be read, they refuse to start rather than
 	# serve plaintext (rootfs/voice/shim/tsx_panel/security.py). The script
 	# writes it under umask 077 first, so it is never world-readable, not
-	# even briefly.
+	# even briefly. The group kiosk exists only when the image has the kiosk
+	# package. Then the file gets this group, so that the voice satellite
+	# can read it, and a failure is a warning. Without the group (for
+	# example on a panel with no kiosk package), the file stays root:root
+	# and apply says nothing about it: only root reads the key.
 	key=$(cfg_get HA_API_KEY) || key=
 	keysum=
 	if [ -n "$key" ]; then
 		tmp="$RUN/esphome.key.tmp.$$"
 		(umask 077; printf '%s\n' "$key" > "$tmp")
-		if ! chgrp kiosk "$tmp" 2>/dev/null && [ "$(id -u)" = 0 ]; then
+		if grep -q '^kiosk:' "$PREFIX/etc/group" 2>/dev/null \
+			&& ! chgrp kiosk "$tmp" 2>/dev/null && [ "$(id -u)" = 0 ]; then
 			log "WARNING: could not give group kiosk read access to $RUN/esphome.key: the voice satellite (VOICE=on) will refuse to start"
 		fi
 		chmod 640 "$tmp" && mv "$tmp" "$RUN/esphome.key"
