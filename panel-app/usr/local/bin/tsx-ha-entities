@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""tsx-ha-entities: read the list of entities from Home Assistant, for the
+layout editor of the panel app.
+
+  tsx-ha-entities
+
+tsx-setup-helper runs this tool as root (its command ha-entities). The tool
+reads the URL and the long-lived access token of the user from
+/var/lib/tsx/panel-app/ha-token (mode 600, two lines: the URL, then the
+token). It asks Home Assistant for GET URL/api/states with the token as a
+bearer token. It writes the list to /run/tsx/panel-app/ha-entities.json (mode
+640, group tsx-setup, atomic: a temporary file and a rename):
+
+  [{"entity_id": "light.kitchen", "name": "Kitchen", "state": "on"}, ...]
+
+The editor reads that file as the user tsx-setup. The tool only reads from
+Home Assistant. It prints the number of entities and exits with 0. On an
+error, it prints one line to the standard error stream and exits with 1. A
+message never has the token.
+
+The request has a time limit of 10 s. The URL can be http or https. The tool
+follows a redirect only to the same scheme, host and port, so that the token
+never goes to another place. A certificate that the panel does not trust
+fails the request: use the http address of Home Assistant then.
+
+Env overrides for host tests: TSX_HA_TOKEN_FILE, TSX_HA_ENTITIES_FILE,
+TSX_HA_ENTITIES_TIMEOUT (seconds), TSX_SETUP_GROUP (default tsx-setup).
+"""
+import grp
+import json
+import os
+import re
+import socket
+import ssl
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+TOKEN_FILE = os.environ.get("TSX_HA_TOKEN_FILE", "/var/lib/tsx/panel-app/ha-token")
+OUT_FILE = os.environ.get("TSX_HA_ENTITIES_FILE", "/run/tsx/panel-app/ha-entities.json")
+GROUP = os.environ.get("TSX_SETUP_GROUP", "tsx-setup")
+TIMEOUT = float(os.environ.get("TSX_HA_ENTITIES_TIMEOUT", "10"))
+MAX_BODY = 32 * 1024 * 1024
+ENTITY_RE = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
+
+
+def fail(msg):
+    print(msg, file=sys.stderr)
+    return 1
+
+
+def origin(url):
+    p = urllib.parse.urlsplit(url)
+    port = p.port or (443 if p.scheme == "https" else 80)
+    return p.scheme, (p.hostname or "").lower(), port
+
+
+class SameOrigin(urllib.request.HTTPRedirectHandler):
+    """Follow a few redirects, and only to the same scheme, host and port."""
+    max_redirections = 4
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if origin(newurl) != origin(req.full_url):
+            raise urllib.error.HTTPError(newurl, code, "refusing a redirect to another scheme, host or port", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def read_credentials():
+    try:
+        with open(TOKEN_FILE, encoding="utf-8") as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return None, None
+    url, token = (lines + ["", ""])[:2]
+    if not re.fullmatch(r"https?://[^\s]+", url) or not token.strip():
+        return None, None
+    return url.rstrip("/"), token.strip()
+
+
+def fetch(url, token):
+    req = urllib.request.Request(url + "/api/states", headers={
+        "Authorization": "Bearer " + token, "Accept": "application/json", "User-Agent": "tsx-ha-entities"})
+    opener = urllib.request.build_opener(SameOrigin)
+    with opener.open(req, timeout=TIMEOUT) as resp:
+        body = resp.read(MAX_BODY + 1)
+    if len(body) > MAX_BODY:
+        raise ValueError("the answer of Home Assistant is too large")
+    return json.loads(body.decode("utf-8"))
+
+
+def entities_from(states):
+    out = []
+    if not isinstance(states, list):
+        raise ValueError("Home Assistant did not answer with a list of states")
+    for s in states:
+        if not isinstance(s, dict) or not isinstance(s.get("entity_id"), str) or not ENTITY_RE.fullmatch(s["entity_id"]):
+            continue
+        attrs = s.get("attributes") if isinstance(s.get("attributes"), dict) else {}
+        name = attrs.get("friendly_name")
+        state = s.get("state")
+        out.append({"entity_id": s["entity_id"], "name": name if isinstance(name, str) else "",
+                    "state": state if isinstance(state, str) else ""})
+    out.sort(key=lambda e: e["entity_id"])
+    return out
+
+
+def write_list(entities):
+    folder = os.path.dirname(OUT_FILE) or "."
+    os.makedirs(folder, mode=0o755, exist_ok=True)
+    tmp = "%s.tmp.%d" % (OUT_FILE, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+    try:
+        try:
+            os.fchmod(fd, 0o640)
+            try:
+                os.fchown(fd, -1, grp.getgrnam(GROUP).gr_gid)
+            except KeyError:
+                pass    # the panel has no such group
+            except OSError as e:
+                print("warning: cannot set the group %s: %s" % (GROUP, e.strerror), file=sys.stderr)
+            data = json.dumps(entities, ensure_ascii=False).encode("utf-8")
+            os.write(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.rename(tmp, OUT_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def main():
+    if len(sys.argv) > 1:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    url, token = read_credentials()
+    if not url:
+        return fail("no URL and token are stored")
+    try:
+        entities = entities_from(fetch(url, token))
+    except urllib.error.HTTPError as e:
+        if 300 <= e.code < 400:
+            return fail("Home Assistant sends the request to another scheme, host or port: refused (redirect)")
+        if e.code in (401, 403):
+            return fail("Home Assistant refused the token (HTTP %d)" % e.code)
+        return fail("Home Assistant answered HTTP %d" % e.code)
+    except urllib.error.URLError as e:
+        reason = e.reason
+        if isinstance(reason, ssl.SSLError):
+            return fail("TLS error: %s" % (getattr(reason, "reason", None) or reason))
+        if isinstance(reason, socket.gaierror):
+            return fail("cannot find the host name of Home Assistant")
+        if isinstance(reason, (socket.timeout, TimeoutError)):
+            return fail("Home Assistant did not answer in %g s" % TIMEOUT)
+        if isinstance(reason, ConnectionRefusedError):
+            return fail("connection refused: nothing listens at that address")
+        return fail("cannot reach Home Assistant: %s" % str(reason)[:120])
+    except (socket.timeout, TimeoutError):
+        return fail("Home Assistant did not answer in %g s" % TIMEOUT)
+    except (ValueError, OSError) as e:
+        return fail("cannot read the list: %s" % str(e)[:120])
+    try:
+        write_list(entities)
+    except OSError as e:
+        return fail("cannot write %s: %s" % (OUT_FILE, e.strerror))
+    print(len(entities))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

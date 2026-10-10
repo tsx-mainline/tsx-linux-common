@@ -4,9 +4,23 @@
   tsx-layout-check FILE            check FILE, print the errors and warnings
   tsx-layout-check --placed FILE   also print the layout with the cell (x, y)
                                    of each card, as the app places them
+  tsx-layout-check --install SRC DEST
+                                   check SRC and install it as DEST
 
 Exit code: 0 when the file has no error, 1 when it has an error, 2 on a
 usage error. The format is in docs/panel-app.md of tsx-linux-common.
+
+--install is for the setup page, through tsx-setup-helper (root). SRC is a
+file that an unprivileged user wrote, so the tool trusts nothing about it.
+It opens SRC with O_NOFOLLOW (and O_NONBLOCK, so that a FIFO does not block
+it), refuses a file that is not a regular file or that is larger than 65536
+bytes, and reads it. It checks the text with the rules below and the icon
+list. On an error, it prints each error on its own line and exits with 1.
+It installs the bytes that it checked and nothing else (no new
+serialization): it writes DEST.tmp.PID in the folder of DEST (mode 644, the
+folder is made with mode 755 when it is missing), calls fsync, renames the
+file to DEST and calls fsync on the folder. DEST stays as it was on every
+refusal and failure.
 
 The app (the ESPHome component tsx_cards) uses the same rules. It leaves out
 a card with an error and shows the other cards. This tool reports such a
@@ -19,6 +33,7 @@ Other Python code can use check_text(text, icons=None). It returns
 import json
 import os
 import re
+import stat
 import sys
 
 MAX_PAGES = 16
@@ -56,7 +71,7 @@ def check_action(v, is_key):
     if isinstance(v, str):
         if v == "none" or (not is_key and v == "default"):
             return
-        if is_key and v in ("next_page", "prev_page"):
+        if is_key and v in ("next_page", "prev_page", "setup"):
             return
         if is_key and re.fullmatch(r"page:[0-9]+", v) and 1 <= int(v[5:]) <= MAX_PAGES:
             return
@@ -256,9 +271,97 @@ def check_text(text, icons=None):
     return layout, errors, warnings
 
 
+MAX_FILE = 65536
+
+
+def read_regular(path):
+    """The bytes of a regular file of at most MAX_FILE bytes. A link, a FIFO
+    or a device is refused. Raises OSError with a message for the user."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(0, "not a regular file")
+        if st.st_size > MAX_FILE:
+            raise OSError(0, "larger than %d bytes" % MAX_FILE)
+        data = b""
+        while len(data) <= MAX_FILE:
+            chunk = os.read(fd, MAX_FILE + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+        if len(data) > MAX_FILE:
+            raise OSError(0, "larger than %d bytes" % MAX_FILE)
+        return data
+    finally:
+        os.close(fd)
+
+
+def write_atomic(dest, data):
+    """Write data to dest: a temporary file in the folder of dest, fsync,
+    rename, fsync of the folder."""
+    folder = os.path.dirname(dest) or "."
+    os.makedirs(folder, mode=0o755, exist_ok=True)
+    tmp = "%s.tmp.%d" % (dest, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    try:
+        try:
+            os.fchmod(fd, 0o644)
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.rename(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    dfd = os.open(folder, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def install(src, dest):
+    try:
+        data = read_regular(src)
+    except OSError as e:
+        print("cannot use %s: %s" % (src, e.strerror or e), file=sys.stderr)
+        return 1
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        print("the layout is not UTF-8 text", file=sys.stderr)
+        return 1
+    icons = read_icons(os.environ.get("TSX_ICON_FILE", ICON_FILE))
+    layout, errors, _warnings = check_text(text, icons)
+    if layout is None and not errors:
+        errors = ["the layout cannot be used"]
+    if errors:
+        for e in errors:
+            print(e)
+        return 1
+    try:
+        write_atomic(dest, data)
+    except OSError as e:
+        print("cannot write %s: %s" % (dest, e.strerror or e), file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv):
     placed = False
     args = argv[1:]
+    if args and args[0] == "--install":
+        if len(args) != 3:
+            print(__doc__.split("\n\n")[1], file=sys.stderr)
+            return 2
+        return install(args[1], args[2])
     if args and args[0] == "--placed":
         placed, args = True, args[1:]
     if len(args) != 1 or args[0].startswith("-"):

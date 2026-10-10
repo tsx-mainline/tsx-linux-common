@@ -145,6 +145,7 @@ A `tap` value or a `keys` value is one of these:
 | `"default"` | The default action of the card type (`tap` only). |
 | `"none"` | Nothing. |
 | `"page:N"` | Show page N, from 1 (`keys` only). |
+| `"setup"` | Open the setup window of the panel: the app runs `tsx-config setup` (`keys` only). |
 | `"next_page"`, `"prev_page"` | Show the next or the previous page. After the last page comes the first page (`keys` only). |
 | `{"action": "domain.service", "data": {...}}` | Send this Home Assistant action. The values of `data` are texts, numbers or true/false. |
 
@@ -168,6 +169,8 @@ The board names its keys (for example `power`, `home`, `lights`, `up`, `down`). 
 The app leaves out a card with an error and shows the other cards. The log has a line for each such card. A file that the app cannot use at all (bad JSON, no pages, a wrong `version`) does not change the screen. When the app has no usable layout yet, the screen shows the error.
 
 `tsx-layout-check FILE` reports the same errors. It also reports a card that the app leaves out, so an editor can refuse it. A warning (an unknown key, an icon that is not in the font) does not stop the app.
+
+`tsx-layout-check --install SRC DEST` checks `SRC` and installs it as `DEST`. The setup page uses it, through the helper of the setup page, to save a layout (see [Layout](layout.md)). The tool trusts nothing about `SRC`. It opens `SRC` with `O_NOFOLLOW` and refuses a file that is not a regular file or that has more than 65536 bytes. It refuses a layout with an error and prints each error on its own line. It installs the bytes that it checked, with no new serialization. It writes a temporary file in the folder of `DEST` (mode 644), calls `fsync`, renames the file and calls `fsync` on the folder. `DEST` stays as it was after every refusal.
 
 ## Home Assistant states
 

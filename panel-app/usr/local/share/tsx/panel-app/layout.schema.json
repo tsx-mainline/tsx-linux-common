@@ -60,7 +60,7 @@
     },
     "keyAction": {
       "oneOf": [
-        {"enum": ["none", "next_page", "prev_page"]},
+        {"enum": ["none", "next_page", "prev_page", "setup"]},
         {"type": "string", "pattern": "^page:([1-9]|1[0-6])$"},
         {"$ref": "#/$defs/call"}
       ]

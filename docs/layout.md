@@ -257,6 +257,19 @@ The daemon writes the file while `lan_allowed()` is true. That is the case while
 
 A native app shows "Setup: http://ADDR:PORT/setup  code CODE" while the file exists and its `uptime` is less than 30 s older than `/proc/uptime`. The code stays on the state API of the loopback address, as on a panel with a kiosk.
 
+### Helper commands for the panel app
+
+`tsx-setup-helper` runs as root. It has four commands for the layout editor of the panel app. The editor is a plugin of the setup page (see [Panel app](panel-app.md)). The helper writes no log line with a token.
+
+| Command | What the helper does | Reply |
+|---|---|---|
+| `layout-save` | Runs `tsx-layout-check --install /run/tsx-setup/layout.new /var/lib/tsx/panel-layout.json` and removes `layout.new`. `tsx-setupd` writes `layout.new` (mode 600) first. The check refuses a link, a file that is not a regular file, a file of more than 65536 bytes and a layout with an error. | `ok`, or `err` and the first error line, or `err no panel app on this panel` when `tsx-layout-check` is not installed |
+| `ha-token-set URL TOKEN` | Stores the URL of Home Assistant and a long-lived access token in `/var/lib/tsx/panel-app/ha-token` (mode 600, two lines, written atomically). The helper refuses a URL that is not http or https and a token that has a character outside the token alphabet. | `ok` or `err MESSAGE`. The reply never has the token |
+| `ha-token-clear` | Removes that file and the entity list that came from it. | `ok` |
+| `ha-entities` | Runs `tsx-ha-entities` as root. The tool reads the entities from Home Assistant and writes `/run/tsx/panel-app/ha-entities.json` (mode 640, group `tsx-setup`). | `ok COUNT`, or `err MESSAGE`, or `err no token is stored`, or `err no panel app on this panel` |
+
+The test hooks of these commands are `TSX_SETUP_STATE_DIR`, `TSX_PANEL_LAYOUT_FILE`, `TSX_LAYOUT_CHECK_BIN`, `TSX_HA_TOKEN_FILE`, `TSX_HA_ENTITIES_FILE` and `TSX_HA_ENTITIES_BIN`.
+
 ## Tests
 
 | Command | Runs |
@@ -270,7 +283,7 @@ A native app shows "Setup: http://ADDR:PORT/setup  code CODE" while the file exi
 
 A test that needs a board file uses the made-up board in `tests/boards/fake`. A test sources `tests/lib/board.sh`, which sets `TSX_BOARD_CONF` and `TSX_BOARD_BIN`. The board holds `board.sh`, `panel-board.conf`, `buttons-board.conf` and `motd.board`. It also holds a fake plugin for each plugin folder: `config.d/fakeopt.sh` and `esphome.d/fakeent.py`. A test of a loader sets the test hook of the folder to a copy of the folder. `test-config-plugins.sh` covers `config.d`. `test-shim-plugins.sh` and `test-esphome.sh` cover `esphome.d`. The values of the board differ from the values of every real family. So a test fails when shared code has a family value built in. `test-board-fake.sh` runs the shared scripts against this board and against a second made-up board. It also runs `kiosk-session` with fake `kiosk.d` hooks.
 
-`test-panel-app-run.sh` covers the start script of the panel app: the identity from the host name and the MAC, the saved identity, the board file. `test-panel-editor.sh` covers the setup page of a panel with no kiosk and `screen.json`. It starts the real `tsx-setup-helper` and the real `tsx-setupd`. `test-setup.sh` covers the presence fields of the setup page (shown with `PRESENCE=yes`, hidden with `PRESENCE=no`). It also covers the save rule: a save writes only the changed fields, and the server refuses a page with an old revision of `panel.conf`. `test-setup-page.sh` runs the script of the setup page in node, with a small fake DOM. It checks the changed fields that a save sends and the refresh every 20 s. Without node, it prints SKIPPED. It also covers the hidden fields of a panel with no kiosk. `test-panel-board.sh` covers the board layer of `kiosk.conf`.
+`test-panel-app-run.sh` covers the start script of the panel app: the identity from the host name and the MAC, the saved identity, the board file. `test-panel-editor.sh` covers the setup page of a panel with no kiosk and `screen.json`. It starts the real `tsx-setup-helper` and the real `tsx-setupd`. It also covers the helper commands of the panel app, and it runs `tsx-ha-entities` against a small fake Home Assistant. `test-setup.sh` covers the presence fields of the setup page (shown with `PRESENCE=yes`, hidden with `PRESENCE=no`). It also covers the save rule: a save writes only the changed fields, and the server refuses a page with an old revision of `panel.conf`. `test-setup-page.sh` runs the script of the setup page in node, with a small fake DOM. It checks the changed fields that a save sends and the refresh every 20 s. Without node, it prints SKIPPED. It also covers the hidden fields of a panel with no kiosk. `test-panel-board.sh` covers the board layer of `kiosk.conf`.
 
 ### Tests of a family
 

@@ -57,6 +57,28 @@
 #                          the brightness points that the panel learned)
 #   clear-setup-open       rm -f $TSX_RUN_DIR/setup-open (a save closes the
 #                          reopened window again, as if it expired)
+#   layout-save           tsx-layout-check --install STATE/layout.new LAYOUT
+#                          (STATE is the state folder of tsx-setupd, /run/tsx-setup,
+#                          and LAYOUT is /var/lib/tsx/panel-layout.json).
+#                          tsx-setupd writes STATE/layout.new (mode 600) first.
+#                          The check runs as root and refuses a link, a file
+#                          that is not a regular file, a file of more than
+#                          65536 bytes and a layout with an error. The reply
+#                          is "ok" or "err FIRST-ERROR-LINE". Without
+#                          tsx-layout-check the reply is "err no panel app on
+#                          this panel". The command removes layout.new.
+#   ha-token-set URL TOKEN  store the URL of Home Assistant and a long-lived
+#                          access token for the entity list of the layout
+#                          editor in /var/lib/tsx/panel-app/ha-token (mode
+#                          600, two lines: the URL and the token, written
+#                          atomically). The token is only in the request
+#                          line. Like rootpw, the script never logs it and
+#                          never puts it in a reply.
+#   ha-token-clear        remove that file and the entity list that came from it
+#   ha-entities           run tsx-ha-entities (as root): it reads the list of
+#                          entities from Home Assistant with the stored token
+#                          and writes /run/tsx/panel-app/ha-entities.json. The
+#                          reply is "ok COUNT" or "err MESSAGE".
 #   rootpw PASSWORD       chpasswd (PASSWORD over its stdin, never argv).
 #                          Then it copies the new /etc/shadow hash into
 #                          ROOT_PASSWORD_HASH, the way tsx-config apply
@@ -65,7 +87,9 @@
 # Env overrides for tests: TSX_RUN_DIR, TSX_SETUP_HELPER_REQ,
 # TSX_SETUP_HELPER_RESP, TSX_CONF (panel.conf, the same variable and default
 # as tsx-config), TSX_CONFIG_BIN, TSX_PANELCTL_BIN, TSX_CHPASSWD_BIN, TSX_SHADOW_FILE,
-# TSX_RCSERVICE_BIN, TSX_SETUP_HELPER_ONESHOT=1 (handle exactly one request,
+# TSX_RCSERVICE_BIN, TSX_SETUP_STATE_DIR, TSX_PANEL_LAYOUT_FILE,
+# TSX_LAYOUT_CHECK_BIN, TSX_HA_TOKEN_FILE, TSX_HA_ENTITIES_FILE,
+# TSX_HA_ENTITIES_BIN, TSX_SETUP_HELPER_ONESHOT=1 (handle exactly one request,
 # then exit. Tests only), TSX_APPLY_ALLOW_NONROOT (passed through to
 # tsx-config, tests only).
 set -u
@@ -79,6 +103,12 @@ SHADOW=${TSX_SHADOW_FILE:-/etc/shadow}
 RCSERVICE=${TSX_RCSERVICE_BIN:-rc-service}
 ONESHOT=${TSX_SETUP_HELPER_ONESHOT:-0}
 CONF=${TSX_CONF:-/data/tsx/panel.conf}
+STATE_DIR=${TSX_SETUP_STATE_DIR:-/run/tsx-setup}
+LAYOUT_FILE=${TSX_PANEL_LAYOUT_FILE:-/var/lib/tsx/panel-layout.json}
+LAYOUT_CHECK=${TSX_LAYOUT_CHECK_BIN:-tsx-layout-check}
+HA_TOKEN_FILE=${TSX_HA_TOKEN_FILE:-/var/lib/tsx/panel-app/ha-token}
+HA_ENTITIES_FILE=${TSX_HA_ENTITIES_FILE:-/run/tsx/panel-app/ha-entities.json}
+HA_ENTITIES=${TSX_HA_ENTITIES_BIN:-tsx-ha-entities}
 # The salt of "rev" (see above). salt_init below reads or makes it.
 SALT_FILE=$R/setup-helper.salt
 SALT=
@@ -189,6 +219,50 @@ handle() {
 		[ -z "$rest" ] || { reply_err "clear-setup-open takes no arguments"; return; }
 		rm -f "$R/setup-open"
 		reply_ok
+		;;
+	layout-save)
+		[ -z "$rest" ] || { reply_err "layout-save takes no arguments"; return; }
+		if ! command -v "$LAYOUT_CHECK" >/dev/null 2>&1; then reply_err "no panel app on this panel"; return; fi
+		log "layout-save"
+		out=$("$LAYOUT_CHECK" --install "$STATE_DIR/layout.new" "$LAYOUT_FILE" 2>&1); rc=$?
+		rm -f "$STATE_DIR/layout.new"
+		if [ "$rc" = 0 ]; then reply_ok
+		else out=$(printf '%s\n' "$out" | sed -n '1p'); reply_err "${out:-layout-save failed}"; fi
+		;;
+	ha-token-set)
+		# The URL is the first word, the token is the rest. Never log the
+		# token, and never put it in a reply or in an argument of a command.
+		url=${rest%% *}
+		case "$rest" in *" "*) tok=${rest#* };; *) tok=;; esac
+		case "$url" in http://?*|https://?*) ;; *) reply_err "ha-token-set: the URL must start with http:// or https://"; return;; esac
+		if [ "${#url}" -gt 300 ] || [ -n "$(printf '%s' "$url" | LC_ALL=C tr -d 'A-Za-z0-9._~:/?#@%&=+,;!$()*-')" ]; then
+			reply_err "ha-token-set: the URL has a character that is not allowed"; return
+		fi
+		if [ "${#tok}" -lt 10 ] || [ "${#tok}" -gt 2048 ] || [ -n "$(printf '%s' "$tok" | LC_ALL=C tr -d 'A-Za-z0-9._~+/=-')" ]; then
+			reply_err "ha-token-set: that does not look like an access token"; return
+		fi
+		log "ha-token-set"
+		tmp="$HA_TOKEN_FILE.tmp.$$"
+		if mkdir -p "$(dirname "$HA_TOKEN_FILE")" && (umask 077; printf '%s\n%s\n' "$url" "$tok" > "$tmp") \
+				&& chmod 600 "$tmp" && mv -f "$tmp" "$HA_TOKEN_FILE"; then reply_ok
+		else rm -f "$tmp"; reply_err "ha-token-set: cannot write the token file"; fi
+		;;
+	ha-token-clear)
+		[ -z "$rest" ] || { reply_err "ha-token-clear takes no arguments"; return; }
+		log "ha-token-clear"
+		rm -f "$HA_TOKEN_FILE" "$HA_ENTITIES_FILE"
+		reply_ok
+		;;
+	ha-entities)
+		[ -z "$rest" ] || { reply_err "ha-entities takes no arguments"; return; }
+		[ -s "$HA_TOKEN_FILE" ] || { reply_err "no token is stored"; return; }
+		if ! command -v "$HA_ENTITIES" >/dev/null 2>&1; then reply_err "no panel app on this panel"; return; fi
+		log "ha-entities"
+		if out=$(TSX_HA_TOKEN_FILE="$HA_TOKEN_FILE" TSX_HA_ENTITIES_FILE="$HA_ENTITIES_FILE" "$HA_ENTITIES" 2>&1); then
+			reply_ok "$(printf '%s\n' "$out" | sed -n '$p')"
+		else
+			out=$(printf '%s\n' "$out" | sed -n '1p'); reply_err "${out:-ha-entities failed}"
+		fi
 		;;
 	rootpw)
 		# Never log the password, and never put it in $out on failure. The

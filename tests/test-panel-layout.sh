@@ -5,6 +5,9 @@
 #  - the example layout and the schema
 #  - tsx-layout-check: errors, warnings, exit codes and the placement of the
 #    cards (the same rules as the C++ component)
+#  - tsx-layout-check --install: it refuses a link, a file that is too big and
+#    a layout with an error, and leaves the destination as it was. It installs
+#    a good layout with mode 644, byte for byte
 # The test runs under busybox or dash sh and needs python3, no compiler.
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -69,6 +72,8 @@ echo "== warnings =="
 run unknown-key 0 'warning: page 1 card 1: unknown key "colour"' '{"version": 1, "pages": [{"cards": [{"type": "clock", "colour": 1}]}]}'
 run unknown-icon 0 'icon mdi:no-such-icon is not in the icon font' '{"version": 1, "pages": [{"cards": [{"type": "light", "entity_id": "light.a", "icon": "mdi:no-such-icon"}]}]}'
 run clock-entity 0 'a clock card has no entity_id' '{"version": 1, "pages": [{"cards": [{"type": "clock", "entity_id": "sensor.a"}]}]}'
+run key-setup 0 'OK, 1 pages' '{"version": 1, "keys": {"power": "setup"}, "pages": [{}]}'
+run tap-setup 1 '"tap": unknown action "setup"' '{"version": 1, "pages": [{"cards": [{"type": "light", "entity_id": "light.a", "tap": "setup"}]}]}'
 run ok-actions 0 'OK, 1 pages, 1 cards' '{"version": 1, "keys": {"power": "none", "home": "page:16", "up": {"action": "light.toggle", "data": {"entity_id": "light.a"}}}, "pages": [{"cards": [{"type": "light", "entity_id": "light.a", "tap": {"action": "light.turn_on", "data": {"brightness_pct": 50, "transition": 1.5, "flash": false}}}]}]}'
 
 echo "== placement =="
@@ -81,6 +86,56 @@ printf '%s\n' '{"version": 1, "pages": [{"columns": 3, "rows": 2, "cards": [
 python3 "$CHECK" --placed "$T/place.json" > "$T/place.out"
 got=$(sed -n '/^{/,$p' "$T/place.out" | python3 -c 'import json, sys; print(" ".join("%d,%d" % (c["x"], c["y"]) for c in json.load(sys.stdin)["pages"][0]["cards"]))')
 [ "$got" = "0,0 0,1 2,0 1,1" ] && ok "placement 0,0 0,1 2,0 1,1" || bad "placement: $got"
+
+echo "== --install =="
+GOOD='{"version": 1, "pages": [{"name": "A", "cards": [{"type": "clock"}]}]}'
+printf '%s\n' "$GOOD" > "$T/good.json"
+printf '{"version": 1, "pages": [{"cards": [{"type": "fan"}]}]}\n' > "$T/bad.json"
+# an old destination, to see that a refusal leaves it as it was
+mkdir -p "$T/dest"; printf 'OLD\n' > "$T/dest/layout.json"
+inst() { rc=0; python3 "$CHECK" --install "$@" > "$T/inst.out" 2>&1 || rc=$?; }
+inst "$T/good.json" "$T/dest/layout.json"
+[ "$rc" = 0 ] && cmp -s "$T/good.json" "$T/dest/layout.json" && ok "install: a good layout is installed byte for byte" || bad "install good: $rc $(cat "$T/inst.out")"
+[ "$(stat -c %a "$T/dest/layout.json")" = 644 ] && ok "install: mode 644" || bad "install mode: $(stat -c %a "$T/dest/layout.json")"
+ls "$T/dest" | grep -q 'tmp' && bad "install: a temporary file stays: $(ls "$T/dest")" || ok "install: no temporary file stays"
+# the bytes stay as they are, also when another serialization is shorter
+printf '{\n  "version": 1,\n  "pages": [ {"cards": []} ]\n}\n' > "$T/spaced.json"
+inst "$T/spaced.json" "$T/dest/layout.json"
+cmp -s "$T/spaced.json" "$T/dest/layout.json" && ok "install: the bytes that were checked are the bytes that are installed" || bad "install spaced: $(cat "$T/dest/layout.json")"
+chmod 600 "$T/dest/layout.json"
+inst "$T/good.json" "$T/dest/layout.json"
+[ "$(stat -c %a "$T/dest/layout.json")" = 644 ] && ok "install: an older file with mode 600 gets mode 644" || bad "install mode over an old file"
+printf 'OLD\n' > "$T/dest/layout.json"
+inst "$T/bad.json" "$T/dest/layout.json"
+[ "$rc" = 1 ] && grep -q 'page 1 card 1: unknown type "fan"' "$T/inst.out" && [ "$(cat "$T/dest/layout.json")" = OLD ] && ok "install: a layout with an error is refused, the errors are printed, the destination stays" || bad "install bad: $rc $(cat "$T/inst.out")"
+ln -s "$T/good.json" "$T/link.json"
+inst "$T/link.json" "$T/dest/layout.json"
+[ "$rc" = 1 ] && [ "$(cat "$T/dest/layout.json")" = OLD ] && ok "install: a symbolic link as the source is refused" || bad "install link: $rc $(cat "$T/inst.out")"
+python3 -c 'import sys; sys.stdout.write("{\"version\": 1, \"pages\": [{\"name\": \"" + "a" * 70000 + "\"}]}")' > "$T/big.json"
+inst "$T/big.json" "$T/dest/layout.json"
+[ "$rc" = 1 ] && grep -q 'larger than 65536' "$T/inst.out" && [ "$(cat "$T/dest/layout.json")" = OLD ] && ok "install: a file of more than 65536 bytes is refused" || bad "install big: $rc $(cat "$T/inst.out")"
+python3 -c 'import sys; sys.stdout.write("{\"version\": 1, \"pages\": [{\"name\": \"" + "a" * 65400 + "\"}]}")' > "$T/limit.json"
+inst "$T/limit.json" "$T/dest/layout.json"
+[ "$rc" = 0 ] && ok "install: a file just under 65536 bytes is accepted" || bad "install limit: $rc $(cat "$T/inst.out")"
+printf 'OLD\n' > "$T/dest/layout.json"
+mkdir "$T/adir"
+inst "$T/adir" "$T/dest/layout.json"
+[ "$rc" = 1 ] && grep -q 'not a regular file' "$T/inst.out" && ok "install: a folder as the source is refused" || bad "install folder: $rc $(cat "$T/inst.out")"
+inst /dev/null "$T/dest/layout.json"
+[ "$rc" = 1 ] && grep -q 'not a regular file' "$T/inst.out" && ok "install: a device as the source is refused" || bad "install device: $rc $(cat "$T/inst.out")"
+mkfifo "$T/fifo.json"
+inst "$T/fifo.json" "$T/dest/layout.json"
+[ "$rc" = 1 ] && ok "install: a FIFO as the source is refused, and the tool does not wait" || bad "install fifo: $rc"
+inst "$T/missing.json" "$T/dest/layout.json"
+[ "$rc" = 1 ] && [ "$(cat "$T/dest/layout.json")" = OLD ] && ok "install: a missing source is refused" || bad "install missing: $rc"
+printf '\377\376{"version": 1}' > "$T/utf.json"
+inst "$T/utf.json" "$T/dest/layout.json"
+[ "$rc" = 1 ] && grep -q 'not UTF-8' "$T/inst.out" && ok "install: text that is not UTF-8 is refused" || bad "install utf: $rc $(cat "$T/inst.out")"
+printf '{"version": 1, "pages": [{"cards": [{"type": "clock"}]}]}' > "$T/new.json"
+inst "$T/new.json" "$T/newdir/sub/layout.json"
+[ "$rc" = 0 ] && [ "$(stat -c %a "$T/newdir/sub")" = 755 ] && cmp -s "$T/new.json" "$T/newdir/sub/layout.json" && ok "install: a missing folder is made with mode 755" || bad "install folder make: $rc $(cat "$T/inst.out")"
+inst "$T/good.json"
+[ "$rc" = 2 ] && ok "install: a missing destination is a usage error (exit 2)" || bad "install usage: $rc"
 
 echo "== usage =="
 rc=0; python3 "$CHECK" > /dev/null 2>&1 || rc=$?

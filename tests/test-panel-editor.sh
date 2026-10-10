@@ -8,6 +8,10 @@
 #    the first save needs no KIOSK_URL, a save restarts no kiosk
 #  - screen.json, the pairing code for a native screen: the keys, mode 600,
 #    the refresh, and the removal when the LAN window closes or the process ends
+#  - the commands of tsx-setup-helper for the layout editor: layout-save,
+#    ha-token-set, ha-token-clear and ha-entities
+#  - tsx-ha-entities against a small fake Home Assistant: the request, the
+#    list file, the errors, the time limit and the redirect rule
 set -uo pipefail
 export PYTHONDONTWRITEBYTECODE=1   # the test imports tsx-setupd: no .pyc next to it
 . "$(dirname "$0")/lib/board.sh"
@@ -17,6 +21,9 @@ SETUPD=$(P usr/local/sbin/tsx-setupd)
 HELPER=$(P usr/local/sbin/tsx-setup-helper)
 TSXCONFIG=$(P usr/local/sbin/tsx-config)
 HAPLUGIN=$(P usr/local/share/tsx/setup.d/ha.py)
+CHECK=$(P usr/local/bin/tsx-layout-check)
+HAENT=$(P usr/local/bin/tsx-ha-entities)
+ICONS=$(P usr/local/share/tsx/panel-app/icons.txt)
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-panel-editor: no busybox on this host"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo "SKIPPED test-panel-editor: no python3 on this host"; exit 0; }
 
@@ -46,7 +53,11 @@ cat > "$T/bin/rc-service" <<EOF
 echo "rc-service \$*" >> "$T/rc-service.log"
 case "\$2" in status) exit 1;; *) exit 0;; esac
 EOF
-chmod +x "$T/bin/tsx-config" "$T/bin/rc-service"
+cat > "$T/bin/tsx-layout-check" <<EOF
+#!/bin/sh
+TSX_ICON_FILE="$ICONS" exec python3 "$CHECK" "\$@"
+EOF
+chmod +x "$T/bin/tsx-config" "$T/bin/rc-service" "$T/bin/tsx-layout-check"
 ln -s "$HAPLUGIN" "$T/plugins/ha.py"
 cat > "$T/setup.conf" <<EOF
 TSX_SETUP_PORT=0
@@ -319,6 +330,166 @@ print(d.is_configured())' "$SETUPD" "$1" 2>/dev/null
 [ "$(conf_with '{}' off)" = False ] && [ "$(conf_with '{"TZ_NAME": "UTC"}' off)" = True ] && ok "no kiosk: configured = panel.conf has a key" || bad "configured, no kiosk"
 [ "$(conf_with '{"# WARNING: x y z": "1"}' off)" = False ] && ok "no kiosk: a comment line of tsx-config is no key" || bad "comment line counts"
 [ "$(conf_with '{"TZ_NAME": "UTC"}' on)" = False ] && [ "$(conf_with '{"KIOSK_URL": "https://example.org"}' on)" = True ] && ok "with a kiosk: configured = a page URL (as before)" || bad "configured, kiosk"
+
+# ==== 2. tsx-setup-helper: layout-save =============================================
+# A helper that handles one request, with its own FIFOs and its own folders.
+#   hcall [VAR=value...] -- LINE    prints the reply
+hcall() {
+	local d envs=() line
+	d=$(mktemp -d -p "$T" hcall.XXXXXX)
+	while [ "$1" != -- ]; do envs+=("$1"); shift; done
+	shift; line=$1
+	env "${envs[@]}" PATH="$T/bin:$PATH" TSX_RUN_DIR="$d" TSX_SETUP_HELPER_REQ="$d/req" TSX_SETUP_HELPER_RESP="$d/resp" \
+		TSX_CONFIG_BIN="$T/bin/tsx-config" TSX_CONF="$CONF" TSX_SETUP_HELPER_ONESHOT=1 \
+		busybox sh "$HELPER" > "$d/log" 2>&1 &
+	local pid=$!
+	for _ in $(seq 1 100); do grep -q 'listening on' "$d/log" 2>/dev/null && break; sleep 0.05; done
+	# A FIFO loses its data when the last process closes it, and a helper in
+	# the mode ONESHOT exits at once. So this shell holds the reply FIFO open.
+	local reply=
+	exec 9<>"$d/resp"
+	printf '%s\n' "$line" > "$d/req"
+	IFS= read -r -t 30 reply <&9
+	exec 9<&-
+	printf '%s\n' "$reply"
+	wait "$pid" 2>/dev/null
+	cat "$d/log" >> "$T/hcall.log"
+}
+GOODLAYOUT='{"version": 1, "pages": [{"name": "A", "cards": [{"type": "clock"}]}]}'
+LV="$T/var/panel-layout.json"
+HV=(TSX_SETUP_STATE_DIR="$T/state2" TSX_PANEL_LAYOUT_FILE="$LV" TSX_LAYOUT_CHECK_BIN="$T/bin/tsx-layout-check")
+mkdir -p "$T/state2"
+echo "== tsx-setup-helper: layout-save =="
+printf '%s\n' "$GOODLAYOUT" > "$T/state2/layout.new"
+r=$(hcall "${HV[@]}" -- "layout-save")
+[ "$r" = ok ] && [ "$(cat "$LV")" = "$GOODLAYOUT" ] && ok "layout-save installs a good layout" || bad "layout-save: '$r' / $(cat "$LV" 2>&1)"
+[ "$(stat -c %a "$LV")" = 644 ] && ok "the installed layout has mode 644" || bad "layout mode"
+[ ! -e "$T/state2/layout.new" ] && ok "layout-save removes layout.new" || bad "layout.new stays"
+printf '{"version": 1, "pages": [{"cards": [{"type": "fan"}]}]}\n' > "$T/state2/layout.new"
+r=$(hcall "${HV[@]}" -- "layout-save")
+[ "$r" = 'err page 1 card 1: unknown type "fan"' ] && [ "$(cat "$LV")" = "$GOODLAYOUT" ] && ok "a layout with an error: err with the first error line, the layout stays" || bad "bad layout: '$r'"
+ln -sf "$T/panel.conf" "$T/state2/layout.new"
+r=$(hcall "${HV[@]}" -- "layout-save")
+case "$r" in err*) [ "$(cat "$LV")" = "$GOODLAYOUT" ] && ok "a link as layout.new is refused: $r";; *) bad "link: '$r'";; esac
+rm -f "$T/state2/layout.new"
+r=$(hcall "${HV[@]}" -- "layout-save")
+case "$r" in err*) ok "no layout.new: $r";; *) bad "no layout.new: '$r'";; esac
+r=$(hcall "${HV[@]}" TSX_LAYOUT_CHECK_BIN="$T/bin/not-installed" -- "layout-save")
+[ "$r" = "err no panel app on this panel" ] && ok "no tsx-layout-check: err no panel app on this panel" || bad "no checker: '$r'"
+r=$(hcall "${HV[@]}" -- "layout-save now")
+case "$r" in err*) ok "layout-save with an argument is refused";; *) bad "argument: '$r'";; esac
+r=$(hcall "${HV[@]}" -- "#t5 layout-save")
+case "$r" in "#t5 err"*) ok "a tagged request gets a tagged reply";; *) bad "tag: '$r'";; esac
+
+# ==== 3. a fake Home Assistant, the token commands, tsx-ha-entities =================
+cat > "$T/fakeha.py" <<'PYEOF'
+import json, sys, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+TOKEN = sys.argv[2]
+STATES = [
+    {"entity_id": "light.kitchen", "state": "on", "attributes": {"friendly_name": "Kitchen", "brightness": 200}},
+    {"entity_id": "sensor.temp", "state": "21.5", "attributes": {"friendly_name": "Temperature", "unit_of_measurement": "C"}},
+    {"entity_id": "switch.plain", "state": "off", "attributes": {}},
+    {"entity_id": "Bad Id", "state": "x", "attributes": {}},
+    "not a state",
+]
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, body, extra=None):
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        self.send_response(code)
+        for k, v in (extra or {}).items(): self.send_header(k, v)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers(); self.wfile.write(data)
+    def do_GET(self):
+        auth = self.headers.get("Authorization", "")
+        with open(sys.argv[3], "a") as f: f.write("%s %s\n" % (self.path, "token" if auth == "Bearer " + TOKEN else "no-token"))
+        base = self.path[:-len("/api/states")] if self.path.endswith("/api/states") else None
+        if base is None: return self._send(404, {})
+        port = self.server.server_address[1]
+        if base == "/redir":    return self._send(302, b"", {"Location": "http://127.0.0.1:%d/api/states" % port})
+        if base == "/evil":     return self._send(302, b"", {"Location": "http://localhost:%d/api/states" % port})
+        if base == "/scheme":   return self._send(302, b"", {"Location": "https://127.0.0.1:%d/api/states" % port})
+        if base == "/slow":     time.sleep(4); return self._send(200, STATES)
+        if base == "/broken":   return self._send(200, b"this is not json")
+        if base == "/error":    return self._send(500, {})
+        if auth != "Bearer " + TOKEN: return self._send(401, {"message": "401: Unauthorized"})
+        return self._send(200, STATES)
+srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1], "w").write(str(srv.server_address[1]))
+srv.serve_forever()
+PYEOF
+HATOKEN="eyJhbGciOiJIUzI1NiJ9.TESTtokenTESTtoken0123456789.sig_part-end"
+python3 "$T/fakeha.py" "$T/fakeha.port" "$HATOKEN" "$T/fakeha.log" &
+FAKEHA_PID=$!
+for _ in $(seq 1 50); do [ -s "$T/fakeha.port" ] && break; sleep 0.1; done
+HAPORT=$(cat "$T/fakeha.port")
+HAURL="http://127.0.0.1:$HAPORT"
+TF="$T/lib/panel-app/ha-token"
+EF="$T/run/panel-app/ha-entities.json"
+HH=(TSX_HA_TOKEN_FILE="$TF" TSX_HA_ENTITIES_FILE="$EF" TSX_HA_ENTITIES_BIN="$HAENT")
+echo "== tsx-setup-helper: ha-token-set, ha-entities, ha-token-clear =="
+r=$(hcall "${HH[@]}" -- "ha-entities")
+[ "$r" = "err no token is stored" ] && ok "ha-entities with no token: err no token is stored" || bad "no token: '$r'"
+r=$(hcall "${HH[@]}" -- "ha-token-set ftp://x $HATOKEN"); case "$r" in err*) ok "a URL that is not http or https is refused";; *) bad "ftp URL: '$r'";; esac
+r=$(hcall "${HH[@]}" -- "ha-token-set $HAURL short"); case "$r" in err*) ok "a token that is too short is refused";; *) bad "short token: '$r'";; esac
+r=$(hcall "${HH[@]}" -- 'ha-token-set '"$HAURL"' bad$(id)token12345'); case "$r" in err*) ok "a token with a shell character is refused";; *) bad "shell token: '$r'";; esac
+r=$(hcall "${HH[@]}" -- "ha-token-set $HAURL"); case "$r" in err*) ok "a request with no token is refused";; *) bad "no token word: '$r'";; esac
+[ ! -e "$TF" ] && ok "none of the refused requests wrote the token file" || bad "token file exists"
+r=$(hcall "${HH[@]}" -- "ha-token-set $HAURL $HATOKEN")
+[ "$r" = ok ] && ok "ha-token-set stores the URL and the token" || bad "ha-token-set: '$r'"
+[ "$(stat -c %a "$TF")" = 600 ] && [ "$(sed -n 1p "$TF")" = "$HAURL" ] && [ "$(sed -n 2p "$TF")" = "$HATOKEN" ] && [ "$(wc -l < "$TF")" = 2 ] \
+	&& ok "the file has mode 600 and two lines: the URL, the token" || bad "token file: $(stat -c %a "$TF") $(wc -l < "$TF")"
+ls "$T/lib/panel-app" | grep -q tmp && bad "a temporary file stays" || ok "no temporary file stays"
+grep -qF "$HATOKEN" "$T/hcall.log" && bad "the token is in the log of the helper" || ok "the token is not in the log of the helper"
+case "$r" in *"$HATOKEN"*) bad "the token is in the reply";; *) ok "the token is not in the reply";; esac
+r=$(hcall "${HH[@]}" -- "ha-entities")
+[ "$r" = "ok 3" ] && ok "ha-entities reads the list from Home Assistant: ok 3" || bad "ha-entities: '$r'"
+[ "$(stat -c %a "$EF")" = 640 ] && ok "ha-entities.json has mode 640" || bad "list mode: $(stat -c %a "$EF")"
+python3 -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+assert d == [{"entity_id": "light.kitchen", "name": "Kitchen", "state": "on"},
+             {"entity_id": "sensor.temp", "name": "Temperature", "state": "21.5"},
+             {"entity_id": "switch.plain", "name": "", "state": "off"}], d' "$EF" && ok "the list has entity_id, name and state, sorted, and leaves out a bad entry" || bad "list content: $(cat "$EF")"
+grep -qF "$HATOKEN" "$EF" && bad "the token is in the list file" || ok "the token is not in the list file"
+grep -qF "$HATOKEN" "$T/hcall.log" && bad "the token is in the log of the helper after ha-entities" || ok "the token is still not in the log of the helper"
+grep -q '^/api/states token$' "$T/fakeha.log" && ok "Home Assistant got GET /api/states with the bearer token" || bad "fake HA log: $(cat "$T/fakeha.log")"
+r=$(hcall "${HH[@]}" TSX_HA_ENTITIES_BIN="$T/bin/not-installed" -- "ha-entities"); [ "$r" = "err no panel app on this panel" ] && ok "no tsx-ha-entities: err no panel app on this panel" || bad "no tool: '$r'"
+r=$(hcall "${HH[@]}" -- "ha-token-clear")
+[ "$r" = ok ] && [ ! -e "$TF" ] && [ ! -e "$EF" ] && ok "ha-token-clear removes the token and the list" || bad "clear: '$r'"
+r=$(hcall "${HH[@]}" -- "ha-token-clear now"); case "$r" in err*) ok "ha-token-clear with an argument is refused";; *) bad "clear arg: '$r'";; esac
+r=$(hcall "${HH[@]}" -- "ha-token-set $HAURL wrongtoken_wrongtoken"); r=$(hcall "${HH[@]}" -- "ha-entities")
+[ "$r" = "err Home Assistant refused the token (HTTP 401)" ] && ok "a token that Home Assistant refuses: err Home Assistant refused the token (HTTP 401)" || bad "401: '$r'"
+[ ! -e "$EF" ] && ok "a failed read leaves no list file" || bad "list file after 401"
+r=$(hcall "${HH[@]}" -- "ha-token-clear")
+
+echo "== tsx-ha-entities =="
+run_ent() {  # run_ent PATH [VAR=value...]: the tool with the URL HAURL+PATH
+	local path=$1; shift
+	printf '%s%s\n%s\n' "$HAURL" "$path" "$HATOKEN" > "$T/tok"
+	env TSX_HA_TOKEN_FILE="$T/tok" TSX_HA_ENTITIES_FILE="$T/out/list.json" "$@" python3 "$HAENT" 2>&1
+}
+rm -rf "$T/out"
+out=$(run_ent ""); [ "$out" = 3 ] && [ -s "$T/out/list.json" ] && ok "the tool prints the count and makes the folder of the list" || bad "tool: '$out'"
+rm -f "$T/out/list.json"
+out=$(run_ent "/redir"); [ "$out" = 3 ] && ok "a redirect to the same scheme, host and port is followed" || bad "redirect same origin: '$out'"
+rm -f "$T/out/list.json"
+: > "$T/fakeha.log"
+out=$(run_ent "/evil"); case "$out" in *"redirect"*) ok "a redirect to another host is refused: $out";; *) bad "redirect other host: '$out'";; esac
+out=$(run_ent "/scheme"); case "$out" in *"redirect"*) ok "a redirect to another scheme is refused: $out";; *) bad "redirect other scheme: '$out'";; esac
+grep -q '^/api/states ' "$T/fakeha.log" && bad "the token went to the target of a redirect" || ok "the target of a refused redirect never got a request"
+[ ! -e "$T/out/list.json" ] && ok "a refused request leaves no list" || bad "list after refusal"
+out=$(run_ent "/slow" TSX_HA_ENTITIES_TIMEOUT=1); case "$out" in *"did not answer"*) ok "a slow Home Assistant: $out";; *) bad "timeout: '$out'";; esac
+out=$(run_ent "/broken"); case "$out" in "cannot read the list"*) ok "an answer that is not JSON: $out";; *) bad "broken: '$out'";; esac
+out=$(run_ent "/error"); [ "$out" = "Home Assistant answered HTTP 500" ] && ok "HTTP 500: $out" || bad "500: '$out'"
+printf 'http://127.0.0.1:1\n%s\n' "$HATOKEN" > "$T/tok"
+out=$(env TSX_HA_TOKEN_FILE="$T/tok" TSX_HA_ENTITIES_FILE="$T/out/list.json" python3 "$HAENT" 2>&1); case "$out" in *"connection refused"*) ok "nothing at the address: $out";; *) bad "refused: '$out'";; esac
+rm -f "$T/tok"
+out=$(env TSX_HA_TOKEN_FILE="$T/tok" TSX_HA_ENTITIES_FILE="$T/out/list.json" python3 "$HAENT" 2>&1); [ "$out" = "no URL and token are stored" ] && ok "no token file: $out" || bad "no file: '$out'"
+MYGROUP=$(id -gn)
+out=$(run_ent "" TSX_SETUP_GROUP="$MYGROUP"); [ "$(stat -c %G "$T/out/list.json")" = "$MYGROUP" ] && ok "the list file gets the group TSX_SETUP_GROUP" || bad "group: $(stat -c %G "$T/out/list.json")"
+python3 "$HAENT" extra >/dev/null 2>&1; [ $? = 2 ] && ok "an argument is a usage error (exit 2)" || bad "usage"
+kill "$FAKEHA_PID" 2>/dev/null
 
 echo "== $N ok, $F failed =="
 [ "$F" = 0 ] && echo PASS test-panel-editor || echo FAIL test-panel-editor
