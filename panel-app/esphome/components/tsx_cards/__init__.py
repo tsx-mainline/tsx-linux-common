@@ -8,6 +8,8 @@ JSON layout file. See docs/panel-app.md of tsx-linux-common.
         - /var/lib/tsx/panel-layout.json
         - /etc/tsx/panel-layout.json
       page_bar_height: 36           # 0 = no page bar
+      setup_file: /run/tsx-setup/screen.json      # "" = no setup banner
+      entities_file: /run/tsx/panel-app/entities.json  # "" = no entity list
       fonts:
         small: montserrat_16
         label: montserrat_20
@@ -33,6 +35,8 @@ AUTO_LOAD = ["json"]
 CONF_LAYOUT_FILES = "layout_files"
 CONF_PAGE_BAR_HEIGHT = "page_bar_height"
 CONF_FONTS = "fonts"
+CONF_SETUP_FILE = "setup_file"
+CONF_ENTITIES_FILE = "entities_file"
 
 # The font slots of tsx_cards.h (enum FontSlot).
 FONT_SLOTS = {"small": 0, "label": 1, "value": 2, "clock": 3, "icon": 4}
@@ -59,6 +63,8 @@ CONFIG_SCHEMA = cv.All(
                 cv.ensure_list(cv.string_strict), cv.Length(min=1)
             ),
             cv.Optional(CONF_PAGE_BAR_HEIGHT, default=36): cv.int_range(min=0, max=120),
+            cv.Optional(CONF_SETUP_FILE, default="/run/tsx-setup/screen.json"): cv.string,
+            cv.Optional(CONF_ENTITIES_FILE, default="/run/tsx/panel-app/entities.json"): cv.string,
             cv.Required(CONF_FONTS): cv.Schema(
                 {cv.Optional(name): lv_font for name in FONT_SLOTS}
             ),
@@ -74,6 +80,8 @@ async def to_code(config):
     for path in config[CONF_LAYOUT_FILES]:
         cg.add(var.add_layout_file(path))
     cg.add(var.set_page_bar_height(config[CONF_PAGE_BAR_HEIGHT]))
+    cg.add(var.set_setup_file(config[CONF_SETUP_FILE]))
+    cg.add(var.set_entities_file(config[CONF_ENTITIES_FILE]))
     if CONF_TIME_ID in config:
         clock = await cg.get_variable(config[CONF_TIME_ID])
         cg.add(var.set_time(clock))

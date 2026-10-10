@@ -29,7 +29,7 @@ The software that every TSX panel family shares: the base services, the rescue s
 | `ledbar/` | tsx-ledbar |
 | `rescue/` | tsx-rescue-ui |
 | `splash/` | tsx-splash |
-| `panel-app/` | none yet (the panel app, a test) |
+| `panel-app/` | tsx-panel-app |
 | `tests/` | The host tests. Run `tests/run-all.sh`. |
 | `ci/` | `lint.sh`, `check-generic.sh` (no family name outside `docs/`) and the other CI checks. Run `ci/lint.sh` and `ci/check-generic.sh`. |
 

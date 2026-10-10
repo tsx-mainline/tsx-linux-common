@@ -108,7 +108,7 @@ bool scalar_text(JsonVariantConst v, std::string &out) {
 bool valid_action_name(const std::string &a) { return valid_entity_id(a); }
 
 // An action: "none", "default" (cards only), "next_page", "prev_page",
-// "page:N" (keys only) or {"action": "domain.service", "data": {...}}.
+// "page:N", "setup" (keys only) or {"action": "domain.service", "data": {...}}.
 bool parse_action(JsonVariantConst v, bool is_key, ActionSpec &out, std::string &err) {
   if (v.is<const char *>()) {
     std::string s = v.as<const char *>();
@@ -126,6 +126,10 @@ bool parse_action(JsonVariantConst v, bool is_key, ActionSpec &out, std::string 
     }
     if (is_key && s == "prev_page") {
       out.kind = ActionSpec::PREV_PAGE;
+      return true;
+    }
+    if (is_key && s == "setup") {
+      out.kind = ActionSpec::SETUP;
       return true;
     }
     if (is_key && s.compare(0, 5, "page:") == 0) {

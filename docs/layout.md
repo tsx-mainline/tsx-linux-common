@@ -15,7 +15,7 @@ The repo has one directory for each package. A package directory holds the files
 | ledbar | tsx-ledbar | `tsx-ledbar` (C), `tsx-ledbard`, its init script and `ledbar.conf`. See [LED bar](ledbar.md) |
 | rescue | tsx-rescue-ui | `tsx-rescue-status`, `tsx-confont`, `tsx-rescue-login` |
 | splash | tsx-splash | `tsx-splash` (C), the splash images and tools |
-| panel-app | none yet | The panel app: the ESPHome component `tsx_cards`, the generic ESPHome YAML, `tsx-layout-check` and the layout files. See [Panel app](panel-app.md) |
+| panel-app | tsx-panel-app | The panel app: the ESPHome components `tsx_cards` and `tsx_runtime`, the generic ESPHome YAML and its patches, the service `tsx-panel-app` with `tsx-panel-app-run`, `tsx-layout-check` and the layout files. The program itself comes from the package of the board family. See [Panel app](panel-app.md) |
 | tests | none | host tests, fixtures (`tests/boards`), helper programs |
 
 `tsx_brightness.py` and `tsx-panelctl` are in tsx-base because every profile has tsx-base. The console profile has no tsx-kiosk. tsx-ha depends on `tsx-panelctl`.
@@ -41,6 +41,7 @@ The repo has one directory for each package. A package directory holds the files
 | tsx-buttons | tsx-buttons | Front keys and key LEDs. The keys come from `/etc/tsx/buttons-board.conf`, the actions from `/etc/tsx/buttons.conf` |
 | tsx-autoupdate | tsx-autoupdate | Schedules automatic Alpine package updates |
 | tsx-ledbar | tsx-ledbar | Checks the LED bar, recovers it from bootloader mode and sends its color, effect and LED map |
+| tsx-panel-app | tsx-panel-app | The panel app: Home Assistant cards on the screen with no browser. The board gives `/etc/tsx/panel-app-board.conf` |
 
 ## Not in this repo
 
@@ -86,6 +87,7 @@ Every name in this table is optional. The neutral default applies when a board d
 | `/etc/tsx/panel-board.conf` | `kiosk-session`, `kiosk`, `tsx-idled`, `tsx-cpufreqd` | The board layer of `kiosk.conf`: GPU mode, backlight range and floor (`BACKLIGHT_MAX`, `BACKLIGHT_MIN`), CPU governor, overlay tap, `ALS_WATCH`. `kiosk.conf` holds neutral defaults. The family ships this file in the base profile |
 | `/etc/tsx/buttons-board.conf` | `tsx-buttons`, `tsx-panelctl`, `tsx-mqtt`, `tsx_panel` | The board layer of the front keys: the `button` lines, the LED names (`LED_PWM`, `LED_KEY_PREFIX`) and `SLIDE_STEP`. `tsx-buttons` reads it before `buttons.conf`. A board with no keys ships no file. See [Front keys](buttons.md) |
 | `/etc/tsx/motd.board` | `profile.d/tsx.sh` | Lines for the login banner |
+| `/etc/tsx/panel-app-board.conf` | `tsx-panel-app-run` | The environment, the folders and the device files of the panel app. See [Panel app](panel-app.md) "Service" |
 | `rc_after` in `/etc/conf.d/tsx-config` | `tsx-config` | Services to wait for |
 | `rc_after` in `/etc/conf.d/tsx-panelctl`, `tsx-esphome`, `tsx-mqtt` | the same services | The board names its own services that must start first (for example its light service). The init scripts of this repo name no service of a board |
 | `/etc/tsx/als.conf` | `tsx_brightness.py als-daemon` | The start curve of the learner (`ALS_CURVE`) of a board with a light service in shell. See [Adaptive brightness](adaptive-brightness.md) |
@@ -230,7 +232,7 @@ A host run from a checkout, for example the installer, has no `/usr/local/lib/ts
 
 A test that needs a board file uses the made-up board in `tests/boards/fake`. A test sources `tests/lib/board.sh`, which sets `TSX_BOARD_CONF` and `TSX_BOARD_BIN`. The board holds `board.sh`, `panel-board.conf`, `buttons-board.conf` and `motd.board`. It also holds a fake plugin for each plugin folder: `config.d/fakeopt.sh` and `esphome.d/fakeent.py`. A test of a loader sets the test hook of the folder to a copy of the folder. `test-config-plugins.sh` covers `config.d`. `test-shim-plugins.sh` and `test-esphome.sh` cover `esphome.d`. The values of the board differ from the values of every real family. So a test fails when shared code has a family value built in. `test-board-fake.sh` runs the shared scripts against this board and against a second made-up board. It also runs `kiosk-session` with fake `kiosk.d` hooks.
 
-`test-setup.sh` covers the presence fields of the setup page (shown with `PRESENCE=yes`, hidden with `PRESENCE=no`). It also covers the save rule: a save writes only the changed fields, and the server refuses a page with an old revision of `panel.conf`. `test-setup-page.sh` runs the script of the setup page in node, with a small fake DOM. It checks the changed fields that a save sends and the refresh every 20 s. Without node, it prints SKIPPED. `test-panel-board.sh` covers the board layer of `kiosk.conf`.
+`test-panel-app-run.sh` covers the start script of the panel app: the identity from the host name and the MAC, the saved identity, the board file. `test-setup.sh` covers the presence fields of the setup page (shown with `PRESENCE=yes`, hidden with `PRESENCE=no`). It also covers the save rule: a save writes only the changed fields, and the server refuses a page with an old revision of `panel.conf`. `test-setup-page.sh` runs the script of the setup page in node, with a small fake DOM. It checks the changed fields that a save sends and the refresh every 20 s. Without node, it prints SKIPPED. `test-panel-board.sh` covers the board layer of `kiosk.conf`.
 
 ### Tests of a family
 

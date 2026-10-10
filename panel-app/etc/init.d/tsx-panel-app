@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+# The panel app: Home Assistant cards on the panel screen, with no browser
+# (docs/panel-app.md of tsx-linux-common). tsx-panel-app-run sets the names,
+# the MAC and the environment of the board, then runs the program. The API
+# key comes from /run/tsx/esphome.key, which tsx-config apply writes from
+# HA_API_KEY of panel.conf. The program reads it again when it changes.
+description="TSX panel app (Home Assistant cards on the panel screen)"
+supervisor=supervise-daemon
+command=/usr/local/sbin/tsx-panel-app-run
+respawn_delay=5
+respawn_max=0
+output_log=/var/log/tsx-panel-app.log
+error_log=/var/log/tsx-panel-app.log
+depend() {
+	need localmount
+	after tsx-data tsx-config tsx-setup tsx-hostname
+}

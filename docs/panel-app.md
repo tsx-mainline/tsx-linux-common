@@ -6,13 +6,18 @@ The panel app shows Home Assistant cards on the panel screen with no browser. It
 
 The app is one ESPHome device in Home Assistant. It reads the states of the entities in the layout and sends the action of a card when you tap it.
 
-The panel app is a test. No package installs it yet.
+One program serves all panels of a family. The program holds no value of one panel. The service gives it the device name, the MAC and the API encryption key at start (see "Identity and API key").
 
 ## Parts
 
 | Path | Contents |
 |---|---|
-| `panel-app/esphome/components/tsx_cards/` | The ESPHome component `tsx_cards` (C++). It reads the layout, makes the pages and cards, subscribes to the states and sends the actions. |
+| `panel-app/esphome/components/tsx_cards/` | The ESPHome component `tsx_cards` (C++). It reads the layout, makes the pages and cards, subscribes to the states and sends the actions. It also shows the setup banner and writes the entity list. |
+| `panel-app/esphome/components/tsx_runtime/` | The ESPHome component `tsx_runtime` (C++). It sets the device name and the API encryption key at run time. |
+| `panel-app/esphome/patches/host-mac.patch` | A patch for the `host` component of ESPHome: the MAC comes from the environment. The board build applies it to the generated project. |
+| `panel-app/etc/init.d/tsx-panel-app` | The OpenRC service. |
+| `panel-app/usr/local/sbin/tsx-panel-app-run` | The start script of the service: the identity, the environment of the board, then the program. |
+| `panel-app/etc/tsx/panel-app.conf` | The settings of the service. |
 | `panel-app/esphome/panel-app.yaml` | The generic part of the ESPHome configuration: the API, the Home Assistant time, the icon font, LVGL and `tsx_cards`. A board includes it as a package. |
 | `panel-app/esphome/icon-glyphs.yaml` | The glyph list of the icon font. `mkicons.py` writes it. |
 | `panel-app/esphome/mkicons.py` | Writes `icons.h` and `icon-glyphs.yaml` from `icons.txt`. `--check` tells if they are out of date. |
@@ -26,12 +31,12 @@ The panel app is a test. No package installs it yet.
 A board gives the parts that the generic YAML does not know. The board YAML does these things:
 
 1. It sets `esphome: name` and `friendly_name`, and the platform (for example `host:`).
-2. It includes `panel-app.yaml` with `packages:` and the component with `external_components:`.
+2. It includes `panel-app.yaml` with `packages:` and the components `tsx_cards` and `tsx_runtime` with `external_components:`.
 3. It makes a display with the id `panel_display` and a touchscreen with the id `panel_touch`. On a slow CPU, use the `tsx_drm` display and the `tsx_evdev` touchscreen and keys (see [Panel app display and input](panel-accel.md)).
 4. It sends each key of the panel to the app: `id(panel_cards).key_press("NAME")`. Use the key names of `buttons-board.conf` (for example `home`, `up`, `down`). A key that is a binary sensor needs `trigger_on_initial_state: true`. Without it, ESPHome ignores the first press after the start.
-5. It gives `api_key` (the API encryption key) in `secrets.yaml`.
+5. It applies the patches of `panel-app/esphome/patches` to `src/esphome` of the generated project (`patch -p1`).
 
-The board also builds the program and starts it as a service. The board docs tell how.
+The board YAML has no value of one panel and needs no `secrets.yaml`. The board package installs the program as `/usr/local/bin/tsx-panel-app` and the file `/etc/tsx/panel-app-board.conf` (see "Service"). The board docs tell how to build it.
 
 ## Component settings
 
@@ -40,6 +45,8 @@ The board also builds the program and starts it as a service. The board docs tel
 | `layout_files` | `/var/lib/tsx/panel-layout.json`, `/etc/tsx/panel-layout.json` | The layout files, in order. The app uses the first file that exists. The environment variable `TSX_PANEL_LAYOUT` adds a file in front of the list. |
 | `time_id` | none | The time component for the clock cards. Without it, a clock card shows `--:--`. |
 | `page_bar_height` | 36 | The height of the page bar at the bottom of the screen, in pixels. 0 removes the bar. |
+| `setup_file` | `/run/tsx-setup/screen.json` | The file of the setup page with the pairing code (see "Setup banner"). An empty text turns the banner off. |
+| `entities_file` | `/run/tsx/panel-app/entities.json` | The entity list for the layout editor (see "Entity list"). An empty text turns it off. |
 | `fonts` | | The fonts: `small` (states, page bar), `label` (card names), `value` (sensor values), `clock` (the time) and `icon`. A font is an LVGL font name (for example `montserrat_20`) or the id of an ESPHome font. The `icon` font must hold the glyphs of `icon-glyphs.yaml`. |
 
 `/var/lib/tsx` keeps its contents after an image update (see the service `tsx-data` in [Layout](layout.md)). So the layout of the user goes there. A board can ship a default layout in `/etc/tsx`.
@@ -204,3 +211,56 @@ The icons come from Material Design Icons (Pictogrammers, Apache License 2.0). T
 3. Commit `icons.txt`, `icons.h` and `icon-glyphs.yaml`.
 
 `tests/test-panel-layout.sh` fails when `icons.h` or `icon-glyphs.yaml` is out of date.
+
+## Identity and API key
+
+Home Assistant knows the panel app as one ESPHome device. The device has a name, a friendly name, a MAC (the unique id in Home Assistant) and an API encryption key. Each panel needs its own values, but the program is the same on all panels of a family. So the program gets the values at start:
+
+| Value | Source | Read by |
+|---|---|---|
+| Device name | `TSX_PANEL_APP_NAME` (environment) | `tsx_runtime` |
+| Friendly name | `TSX_PANEL_APP_FRIENDLY_NAME` (environment) | `tsx_runtime` |
+| MAC | `TSX_PANEL_APP_MAC` (environment, `aa:bb:cc:dd:ee:ff`) | `host-mac.patch` |
+| API encryption key | `/run/tsx/esphome.key` (setting `key_file`) | `tsx_runtime` |
+
+Without a value in the environment, the value of the YAML stays.
+
+`tsx-config apply` writes `/run/tsx/esphome.key` from the key `HA_API_KEY` of `panel.conf`. The key is 32 random bytes in base64, the same text as `api: encryption: key:` of ESPHome. Give the same key to Home Assistant when you add the device. `tsx_runtime` checks the file every 5 s. When the key changes, the program uses the new key at once and closes the open API connections. Home Assistant then connects again with its key. The program never writes the key to the log.
+
+Without a valid key file, the program uses a random key. Then no client can connect, and the log tells why. The program never runs the API with no encryption. The YAML must give `api: encryption: key:`, but only as a placeholder: it makes ESPHome build the encrypted API with no plaintext fallback. `tsx_runtime` replaces the placeholder before the API starts.
+
+## Service
+
+The service `tsx-panel-app` runs `tsx-panel-app-run`, which starts the program. The script reads three files. A later file wins:
+
+| File | Package | Contents |
+|---|---|---|
+| `/etc/tsx/panel-app.conf` | the panel app | The defaults: the program, the folder of the ESPHome preferences (`/var/lib/tsx/panel-app`), the network interface of the MAC (`eth0`). |
+| `/etc/tsx/panel-app-board.conf` | the board | `PANEL_APP_ENV` (the environment of the program, for example the SDL video driver), `PANEL_APP_DIRS` (folders that the script makes with mode 700), `PANEL_APP_DEVICES` (device files that the script waits for, at most `PANEL_APP_WAIT` seconds). |
+| `/var/lib/tsx/panel-app.conf` | none (the panel) | `NAME`, `FRIENDLY_NAME` and `MAC` of this panel. |
+
+At the first start, the script finds the identity and writes it to `/var/lib/tsx/panel-app.conf`:
+
+- `NAME`: the host name in lowercase. A character that is not a letter, a digit or `-` becomes `-`. The name has at most 31 characters.
+- `FRIENDLY_NAME`: the host name.
+- `MAC`: the MAC of `eth0` with the locally administered bit set and the multicast bit clear.
+
+Later starts use the saved values. So a new host name does not make a new device in Home Assistant. To give the panel other values, edit the file and restart the service. `/var/lib/tsx` keeps its contents after an image update, so the device stays the same.
+
+`tsx-panel-app-run --print` shows the values and starts nothing. The log of the program is `/var/log/tsx-panel-app.log`.
+
+## Setup banner
+
+When the network window of the setup page is open, `tsx-setupd` writes `/run/tsx-setup/screen.json` with the pairing code, the port and the addresses of the panel. The app checks the file every 2 s. While the file is less than 30 s old, the app shows a bar at the top of the screen: `Setup: http://ADDRESS:PORT/setup    Code: CODE`. The bar takes no touch: a tap goes to the card below it. The log tells only that the bar is on or off. It never has the code.
+
+The key action `"setup"` runs `tsx-config setup`. That command opens the window for about 15 minutes (see the setup page in [Layout](layout.md)). The environment variable `TSX_PANEL_APP_SETUP_CMD` replaces the command for a test.
+
+## Entity list
+
+The app writes `/run/tsx/panel-app/entities.json` at most every 2 s, after a state changes or after a reload. The layout editor of the setup page reads it. The file has the entities of the layout and their last states:
+
+```json
+{"uptime": 3351, "entities": [{"entity_id": "light.kitchen", "name": "Kitchen", "state": "on"}]}
+```
+
+`name` is the friendly name of the entity when the app subscribed to it, else the label of a card. `state` is `null` before Home Assistant sends the state. `uptime` is the seconds since the boot at the write.

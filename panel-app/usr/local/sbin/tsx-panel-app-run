@@ -1,0 +1,112 @@
+#!/bin/sh
+# tsx-panel-app-run: start the panel app (the service tsx-panel-app).
+#
+# It reads /etc/tsx/panel-app.conf, /etc/tsx/panel-app-board.conf and
+# /var/lib/tsx/panel-app.conf (later files win), sets the identity of the
+# device (TSX_PANEL_APP_NAME, TSX_PANEL_APP_FRIENDLY_NAME, TSX_PANEL_APP_MAC),
+# waits for the device files of the board and runs the program. At the first
+# start it writes NAME, FRIENDLY_NAME and MAC to /var/lib/tsx/panel-app.conf,
+# so a later change of the host name does not change the device in Home
+# Assistant. See docs/panel-app.md of tsx-linux-common.
+#
+#   tsx-panel-app-run           run the program (exec)
+#   tsx-panel-app-run --print   print the identity and the environment, run nothing
+#
+# Test hooks: TSX_PANEL_APP_CONF, TSX_PANEL_APP_BOARD_CONF,
+# TSX_PANEL_APP_STATE_CONF, TSX_SYS_NET (default /sys/class/net),
+# TSX_HOSTNAME (default: the host name).
+set -u
+CONF=${TSX_PANEL_APP_CONF:-/etc/tsx/panel-app.conf}
+BOARD_CONF=${TSX_PANEL_APP_BOARD_CONF:-/etc/tsx/panel-app-board.conf}
+STATE_CONF=${TSX_PANEL_APP_STATE_CONF:-/var/lib/tsx/panel-app.conf}
+SYS_NET=${TSX_SYS_NET:-/sys/class/net}
+
+PANEL_APP_BIN=/usr/local/bin/tsx-panel-app
+PANEL_APP_PREFDIR=/var/lib/tsx/panel-app
+PANEL_APP_NET_IF=eth0
+PANEL_APP_DEVICES=
+PANEL_APP_WAIT=60
+PANEL_APP_ENV=
+PANEL_APP_DIRS=
+NAME= FRIENDLY_NAME= MAC=
+for f in "$CONF" "$BOARD_CONF"; do
+	if [ -r "$f" ]; then . "$f"; fi
+done
+# The file of this panel holds only the three identity keys. Read them as
+# text, not as a script.
+state_get() {
+	[ -r "$STATE_CONF" ] || return 0
+	sed -n "s/^$1=//p" "$STATE_CONF" | tail -n 1 | sed 's/^"\(.*\)"$/\1/'
+}
+v=$(state_get NAME); [ -n "$v" ] && NAME=$v
+v=$(state_get FRIENDLY_NAME); [ -n "$v" ] && FRIENDLY_NAME=$v
+v=$(state_get MAC); [ -n "$v" ] && MAC=$v
+
+log() { echo "tsx-panel-app-run: $*"; }
+
+valid_name() { printf '%s' "$1" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,29}[a-z0-9])?$'; }
+valid_mac() { printf '%s' "$1" | grep -Eqi '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'; }
+
+host=${TSX_HOSTNAME:-$(hostname 2>/dev/null)}
+new=
+if ! valid_name "$NAME"; then
+	[ -n "$NAME" ] && log "NAME '$NAME' is not a valid device name: using the host name"
+	NAME=$(printf '%s' "$host" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-' '-' | tr -s '-' | sed 's/^-*//' | cut -c1-31 | sed 's/-*$//')
+	valid_name "$NAME" || NAME=tsx-panel
+	new=1
+fi
+if [ -z "$FRIENDLY_NAME" ]; then
+	FRIENDLY_NAME=${host:-$NAME}
+	new=1
+fi
+if ! valid_mac "$MAC"; then
+	hw=$(cat "$SYS_NET/$PANEL_APP_NET_IF/address" 2>/dev/null)
+	if valid_mac "$hw" && [ "$hw" != 00:00:00:00:00:00 ]; then
+		first=$(printf '%d' "0x${hw%%:*}")
+		MAC=$(printf '%02x:%s' $(( (first | 2) & 254 )) "${hw#*:}" | tr 'a-f' 'A-F')
+		new=1
+	else
+		MAC=
+		log "no MAC on $PANEL_APP_NET_IF: the program uses the MAC of its configuration"
+	fi
+fi
+if [ -n "$new" ] && [ -n "$MAC" ] && [ "${1:-}" != --print ]; then
+	# Keep the identity of this panel (written once, atomically).
+	d=$(dirname "$STATE_CONF")
+	mkdir -p "$d" && tmp="$STATE_CONF.tmp.$$" && {
+		echo "# The identity of the panel app in Home Assistant (tsx-panel-app-run wrote it at the first start)."
+		printf 'NAME="%s"\nFRIENDLY_NAME="%s"\nMAC="%s"\n' "$NAME" "$(printf '%s' "$FRIENDLY_NAME" | tr -d '"\\$`')" "$MAC"
+	} > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$STATE_CONF" && log "identity saved in $STATE_CONF"
+fi
+
+export TSX_PANEL_APP_NAME="$NAME" TSX_PANEL_APP_FRIENDLY_NAME="$FRIENDLY_NAME"
+[ -n "$MAC" ] && export TSX_PANEL_APP_MAC="$MAC"
+export ESPHOME_PREFDIR="$PANEL_APP_PREFDIR"
+for w in $PANEL_APP_ENV; do
+	case "$w" in [A-Za-z_]*=*) export "$w";; *) log "ignored PANEL_APP_ENV word '$w'";; esac
+done
+
+if [ "${1:-}" = --print ]; then
+	echo "NAME=$NAME"
+	echo "FRIENDLY_NAME=$FRIENDLY_NAME"
+	echo "MAC=$MAC"
+	echo "BIN=$PANEL_APP_BIN"
+	echo "ENV=$PANEL_APP_ENV"
+	exit 0
+fi
+
+[ -x "$PANEL_APP_BIN" ] || { log "no program $PANEL_APP_BIN"; exit 1; }
+mkdir -p "$PANEL_APP_PREFDIR" && chmod 700 "$PANEL_APP_PREFDIR"
+for d in $PANEL_APP_DIRS; do
+	mkdir -p "$d" && chmod 700 "$d"
+done
+i=0
+for dev in $PANEL_APP_DEVICES; do
+	while [ ! -e "$dev" ] && [ "$i" -lt "$PANEL_APP_WAIT" ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	[ -e "$dev" ] || log "$dev is missing after ${PANEL_APP_WAIT}s: starting anyway"
+done
+log "start $NAME ($FRIENDLY_NAME, MAC ${MAC:-from the configuration})"
+exec "$PANEL_APP_BIN"

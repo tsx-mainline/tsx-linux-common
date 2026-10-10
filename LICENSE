@@ -21,6 +21,8 @@ license.
 A build of the panel app links the ESPHome components of panel-app/esphome
 with the ESPHome runtime (GPL-3.0) and LVGL (MIT) into one program. The
 license of that program is GPL-3.0.
+The patches in panel-app/esphome/patches change files of the ESPHome runtime
+and have the license of the runtime.
 
 The full text of the GNU General Public License version 2 follows.
 

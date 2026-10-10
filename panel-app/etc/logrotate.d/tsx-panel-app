@@ -1,0 +1,9 @@
+/var/log/tsx-panel-app.log {
+	weekly
+	rotate 2
+	size 1M
+	compress
+	missingok
+	notifempty
+	copytruncate
+}

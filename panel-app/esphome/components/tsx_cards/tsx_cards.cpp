@@ -9,9 +9,13 @@
 #include <ctime>
 #include <fcntl.h>
 #include <functional>
+#include <spawn.h>
 #include <sys/inotify.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+#include <ArduinoJson.h>
 
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
@@ -278,6 +282,158 @@ void TsxCards::loop() {
     this->last_clock_check_ = now;
     this->update_clocks_(false);
   }
+  if (now - this->last_setup_poll_ >= 2000) {
+    this->last_setup_poll_ = now;
+    this->check_setup_banner_();
+  }
+  if (this->setup_pid_ > 0 && waitpid(this->setup_pid_, nullptr, WNOHANG) != 0)
+    this->setup_pid_ = -1;
+  if (this->entities_dirty_ && now - this->last_entities_write_ >= 2000) {
+    this->last_entities_write_ = now;
+    this->entities_dirty_ = false;
+    this->write_entities_();
+  }
+}
+
+// ---- the setup banner and the entity list ---------------------------------------------
+
+static long uptime_s() {
+  timespec ts;
+  clock_gettime(CLOCK_BOOTTIME, &ts);
+  return (long) ts.tv_sec;
+}
+
+static bool read_small_file(const std::string &path, std::string &out) {
+  FILE *f = fopen(path.c_str(), "r");
+  if (f == nullptr)
+    return false;
+  char buf[4096];
+  size_t n = fread(buf, 1, sizeof buf, f);
+  fclose(f);
+  out.assign(buf, n);
+  return n > 0 && n < sizeof buf;
+}
+
+// The setup page (tsx-setupd) writes the screen file while its network
+// window is open: {"code", "port", "path", "addresses", "remaining",
+// "uptime"}. The banner shows the address and the code. A file that is
+// older than 30 s (by its uptime field) or missing hides the banner.
+void TsxCards::check_setup_banner_() {
+  std::string text;
+  std::string raw;
+  if (!this->setup_file_.empty() && read_small_file(this->setup_file_, raw)) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, raw.c_str(), raw.size())) {
+      const char *code = doc["code"].as<const char *>();
+      long written = doc["uptime"] | -1000L;
+      long age = uptime_s() - written;
+      if (code != nullptr && code[0] != '\0' && age >= -5 && age <= 30) {
+        int port = doc["port"] | 8080;
+        const char *path = doc["path"] | "/setup";
+        const char *addr = doc["addresses"][0].as<const char *>();
+        char line[200];
+        if (addr != nullptr && addr[0] != '\0')
+          snprintf(line, sizeof line, "Setup: http://%s:%d%s    Code: %s", addr, port, path, code);
+        else
+          snprintf(line, sizeof line, "Setup page: port %d    Code: %s", port, code);
+        text = line;
+      }
+    }
+  }
+  if (text == this->banner_text_)
+    return;
+  this->banner_text_ = text;
+  if (text.empty()) {
+    if (this->banner_ != nullptr)
+      lv_obj_add_flag(this->banner_, LV_OBJ_FLAG_HIDDEN);
+    ESP_LOGI(TAG, "setup banner off");
+    return;
+  }
+  if (this->banner_ == nullptr) {
+    // On the top layer, so a rebuild of the pages keeps it. It takes no
+    // input: a tap goes to the card below it.
+    this->banner_ = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(this->banner_);
+    lv_obj_set_pos(this->banner_, 0, 0);
+    lv_obj_set_size(this->banner_, this->width_, 44);
+    lv_obj_set_style_bg_opa(this->banner_, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(this->banner_, lv_color_hex(0x10405A), 0);
+    lv_obj_remove_flag(this->banner_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(this->banner_, LV_OBJ_FLAG_CLICKABLE);
+    this->banner_label_ = this->label_(this->banner_, FONT_LABEL, 0xFFFFFF);
+    lv_obj_set_width(this->banner_label_, this->width_ - 20);
+    lv_label_set_long_mode(this->banner_label_, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_align(this->banner_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(this->banner_label_);
+  }
+  lv_label_set_text(this->banner_label_, text.c_str());
+  lv_obj_remove_flag(this->banner_, LV_OBJ_FLAG_HIDDEN);
+  // The code is on the screen only. The log line has no code.
+  ESP_LOGI(TAG, "setup banner on");
+}
+
+// The key action "setup": open the network window of the setup page, as
+// `tsx-config setup` does on every panel.
+void TsxCards::open_setup_() {
+  if (this->setup_pid_ > 0) {
+    ESP_LOGI(TAG, "setup: still running");
+    return;
+  }
+  const char *cmd = getenv("TSX_PANEL_APP_SETUP_CMD");
+  if (cmd == nullptr || cmd[0] == '\0')
+    cmd = "tsx-config";
+  char *const argv[] = {const_cast<char *>(cmd), const_cast<char *>("setup"), nullptr};
+  pid_t pid;
+  int err = posix_spawnp(&pid, cmd, nullptr, nullptr, argv, environ);
+  if (err != 0) {
+    ESP_LOGW(TAG, "setup: cannot run %s: %s", cmd, strerror(err));
+    return;
+  }
+  this->setup_pid_ = pid;
+  // Show the banner as soon as the setup page writes its file.
+  this->last_setup_poll_ = millis() - 1000;
+}
+
+// The entities of the layout and their last states, for the layout editor
+// of the setup page. The file is small and has no secret.
+void TsxCards::write_entities_() {
+  if (this->entities_file_.empty())
+    return;
+  JsonDocument doc;
+  doc["uptime"] = uptime_s();
+  JsonArray list = doc["entities"].to<JsonArray>();
+  for (auto &it : this->slots_) {
+    const Slot *s = it.second.get();
+    if (!s->attribute.empty())
+      continue;
+    JsonObject o = list.add<JsonObject>();
+    o["entity_id"] = s->entity_id;
+    std::string name;
+    auto fn = this->slots_.find(s->entity_id + '\x1f' + "friendly_name");
+    if (fn != this->slots_.end() && fn->second->has_value)
+      name = fn->second->value;
+    for (auto *v : s->views)
+      if (name.empty() && v->spec != nullptr)
+        name = v->spec->label;
+    o["name"] = name;
+    if (s->has_value)
+      o["state"] = s->value;
+    else
+      o["state"] = nullptr;
+  }
+  std::string dir = this->entities_file_.substr(0, this->entities_file_.rfind('/'));
+  if (!dir.empty())
+    mkdir(dir.c_str(), 0755);
+  std::string tmp = this->entities_file_ + ".tmp";
+  FILE *f = fopen(tmp.c_str(), "w");
+  if (f == nullptr)
+    return;
+  std::string out;
+  serializeJson(doc, out);
+  bool ok = fwrite(out.data(), 1, out.size(), f) == out.size();
+  ok = fclose(f) == 0 && ok;
+  if (!ok || chmod(tmp.c_str(), 0644) != 0 || rename(tmp.c_str(), this->entities_file_.c_str()) != 0)
+    unlink(tmp.c_str());
 }
 
 void TsxCards::mark_(const char *what) {
@@ -434,6 +590,7 @@ void TsxCards::show_error_(const std::string &text) {
 }
 
 void TsxCards::build_() {
+  this->entities_dirty_ = true;
   for (auto &it : this->slots_)
     it.second->views.clear();
   this->views_.clear();
@@ -711,6 +868,7 @@ Slot *TsxCards::watch_(const std::string &entity, const char *attribute, CardVie
 }
 
 void TsxCards::on_value_(Slot *s) {
+  this->entities_dirty_ = true;
   if (!this->first_value_logged_) {
     this->first_value_logged_ = true;
     this->mark_("first entity value");
@@ -1014,6 +1172,10 @@ void TsxCards::run_action_(const ActionSpec &a, const std::string &entity, const
     case ActionSpec::PREV_PAGE:
       ESP_LOGI(TAG, "%s: previous page", origin);
       this->prev_page();
+      break;
+    case ActionSpec::SETUP:
+      ESP_LOGI(TAG, "%s: open the setup page", origin);
+      this->open_setup_();
       break;
     default:
       ESP_LOGI(TAG, "%s: no action", origin);

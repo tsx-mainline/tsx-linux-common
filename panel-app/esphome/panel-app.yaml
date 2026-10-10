@@ -5,14 +5,16 @@
 #     panel_app: !include tsx-panel-app/panel-app.yaml
 #   external_components:
 #     - source: {type: local, path: tsx-panel-app/components}
-#       components: [tsx_cards]
+#       components: [tsx_cards, tsx_runtime]
 #
 # The board YAML gives:
-#   - esphome: name and friendly_name, and the platform (for example host:)
+#   - esphome: name and friendly_name (the defaults: the service sets the
+#     names of the panel at run time), and the platform (for example host:)
 #   - a display with the id panel_display and a touchscreen with the id
 #     panel_touch
 #   - the keys of the panel: each key calls id(panel_cards).key_press("NAME")
-#   - secrets.yaml with api_key (the API encryption key)
+# The program has no per-panel value: tsx_runtime reads the names and the
+# API encryption key at start, and patches/host-mac.patch the MAC.
 
 logger:
   level: INFO
@@ -21,7 +23,13 @@ api:
   # The default (15 min) ends the process when no client is connected.
   reboot_timeout: 0s
   encryption:
-    key: !secret api_key
+    # A placeholder, not a secret. It makes ESPHome build the encrypted API
+    # with no plaintext fallback. tsx_runtime replaces it at start with the
+    # key of the panel (/run/tsx/esphome.key).
+    key: "dHN4LXBhbmVsLWFwcCBydW4tdGltZSBrZXkgc2xvdCE="
+
+tsx_runtime:
+  key_file: /run/tsx/esphome.key
 
 time:
   - platform: homeassistant

@@ -72,6 +72,8 @@ class TsxCards : public Component {
 
   void add_layout_file(const std::string &path) { this->layout_files_.push_back(path); }
   void set_page_bar_height(int h) { this->bar_h_ = h; }
+  void set_setup_file(const std::string &path) { this->setup_file_ = path; }
+  void set_entities_file(const std::string &path) { this->entities_file_ = path; }
   void set_font(uint8_t slot, const lv_font_t *font) {
     if (slot < FONT_COUNT)
       this->fonts_[slot] = font;
@@ -118,6 +120,9 @@ class TsxCards : public Component {
   lv_obj_t *label_(lv_obj_t *parent, uint8_t font, uint32_t color);
   const lv_font_t *font_(uint8_t slot) const;
   void watch_files_();
+  void check_setup_banner_();
+  void open_setup_();
+  void write_entities_();
   std::string pick_file_() const;
   void mark_(const char *what);
 
@@ -163,6 +168,20 @@ class TsxCards : public Component {
   bool reload_pending_{false};
   uint32_t last_poll_{0};
   long long last_sig_{0};
+
+  // The setup banner: the address and the pairing code of the setup page
+  // while its network window is open (see docs/panel-app.md).
+  std::string setup_file_{"/run/tsx-setup/screen.json"};
+  lv_obj_t *banner_{nullptr};
+  lv_obj_t *banner_label_{nullptr};
+  std::string banner_text_;
+  uint32_t last_setup_poll_{0};
+  int setup_pid_{-1};
+
+  // The entities that the app knows, for the layout editor.
+  std::string entities_file_{"/run/tsx/panel-app/entities.json"};
+  bool entities_dirty_{false};
+  uint32_t last_entities_write_{0};
 
   // Clock cards.
   uint32_t last_clock_check_{0};

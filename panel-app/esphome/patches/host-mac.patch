@@ -1,0 +1,33 @@
+host-mac.patch: the MAC of the panel app at run time (TSX_PANEL_APP_MAC).
+For the host component of ESPHome 2026.9.1. The board build applies it to
+src/esphome of the generated project with patch -p1.
+See docs/panel-app.md, "Identity and API key".
+
+--- a/components/host/helpers.cpp
++++ b/components/host/helpers.cpp
+@@ -7,6 +7,8 @@
+ #include <netinet/in.h>
+ #include <sys/ioctl.h>
+ #endif
++#include <cstdio>
++#include <cstdlib>
+ #include <unistd.h>
+ 
+ #include "esphome/core/defines.h"
+@@ -41,6 +43,16 @@
+ void get_mac_address_raw(uint8_t *mac) {  // NOLINT(readability-non-const-parameter)
+   static const uint8_t esphome_host_mac_address[MAC_ADDRESS_SIZE] = USE_ESPHOME_HOST_MAC_ADDRESS;
+   memcpy(mac, esphome_host_mac_address, sizeof(esphome_host_mac_address));
++  // TSX: the MAC of the device comes from the environment at run time
++  // (TSX_PANEL_APP_MAC, "aa:bb:cc:dd:ee:ff"), so one program serves every
++  // panel. Without a valid value, the MAC of the configuration stays.
++  const char *env = getenv("TSX_PANEL_APP_MAC");
++  unsigned int b[MAC_ADDRESS_SIZE];
++  char end;
++  if (env != nullptr && sscanf(env, "%2x:%2x:%2x:%2x:%2x:%2x%c", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5], &end) == 6) {
++    for (int i = 0; i < MAC_ADDRESS_SIZE; i++)
++      mac[i] = (uint8_t) b[i];
++  }
+ }
+ 
+ }  // namespace esphome

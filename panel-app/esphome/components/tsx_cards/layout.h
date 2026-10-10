@@ -17,7 +17,7 @@ const char *card_type_name(CardType t);
 
 // What a tap on a card or a key press does.
 struct ActionSpec {
-  enum Kind { DEFAULT, NONE, CALL, PAGE, NEXT_PAGE, PREV_PAGE };
+  enum Kind { DEFAULT, NONE, CALL, PAGE, NEXT_PAGE, PREV_PAGE, SETUP };
   Kind kind{DEFAULT};
   std::string action;                                       // CALL: "domain.service"
   std::vector<std::pair<std::string, std::string>> data;    // CALL: data, as text
