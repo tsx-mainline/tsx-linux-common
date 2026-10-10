@@ -1,0 +1,1045 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel layout</title>
+<style>
+:root {
+  --bg:#0b0e12; --panel:#141920; --fg:#e8ecf1; --muted:#8b96a3; --line:#232a33;
+  --accent:#4fb2e8; --accent-fg:#04141c; --ok:#3ecf8e; --bad:#e8615f; --warn:#e8b34f;
+  --field:#0e1319;
+}
+* { box-sizing:border-box; }
+html,body { background:var(--bg); color:var(--fg); margin:0; min-height:100%;
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; font-size:17px; }
+.wrap { max-width:960px; margin:0 auto; padding:16px 16px 64px; }
+h1 { font-size:1.4rem; margin:8px 0 4px; }
+h2 { font-size:1.05rem; margin:26px 0 10px; color:var(--fg); border-top:1px solid var(--line); padding-top:18px; }
+.sub { color:var(--muted); margin:0 0 16px; line-height:1.4; }
+a { color:var(--accent); }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+label { display:block; font-size:.92rem; color:var(--muted); margin:12px 0 6px; }
+label.first, .card > label:first-child { margin-top:0; }
+.hint { font-size:.85rem; color:var(--muted); margin:4px 0 0; line-height:1.4; }
+input[type=text], input[type=password], input[type=url], input[type=number], select, textarea {
+  width:100%; min-height:48px; font-size:1.02rem; padding:8px 12px; border-radius:10px;
+  border:1px solid var(--line); background:var(--field); color:var(--fg); font-family:inherit;
+}
+input[type=color] { width:56px; height:44px; padding:2px; border-radius:10px; border:1px solid var(--line); background:var(--field); }
+input[type=checkbox] { width:22px; height:22px; flex-shrink:0; }
+textarea { resize:vertical; min-height:120px; }
+textarea.mono { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.9rem; line-height:1.35; min-height:260px; }
+button {
+  min-height:48px; font-size:1.02rem; padding:8px 18px; border-radius:10px; border:none;
+  background:var(--accent); color:var(--accent-fg); font-weight:600; cursor:pointer;
+}
+button.secondary { background:#232a33; color:var(--fg); }
+button.danger { background:#3a2020; color:#ffb3b1; }
+button.small { min-height:44px; min-width:44px; padding:6px 12px; font-size:.95rem; }
+button:disabled { opacity:.5; }
+.row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+.row > .grow { flex:1; min-width:140px; }
+.status { font-size:.9rem; margin-top:6px; min-height:1.2em; }
+.status.ok { color:var(--ok); } .status.bad { color:var(--bad); } .status.warn { color:var(--warn); }
+.bar { position:sticky; top:0; z-index:5; background:var(--bg); padding:10px 0 8px; border-bottom:1px solid var(--line); margin-bottom:14px; }
+.bar .row { gap:8px; }
+.fields { display:grid; grid-template-columns:1fr; gap:0 12px; }
+.nums { display:grid; grid-template-columns:repeat(4,1fr); gap:0 8px; }
+.nums input { padding:8px 6px; text-align:center; }
+@media (min-width:560px) { .fields { grid-template-columns:1fr 1fr; } }
+.item { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:6px; border:1px solid var(--line); border-radius:10px; margin-bottom:8px; background:var(--field); }
+.item.sel { border-color:var(--accent); }
+.item.bad { border-color:var(--bad); }
+.acts { display:flex; gap:6px; margin-left:auto; }
+.item .name { flex:1 1 140px; min-width:0; }
+.item .pick { flex:1; min-width:0; text-align:left; background:transparent; color:var(--fg); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.item .num { width:34px; text-align:center; color:var(--muted); }
+.item .msg { font-size:.8rem; color:var(--bad); }
+.preview { display:grid; gap:4px; padding:8px; border-radius:12px; background:#101418; margin-bottom:10px; }
+.cell { border:1px dashed #2a323c; border-radius:6px; min-height:40px; background:transparent; padding:0; }
+.pcard { border-radius:8px; padding:4px 6px; font-size:.78rem; overflow:hidden; background:#2a3038; color:#f0f0f0;
+  border:2px solid transparent; text-align:left; line-height:1.2; min-height:40px; z-index:2; }
+.pcard.sel { border-color:var(--accent); }
+.pcard b { display:block; font-size:.74rem; opacity:.8; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+.chip { border:1px dashed var(--bad); color:var(--bad); border-radius:8px; padding:4px 8px; font-size:.82rem; background:transparent; min-height:32px; }
+.problems ul { margin:6px 0 0; padding-left:20px; }
+.problems li { margin:4px 0; cursor:pointer; line-height:1.35; }
+.problems li.e { color:var(--bad); }
+.problems li.w { color:var(--warn); }
+.problems.old { opacity:.55; }
+.icons { max-height:150px; overflow:auto; display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.icons button { min-height:36px; padding:4px 10px; font-size:.85rem; font-weight:500; }
+details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
+.toggle { display:flex; align-items:center; gap:10px; margin-top:8px; }
+.toggle label { margin:0; }
+.keyrow { display:grid; grid-template-columns:90px 1fr; gap:8px; align-items:start; margin-bottom:10px; }
+.keyrow .kname { padding-top:12px; font-weight:600; }
+.sub-form { margin:8px 0 0 0; padding:10px; border:1px solid var(--line); border-radius:10px; }
+#gate, #stale, #unavail, #broken, #main { display:none; }
+#stale { border-color:var(--warn); }
+@media (max-width:420px) { .wrap { padding:10px 10px 64px; } .card { padding:12px; } }
+</style></head>
+<body><div class="wrap">
+  <h1>Panel layout</h1>
+  <p class="sub">Choose the pages and the cards that the screen of the panel shows. The panel shows a saved layout after a few seconds.
+  <a href="/setup">Back to the setup page</a></p>
+
+  <div id="unavail" class="card">
+    <p id="unavail-text">Setup is not available over the network right now. Open the setup page on the panel first.</p>
+  </div>
+
+  <div id="gate" class="card">
+    <p>Enter the pairing code that the screen of the panel shows.</p>
+    <label for="pair-code">Pairing code</label>
+    <input id="pair-code" type="text" inputmode="numeric" maxlength="6" autocomplete="off">
+    <div class="row" style="margin-top:14px"><button id="pair-go">Continue</button></div>
+    <div id="pair-status" class="status"></div>
+  </div>
+
+  <div id="stale" class="card">
+    <p id="stale-text">The layout changed after this page loaded. Nothing is saved.</p>
+    <p class="hint">Your changes stay on this page until you reload the layout. To keep them, copy the raw JSON first.</p>
+    <button type="button" id="reload-btn" class="secondary">Reload the layout</button>
+  </div>
+
+  <div id="broken" class="card">
+    <p id="broken-text">The layout file is not valid. Fix it in the raw JSON view below, or start a new layout.</p>
+    <button type="button" id="new-btn" class="secondary">Start a new layout</button>
+  </div>
+
+  <div id="main">
+    <div class="bar">
+      <div class="row">
+        <button id="save-btn">Save</button>
+        <button id="revert-btn" class="secondary">Revert</button>
+        <span id="bar-text" class="status" style="margin:0"></span>
+      </div>
+    </div>
+    <div id="source-note" class="hint" style="margin-bottom:12px"></div>
+    <div id="problems" class="card problems" style="display:none"></div>
+
+    <div id="sections">
+      <h2 style="margin-top:6px;border-top:0;padding-top:0">Pages</h2>
+      <div class="card">
+        <div id="page-list"></div>
+        <button type="button" id="page-add" class="secondary">Add a page</button>
+        <div id="page-form" class="nums" style="margin-top:10px;grid-template-columns:1fr 1fr"></div>
+      </div>
+
+      <h2>Cards of <span id="page-title"></span></h2>
+      <div class="card">
+        <div id="preview" class="preview"></div>
+        <div id="chips" class="chips"></div>
+        <div class="hint" id="preview-hint"></div>
+        <div id="card-list" style="margin-top:12px"></div>
+        <div class="row" style="margin-top:6px">
+          <select id="card-add-type" class="grow" aria-label="Type of the new card"></select>
+          <button type="button" id="card-add">Add a card</button>
+        </div>
+      </div>
+      <div class="card" id="card-edit"></div>
+
+      <h2>Grid</h2>
+      <div class="card">
+        <div id="grid-form" class="nums" style="grid-template-columns:1fr 1fr 1fr"></div>
+        <div class="hint">The default of all pages. A page can have its own columns and rows.</div>
+      </div>
+
+      <h2>Theme</h2>
+      <div class="card" id="theme-form"></div>
+
+      <h2>Keys</h2>
+      <div class="card" id="keys-form"></div>
+
+      <h2>Home Assistant entity list</h2>
+      <div class="card" id="ha-form"></div>
+    </div>
+
+    <details id="raw-wrap">
+      <summary>Raw JSON</summary>
+      <div class="card">
+        <textarea id="raw-text" class="mono" spellcheck="false" autocomplete="off"></textarea>
+        <div class="row" style="margin-top:10px">
+          <button type="button" id="raw-apply" class="secondary">Use this JSON</button>
+          <button type="button" id="raw-refresh" class="secondary">Show the layout again</button>
+        </div>
+        <div id="raw-status" class="status"></div>
+      </div>
+    </details>
+  </div>
+  <datalist id="entity-list"></datalist>
+</div>
+<script>
+(function(){
+  "use strict";
+  var $ = function(id){ return document.getElementById(id); };
+
+  var TYPE_NAME = {light:"Light", "switch":"Switch", scene:"Scene", script:"Script", sensor:"Sensor", weather:"Weather", clock:"Clock"};
+  var KEY_NAMES = ["home", "up", "down", "power", "lights"];
+  var THEME_NAME = {background:"Background", card:"Card", card_on:"Card that is on", text:"Text", text_dim:"Dim text"};
+  var ENTITY_RE = /^[a-z0-9_]+\.[a-z0-9_]+$/;
+  var ICON_RE = /^mdi:[a-z0-9-]+$/;
+  var COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
+  var KEY_NAME_RE = /^[A-Za-z0-9_.-]{1,32}$/;
+
+  var S = {
+    layout: null, source: "none", text: "", revision: "", icons: [], types: [], domains: {}, typeKeys: {}, themeKeys: [],
+    limits: {max_pages:16, max_cards:48, max_grid:12, max_gap:40, max_precision:6}, defaults: {theme:{}, grid:{columns:4, rows:3, gap:10}},
+    entities: [], haToken: false,
+    page: 0, card: -1, dirty: false, saved: false, version: 0, check: null, checkVersion: -1, timer: null,
+    rawEdited: false, revertArmed: false
+  };
+
+  function api(method, path, body){
+    return fetch(path, {
+      method: method,
+      headers: body ? {"Content-Type":"application/json"} : {},
+      body: body ? JSON.stringify(body) : undefined,
+      credentials: "same-origin"
+    }).then(function(r){ return r.json().then(function(j){ return {status:r.status, body:j}; }); });
+  }
+
+  // ---- small helpers for the DOM ----
+  function clear(e){ e.innerHTML = ""; return e; }
+  function el(tag, props, kids){
+    var e = document.createElement(tag);
+    props = props || {};
+    Object.keys(props).forEach(function(k){
+      if (k === "on") { Object.keys(props.on).forEach(function(t){ e.addEventListener(t, props.on[t]); }); }
+      else if (k === "style") { Object.keys(props.style).forEach(function(s){ e.style[s] = props.style[s]; }); }
+      else if (k === "list" || k.indexOf("-") > 0) e.setAttribute(k, props[k]);   // read-only properties, and aria-*
+      else e[k] = props[k];
+    });
+    (kids || []).forEach(function(c){ e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return e;
+  }
+  function btn(text, cls, fn, title){
+    var b = el("button", {type:"button", className:cls || "secondary", textContent:text, on:{click:fn}});
+    if (title) b.title = title;
+    return b;
+  }
+  function field(parent, labelText, input, hint){
+    var box = el("div", {}, []);
+    if (labelText) box.appendChild(el("label", {textContent:labelText, htmlFor:input.id || ""}));
+    box.appendChild(input);
+    if (hint) box.appendChild(el("div", {className:"hint", textContent:hint}));
+    parent.appendChild(box);
+    return box;
+  }
+  var uid = 0;
+  function newId(p){ uid++; return p + uid; }
+  function textInput(value, props){
+    var i = el("input", Object.assign({type:"text", id:newId("f"), value:value === undefined ? "" : String(value), autocomplete:"off", spellcheck:false}, props || {}));
+    return i;
+  }
+
+  // ---- the model: the layout object, edited in place ----
+  function isObj(v){ return v && typeof v === "object" && !Array.isArray(v); }
+  function pages(){ return S.layout.pages; }
+  function curPage(){ return S.layout.pages[S.page] || null; }
+  function cardsOf(p){ return Array.isArray(p.cards) ? p.cards : []; }
+  function curCard(){ var p = curPage(), c = p && S.card >= 0 ? cardsOf(p)[S.card] : null; return isObj(c) ? c : null; }
+  function gridDef(k){ var g = isObj(S.layout.grid) ? S.layout.grid : {}; return g[k] !== undefined ? g[k] : S.defaults.grid[k]; }
+  function pageDim(p, k){ return p[k] !== undefined ? p[k] : gridDef(k); }
+  function setOrDelete(o, k, v){ if (v === "" || v === undefined || v === null) delete o[k]; else o[k] = v; }
+  function numOrDelete(o, k, text){
+    text = String(text).trim();
+    if (text === "") { delete o[k]; return; }
+    var n = Number(text);
+    o[k] = isFinite(n) ? n : text;
+  }
+  function pageName(p, i){ return (typeof p.name === "string" && p.name !== "") ? p.name : "Page " + (i + 1); }
+  function guessAction(card, svc){
+    var e = card && typeof card.entity_id === "string" ? card.entity_id : "";
+    return (e.indexOf(".") > 0 ? e.split(".")[0] : "light") + "." + svc;
+  }
+
+  function touch(){
+    S.version++; S.dirty = true; S.saved = false; S.revertArmed = false;
+    scheduleCheck();
+    $("problems").className = "card problems" + (fresh() ? "" : " old");
+    renderPreview(); renderCardList(); renderPageTitle(); updateRaw(); updateBar();
+  }
+
+  // ---- the checker ----
+  function scheduleCheck(){
+    if (S.timer) clearTimeout(S.timer);
+    S.timer = setTimeout(runCheck, 500);
+  }
+  function runCheck(){
+    S.timer = null;
+    if (!S.layout) return Promise.resolve();
+    var v = S.version;
+    return api("POST", "/setup/api/layout/check", {layout: S.layout}).then(function(r){
+      if (v !== S.version || r.status !== 200 || !r.body) return;
+      S.check = r.body; S.checkVersion = v;
+      renderProblems(); renderPreview(); renderCardList(); updateBar();
+    }).catch(function(){});
+  }
+  function fresh(){ return S.check && S.checkVersion === S.version; }
+  function problemList(){
+    var out = [];
+    if (!S.check) return out;
+    (S.check.errors || []).forEach(function(t){ out.push({kind:"e", text:t}); });
+    (S.check.warnings || []).forEach(function(t){ out.push({kind:"w", text:t}); });
+    return out;
+  }
+  function problemsOfCard(pi, ci){
+    var pre = "page " + (pi + 1) + " card " + (ci + 1) + ":";
+    return problemList().filter(function(p){ return p.text.indexOf(pre) === 0; });
+  }
+
+  // ---- the placement: the same rules as the app (tsx-layout-check) ----
+  function isInt(v, lo, hi){ return typeof v === "number" && Math.floor(v) === v && v >= lo && v <= hi; }
+  function validTap(v){
+    if (typeof v === "string") return v === "none" || v === "default";
+    if (!isObj(v) || typeof v.action !== "string" || !ENTITY_RE.test(v.action)) return false;
+    var ks = Object.keys(v);
+    for (var i = 0; i < ks.length; i++) {
+      if (ks[i] === "action") continue;
+      if (ks[i] !== "data" || !isObj(v.data)) return false;
+      var dk = Object.keys(v.data);
+      for (var j = 0; j < dk.length; j++) { var t = typeof v.data[dk[j]]; if (t !== "string" && t !== "number" && t !== "boolean") return false; }
+    }
+    return true;
+  }
+  // the size and the cell of a card, or null when the app leaves the card out
+  function cardGeometry(c, cols, rows){
+    if (!isObj(c) || typeof c.type !== "string" || S.types.indexOf(c.type) < 0) return null;
+    if (c.type !== "clock") {
+      if (typeof c.entity_id !== "string" || !ENTITY_RE.test(c.entity_id)) return null;
+      var need = S.domains[c.type];
+      if (need && c.entity_id.split(".")[0] !== need) return null;
+    }
+    if ("label" in c && typeof c.label !== "string") return null;
+    if ("icon" in c && (typeof c.icon !== "string" || !ICON_RE.test(c.icon))) return null;
+    var g = {w:1, h:1, x:-1, y:-1};
+    if ("w" in c) { if (!isInt(c.w, 1, cols)) return null; g.w = c.w; }
+    if ("h" in c) { if (!isInt(c.h, 1, rows)) return null; g.h = c.h; }
+    if (("x" in c) !== ("y" in c)) return null;
+    if ("x" in c) {
+      if (!isInt(c.x, 0, cols - 1) || !isInt(c.y, 0, rows - 1)) return null;
+      if (c.x + g.w > cols || c.y + g.h > rows) return null;
+      g.x = c.x; g.y = c.y;
+    }
+    if (c.type === "sensor") {
+      if ("attribute" in c && (typeof c.attribute !== "string" || c.attribute === "")) return null;
+      if ("unit" in c && typeof c.unit !== "string") return null;
+      if ("precision" in c && !isInt(c.precision, 0, 6)) return null;
+    }
+    if (c.type === "clock") {
+      if ("format" in c && (typeof c.format !== "string" || c.format === "")) return null;
+      if ("date_format" in c && typeof c.date_format !== "string") return null;
+    }
+    if ("tap" in c && !validTap(c.tap)) return null;
+    return g;
+  }
+  // Fixed cards first, then the others in the first free cell, row by row.
+  // Returns {index: {x, y, w, h}} for the cards that the app shows.
+  function localPlace(pi){
+    var p = pages()[pi], cols = pageDim(p, "columns"), rows = pageDim(p, "rows"), list = cardsOf(p);
+    var out = {};
+    if (!isInt(cols, 1, S.limits.max_grid) || !isInt(rows, 1, S.limits.max_grid)) return out;
+    var used = [], x, y, i, j;
+    for (y = 0; y < rows; y++) { used.push([]); for (x = 0; x < cols; x++) used[y].push(false); }
+    function free(a, b, w, h){ for (var q = b; q < b + h; q++) for (var r = a; r < a + w; r++) if (used[q][r]) return false; return true; }
+    function take(a, b, w, h){ for (var q = b; q < b + h; q++) for (var r = a; r < a + w; r++) used[q][r] = true; }
+    var geo = list.map(function(c){ return cardGeometry(c, cols, rows); });
+    for (i = 0; i < list.length; i++) {
+      if (!geo[i] || geo[i].x < 0) continue;
+      if (!free(geo[i].x, geo[i].y, geo[i].w, geo[i].h)) { geo[i] = null; continue; }
+      take(geo[i].x, geo[i].y, geo[i].w, geo[i].h);
+      out[i] = {x:geo[i].x, y:geo[i].y, w:geo[i].w, h:geo[i].h};
+    }
+    for (i = 0; i < list.length; i++) {
+      var g = geo[i];
+      if (!g || g.x >= 0) continue;
+      var spot = null;
+      for (y = 0; y + g.h <= rows && !spot; y++) for (x = 0; x + g.w <= cols; x++) { if (free(x, y, g.w, g.h)) { spot = [x, y]; break; } }
+      if (!spot) continue;
+      take(spot[0], spot[1], g.w, g.h);
+      out[i] = {x:spot[0], y:spot[1], w:g.w, h:g.h};
+    }
+    return out;
+  }
+  // the places of the cards of page pi: from the last check when it matches
+  // the layout, else from the rules above
+  function placement(pi){
+    if (fresh() && S.check.placed && S.check.placed[pi]) {
+      var m = {};
+      S.check.placed[pi].cards.forEach(function(c){ m[c.index] = {x:c.x, y:c.y, w:c.w, h:c.h}; });
+      return m;
+    }
+    return localPlace(pi);
+  }
+
+  // ---- rendering ----
+  function renderAll(){
+    var ok = !!S.layout;
+    $("sections").style.display = ok ? "block" : "none";
+    $("broken").style.display = ok ? "none" : "block";
+    $("source-note").textContent = !ok ? "" :
+      S.source === "board" ? "You see the default layout of the board. Your first save makes your own layout." :
+      S.source === "none" ? "You see an example layout. Your first save makes your own layout." : "";
+    if (ok) {
+      if (S.page >= pages().length) S.page = pages().length - 1;
+      if (S.page < 0) S.page = 0;
+      renderPages(); renderGrid(); renderPageTitle(); renderPreview(); renderCardList(); renderCardEdit();
+      renderTheme(); renderKeys(); renderHa(); renderProblems();
+    }
+    updateRaw(true); updateBar();
+  }
+
+  function updateBar(){
+    var t = $("bar-text"), n = fresh() ? (S.check.errors || []).length : 0;
+    if (n) { t.className = "status bad"; t.textContent = n + (n === 1 ? " error" : " errors") + ". Fix them to save."; }
+    else if (S.dirty) { t.className = "status warn"; t.textContent = "Not saved"; }
+    else if (S.saved) { t.className = "status ok"; t.textContent = "Saved. The panel shows the new layout in a few seconds."; }
+    else { t.className = "status"; t.textContent = ""; }
+    $("save-btn").disabled = !S.layout;
+    $("revert-btn").textContent = S.revertArmed ? "Drop my changes" : "Revert";
+  }
+
+  function renderProblems(){
+    var box = clear($("problems")), list = problemList();
+    if (!list.length) { box.style.display = "none"; return; }
+    box.style.display = "block";
+    box.className = "card problems" + (fresh() ? "" : " old");
+    var errs = list.filter(function(p){ return p.kind === "e"; }).length;
+    box.appendChild(el("b", {textContent: errs ? "The layout has problems" : "Notes about the layout"}));
+    var ul = el("ul", {});
+    list.forEach(function(p){
+      var li = el("li", {className:p.kind, textContent:p.text, on:{click:function(){ gotoProblem(p.text); }}});
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+  }
+  function gotoProblem(text){
+    var m = /^page (\d+)(?: card (\d+))?:/.exec(text);
+    if (!m) return;
+    S.page = Math.min(pages().length, Number(m[1])) - 1;
+    S.card = m[2] ? Number(m[2]) - 1 : -1;
+    renderAll();
+  }
+
+  // ---- pages ----
+  function remapKeys(fn){
+    if (!isObj(S.layout.keys)) return;
+    Object.keys(S.layout.keys).forEach(function(k){
+      var v = S.layout.keys[k];
+      if (typeof v === "string" && /^page:[0-9]+$/.test(v)) {
+        var n = fn(Number(v.slice(5)));
+        if (n === null) delete S.layout.keys[k]; else S.layout.keys[k] = "page:" + n;
+      }
+    });
+  }
+  function renderPages(){
+    var box = clear($("page-list"));
+    pages().forEach(function(p, i){
+      var row = el("div", {className:"item" + (i === S.page ? " sel" : "")});
+      row.appendChild(el("button", {type:"button", className:"small secondary", textContent:String(i + 1), title:"Edit the cards of this page",
+        on:{click:function(){ S.page = i; S.card = -1; renderAll(); }}}));
+      var name = el("input", {type:"text", className:"name", value:typeof p.name === "string" ? p.name : "", placeholder:"Page " + (i + 1),
+        autocomplete:"off", "aria-label":"Name of page " + (i + 1),
+        on:{input:function(ev){ setOrDelete(p, "name", ev.target.value); touch(); },
+            focus:function(){
+              if (S.page === i) return;
+              S.page = i; S.card = -1;
+              $("page-list").querySelectorAll(".item").forEach(function(r, n){ r.className = "item" + (n === i ? " sel" : ""); });
+              renderPageForm(); renderPageTitle(); renderPreview(); renderCardList(); renderCardEdit();
+            }}});
+      row.appendChild(name);
+      var rm = btn("Remove", "small danger", function(){ removePage(i); }, "Remove the page");
+      rm.disabled = pages().length < 2;
+      row.appendChild(el("div", {className:"acts"}, [
+        btn("Up", "small secondary", function(){ movePage(i, -1); }, "Move the page up"),
+        btn("Down", "small secondary", function(){ movePage(i, 1); }, "Move the page down"), rm]));
+      box.appendChild(row);
+    });
+    $("page-add").disabled = pages().length >= S.limits.max_pages;
+    renderPageForm();
+  }
+  function renderPageForm(){
+    var form = clear($("page-form")), p = curPage();
+    if (!p) return;
+    var cols = el("input", {type:"number", id:"pg-cols", min:"1", max:String(S.limits.max_grid), value:p.columns === undefined ? "" : String(p.columns), placeholder:String(gridDef("columns")),
+      on:{input:function(ev){ numOrDelete(p, "columns", ev.target.value); touch(); }}});
+    var rows2 = el("input", {type:"number", id:"pg-rows", min:"1", max:String(S.limits.max_grid), value:p.rows === undefined ? "" : String(p.rows), placeholder:String(gridDef("rows")),
+      on:{input:function(ev){ numOrDelete(p, "rows", ev.target.value); touch(); }}});
+    field(form, "Columns of this page", cols);
+    field(form, "Rows of this page", rows2);
+  }
+  function movePage(i, d){
+    var j = i + d;
+    if (j < 0 || j >= pages().length) return;
+    var a = pages()[i]; pages()[i] = pages()[j]; pages()[j] = a;
+    remapKeys(function(n){ return n === i + 1 ? j + 1 : (n === j + 1 ? i + 1 : n); });
+    S.page = j; S.card = -1;
+    touch(); renderAll();
+  }
+  function removePage(i){
+    if (pages().length < 2) return;
+    pages().splice(i, 1);
+    remapKeys(function(n){ return n === i + 1 ? null : (n > i + 1 ? n - 1 : n); });
+    S.page = Math.max(0, Math.min(S.page, pages().length - 1)); S.card = -1;
+    S.check = null;
+    touch(); renderAll();
+  }
+  $("page-add").addEventListener("click", function(){
+    if (!S.layout || pages().length >= S.limits.max_pages) return;
+    pages().push({name:"Page " + (pages().length + 1), cards:[]});
+    S.page = pages().length - 1; S.card = -1;
+    touch(); renderAll();
+  });
+  function renderPageTitle(){
+    var p = curPage();
+    $("page-title").textContent = p ? pageName(p, S.page) : "";
+  }
+
+  // ---- grid defaults ----
+  function renderGrid(){
+    var form = clear($("grid-form"));
+    if (!isObj(S.layout.grid)) { /* made when the user types */ }
+    [["columns", "Columns", 1, S.limits.max_grid], ["rows", "Rows", 1, S.limits.max_grid], ["gap", "Gap (pixels)", 0, S.limits.max_gap]].forEach(function(f){
+      var g = isObj(S.layout.grid) ? S.layout.grid : {};
+      var inp = el("input", {type:"number", id:"gr-" + f[0], min:String(f[2]), max:String(f[3]), value:g[f[0]] === undefined ? "" : String(g[f[0]]), placeholder:String(S.defaults.grid[f[0]]),
+        on:{input:function(ev){
+          if (!isObj(S.layout.grid)) S.layout.grid = {};
+          numOrDelete(S.layout.grid, f[0], ev.target.value);
+          if (!Object.keys(S.layout.grid).length) delete S.layout.grid;
+          touch();
+        }}});
+      field(form, f[1], inp);
+    });
+  }
+
+  // ---- the preview and the list of cards ----
+  function cardTitle(c){
+    if (!isObj(c)) return "(not a card)";
+    var t = TYPE_NAME[c.type] || String(c.type || "?");
+    var w = (typeof c.label === "string" && c.label) ? c.label : (typeof c.entity_id === "string" ? c.entity_id : "");
+    return w ? t + " · " + w : t;
+  }
+  function themeColor(k){
+    var t = isObj(S.layout.theme) ? S.layout.theme : {};
+    return (typeof t[k] === "string" && COLOR_RE.test(t[k])) ? t[k] : (S.defaults.theme[k] || "");
+  }
+  function renderPreview(){
+    var box = clear($("preview")), chips = clear($("chips")), p = curPage();
+    if (!p) return;
+    var cols = pageDim(p, "columns"), rows = pageDim(p, "rows");
+    if (!isInt(cols, 1, S.limits.max_grid) || !isInt(rows, 1, S.limits.max_grid)) {
+      $("preview-hint").textContent = "The columns and the rows of this page must be 1 to " + S.limits.max_grid + ".";
+      return;
+    }
+    var placed = placement(S.page), list = cardsOf(p), x, y;
+    box.style.gridTemplateColumns = "repeat(" + cols + ", 1fr)";
+    box.style.gridTemplateRows = "repeat(" + rows + ", 44px)";
+    box.style.background = themeColor("background");
+    for (y = 0; y < rows; y++) for (x = 0; x < cols; x++) {
+      (function(cx, cy){
+        var cell = el("button", {type:"button", className:"cell", title:"Put the selected card here", "aria-label":"Cell " + (cx + 1) + "," + (cy + 1),
+          on:{click:function(){ moveCardTo(cx, cy); }}});
+        cell.style.gridColumn = String(cx + 1); cell.style.gridRow = String(cy + 1);
+        box.appendChild(cell);
+      })(x, y);
+    }
+    list.forEach(function(c, i){
+      var pos = placed[i];
+      if (!pos) {
+        var msg = fresh() ? problemsOfCard(S.page, i)[0] : null;
+        chips.appendChild(el("button", {type:"button", className:"chip", textContent:(i + 1) + ". " + cardTitle(c) + " is not shown",
+          title:msg ? msg.text : "The app leaves this card out", on:{click:function(){ S.card = i; renderCardList(); renderCardEdit(); renderPreview(); }}}));
+        return;
+      }
+      var d = el("button", {type:"button", className:"pcard" + (i === S.card ? " sel" : ""),
+        on:{click:function(){ S.card = i; renderCardList(); renderCardEdit(); renderPreview(); }}});
+      d.appendChild(el("b", {textContent:(i + 1) + ". " + (TYPE_NAME[c.type] || c.type)}));
+      d.appendChild(document.createTextNode((typeof c.label === "string" && c.label) ? c.label : (typeof c.entity_id === "string" ? c.entity_id : "")));
+      d.style.gridColumn = (pos.x + 1) + " / span " + pos.w;
+      d.style.gridRow = (pos.y + 1) + " / span " + pos.h;
+      d.style.background = themeColor("card");
+      d.style.color = themeColor("text");
+      box.appendChild(d);
+    });
+    $("preview-hint").textContent = list.length
+      ? "The preview shows the cards as the app places them. To move the selected card, tap an empty cell."
+      : "This page has no card yet.";
+  }
+  function moveCardTo(cx, cy){
+    var c = curCard(), p = curPage();
+    if (!c || !p) return;
+    var w = isInt(c.w, 1, 12) ? c.w : 1, h = isInt(c.h, 1, 12) ? c.h : 1;
+    c.x = Math.max(0, Math.min(cx, pageDim(p, "columns") - w));
+    c.y = Math.max(0, Math.min(cy, pageDim(p, "rows") - h));
+    touch(); renderCardEdit();
+  }
+  function renderCardList(){
+    var box = clear($("card-list")), p = curPage();
+    if (!p) return;
+    var list = cardsOf(p);
+    list.forEach(function(c, i){
+      var probs = fresh() ? problemsOfCard(S.page, i).filter(function(q){ return q.kind === "e"; }) : [];
+      var row = el("div", {className:"item" + (i === S.card ? " sel" : "") + (probs.length ? " bad" : "")});
+      row.appendChild(el("span", {className:"num", textContent:String(i + 1)}));
+      var mid = el("div", {style:{flex:"1 1 140px", minWidth:"0"}});
+      mid.appendChild(el("button", {type:"button", className:"pick", textContent:cardTitle(c), style:{width:"100%"},
+        on:{click:function(){ S.card = i; renderCardList(); renderCardEdit(); renderPreview(); }}}));
+      if (probs.length) mid.appendChild(el("div", {className:"msg", textContent:probs[0].text.replace(/^page \d+ card \d+: /, "")}));
+      row.appendChild(mid);
+      row.appendChild(el("div", {className:"acts"}, [
+        btn("Up", "small secondary", function(){ moveCard(i, -1); }, "Move the card up the list"),
+        btn("Down", "small secondary", function(){ moveCard(i, 1); }, "Move the card down the list"),
+        btn("Remove", "small danger", function(){ removeCard(i); }, "Remove the card")]));
+      box.appendChild(row);
+    });
+    $("card-add").disabled = list.length >= S.limits.max_cards;
+  }
+  function moveCard(i, d){
+    var list = cardsOf(curPage()), j = i + d;
+    if (j < 0 || j >= list.length) return;
+    var a = list[i]; list[i] = list[j]; list[j] = a;
+    if (S.card === i) S.card = j; else if (S.card === j) S.card = i;
+    S.check = null;
+    touch(); renderCardList(); renderCardEdit();
+  }
+  function removeCard(i){
+    var list = cardsOf(curPage());
+    list.splice(i, 1);
+    if (S.card === i) S.card = -1; else if (S.card > i) S.card--;
+    S.check = null;
+    touch(); renderCardList(); renderCardEdit(); renderProblems();
+  }
+  $("card-add").addEventListener("click", function(){
+    var p = curPage();
+    if (!p) return;
+    if (!Array.isArray(p.cards)) p.cards = [];
+    if (p.cards.length >= S.limits.max_cards) return;
+    var t = $("card-add-type").value || "light";
+    var c = {type:t};
+    if (t !== "clock") c.entity_id = "";
+    p.cards.push(c);
+    S.card = p.cards.length - 1; S.check = null;
+    touch(); renderCardList(); renderCardEdit(); renderProblems();
+    var f = $("card-edit").querySelector("input[name=entity_id]");
+    if (f) f.focus();
+  });
+
+  // ---- the editor of one card ----
+  function entityInfo(id){
+    for (var i = 0; i < S.entities.length; i++) if (S.entities[i].entity_id === id) return S.entities[i];
+    return null;
+  }
+  function fillEntityList(type){
+    var dl = clear($("entity-list")), dom = S.domains[type];
+    S.entities.forEach(function(e){
+      if (dom && e.entity_id.split(".")[0] !== dom) return;
+      var o = document.createElement("option");
+      o.value = e.entity_id;
+      o.label = (e.name ? e.name : "") + (e.state ? " (" + e.state + ")" : "");
+      dl.appendChild(o);
+    });
+  }
+  function entityMessage(c){
+    var id = c.entity_id;
+    if (id === undefined || id === "") return {cls:"status", text:"Type an entity id, for example light.kitchen."};
+    if (typeof id !== "string" || !ENTITY_RE.test(id)) return {cls:"status bad", text:"An entity id looks like domain.name: small letters, digits and _."};
+    var need = S.domains[c.type];
+    if (need && id.split(".")[0] !== need) return {cls:"status bad", text:"A " + (TYPE_NAME[c.type] || c.type).toLowerCase() + " card needs a " + need + " entity."};
+    var info = entityInfo(id);
+    if (info) return {cls:"status ok", text:(info.name ? info.name : id) + (info.state ? " · " + info.state : "")};
+    return {cls:"status", text:S.entities.length ? "The panel does not know this entity yet." : ""};
+  }
+  function renderCardEdit(){
+    var box = clear($("card-edit")), c = curCard();
+    if (!c) { box.appendChild(el("div", {className:"hint", textContent:"Select a card in the preview or in the list, or add a card."})); return; }
+    box.appendChild(el("b", {textContent:"Card " + (S.card + 1) + " of " + pageName(curPage(), S.page)}));
+    fillEntityList(c.type);
+
+    var typeSel = el("select", {id:"c-type", on:{change:function(ev){
+      var t = ev.target.value;
+      c.type = t;
+      ["attribute", "unit", "precision"].forEach(function(k){ if (t !== "sensor") delete c[k]; });
+      ["format", "date_format"].forEach(function(k){ if (t !== "clock") delete c[k]; });
+      if (t === "clock") { delete c.entity_id; delete c.icon; }
+      else if (c.entity_id === undefined) c.entity_id = "";
+      S.check = null;
+      touch(); renderCardEdit(); renderProblems();
+    }}});
+    S.types.forEach(function(t){ var o = el("option", {value:t, textContent:TYPE_NAME[t] || t}); if (t === c.type) o.selected = true; typeSel.appendChild(o); });
+    var f1 = el("div", {className:"fields"});
+    field(f1, "Type", typeSel);
+
+    if (c.type !== "clock") {
+      var st = el("div", {className:"status"});
+      var ent = textInput(c.entity_id, {name:"entity_id", placeholder:"light.kitchen", list:"entity-list", on:{input:function(ev){
+        c.entity_id = ev.target.value.trim();
+        var m = entityMessage(c); st.className = m.cls; st.textContent = m.text;
+        touch();
+      }}});
+      var box1 = field(f1, "Entity id", ent);
+      box1.appendChild(st);
+      var m0 = entityMessage(c); st.className = m0.cls; st.textContent = m0.text;
+    }
+    var lab = textInput(c.label, {name:"label", placeholder:"(the name of the entity)", on:{input:function(ev){ setOrDelete(c, "label", ev.target.value); touch(); }}});
+    field(f1, "Label", lab);
+    box.appendChild(f1);
+
+    if (c.type !== "clock") iconPicker(box, c);
+
+    var nums = el("div", {className:"nums"});
+    [["w", "Width"], ["h", "Height"], ["x", "Column"], ["y", "Row"]].forEach(function(f){
+      var lim = (f[0] === "w" || f[0] === "x") ? "columns" : "rows";
+      var inp = el("input", {type:"number", id:newId("n"), name:f[0], min:(f[0] === "x" || f[0] === "y") ? "0" : "1", max:String(S.limits.max_grid),
+        value:c[f[0]] === undefined ? "" : String(c[f[0]]), placeholder:(f[0] === "x" || f[0] === "y") ? "auto" : "1",
+        on:{input:function(ev){ numOrDelete(c, f[0], ev.target.value); touch(); }}});
+      field(nums, f[1], inp);
+    });
+    box.appendChild(nums);
+    box.appendChild(el("div", {className:"hint", textContent:"Column and row count from 0. Leave both empty to let the app place the card."}));
+
+    if (c.type === "sensor") {
+      var f2 = el("div", {className:"fields"});
+      field(f2, "Attribute", textInput(c.attribute, {name:"attribute", placeholder:"(the state)", on:{input:function(ev){ setOrDelete(c, "attribute", ev.target.value); touch(); }}}),
+        "Show this attribute of the entity, not its state.");
+      field(f2, "Unit", textInput(c.unit, {name:"unit", placeholder:"(the unit of the entity)", on:{input:function(ev){ setOrDelete(c, "unit", ev.target.value); touch(); }}}));
+      field(f2, "Decimals (0 to " + S.limits.max_precision + ")", el("input", {type:"number", id:newId("n"), name:"precision", min:"0", max:String(S.limits.max_precision),
+        value:c.precision === undefined ? "" : String(c.precision), placeholder:"(as Home Assistant sends it)", on:{input:function(ev){ numOrDelete(c, "precision", ev.target.value); touch(); }}}));
+      box.appendChild(f2);
+    }
+    if (c.type === "clock") {
+      var f3 = el("div", {className:"fields"});
+      field(f3, "Time format", textInput(c.format, {name:"format", placeholder:"%H:%M", on:{input:function(ev){ setOrDelete(c, "format", ev.target.value); touch(); }}}),
+        "strftime codes, for example %H:%M.");
+      var dfBox = el("div", {});
+      var dfIn = textInput(c.date_format, {name:"date_format", placeholder:"%a %d %b", disabled:c.date_format === "",
+        on:{input:function(ev){ setOrDelete(c, "date_format", ev.target.value); touch(); }}});
+      field(dfBox, "Date format", dfIn);
+      var nd = el("input", {type:"checkbox", id:newId("c"), name:"no_date", checked:c.date_format === "", on:{change:function(ev){
+        if (ev.target.checked) { c.date_format = ""; dfIn.value = ""; dfIn.disabled = true; }
+        else { delete c.date_format; dfIn.disabled = false; }
+        touch();
+      }}});
+      dfBox.appendChild(el("div", {className:"toggle"}, [nd, el("label", {textContent:"Show no date", htmlFor:nd.id})]));
+      f3.appendChild(dfBox);
+      box.appendChild(f3);
+    }
+
+    var tapBox = el("div", {});
+    actionEditor(tapBox, "When you tap the card", {
+      get: function(){ return c.tap; },
+      set: function(v){ if (v === undefined) delete c.tap; else c.tap = v; },
+      mode: "tap", card: c
+    });
+    box.appendChild(tapBox);
+  }
+
+  function iconPicker(parent, c){
+    var wrap = el("div", {className:"sub-form"});
+    var sum = el("summary", {textContent:"Icon: " + (c.icon || "default")});
+    var det = el("details", {});
+    det.appendChild(sum);
+    var list = el("div", {className:"icons"});
+    var inp = textInput(c.icon, {name:"icon", placeholder:"search, or mdi:name (empty = the default icon)"});
+    function show(){
+      clear(list);
+      var q = (inp.value || "").toLowerCase().replace(/^mdi:/, "");
+      var n = 0;
+      S.icons.forEach(function(name){
+        if (n >= 60 || (q && name.indexOf(q) < 0)) return;
+        n++;
+        list.appendChild(btn(name, "secondary", function(){
+          c.icon = "mdi:" + name; inp.value = c.icon; sum.textContent = "Icon: " + c.icon; touch(); show();
+        }));
+      });
+      if (!n) list.appendChild(el("div", {className:"hint", textContent:"No icon of the font has this text."}));
+    }
+    inp.addEventListener("input", function(ev){
+      setOrDelete(c, "icon", ev.target.value.trim());
+      sum.textContent = "Icon: " + (c.icon || "default");
+      touch(); show();
+    });
+    det.appendChild(el("label", {textContent:"Icon", htmlFor:inp.id}));
+    det.appendChild(inp);
+    det.appendChild(list);
+    det.appendChild(btn("Use the default icon", "secondary", function(){
+      delete c.icon; inp.value = ""; sum.textContent = "Icon: default"; touch(); show();
+    }));
+    show();
+    wrap.appendChild(det);
+    parent.appendChild(wrap);
+  }
+
+  // The editor of an action: the tap of a card, or a key. spec.get/spec.set
+  // read and write the value in the model (undefined = not set).
+  function parseValue(t){
+    if (t === "true") return true;
+    if (t === "false") return false;
+    if (/^-?[0-9]+(\.[0-9]+)?$/.test(t)) return Number(t);
+    return t;
+  }
+  function actionEditor(parent, labelText, spec){
+    var isKey = spec.mode === "key";
+    var v = spec.get();
+    var choice = isObj(v) ? "custom" : (v === undefined || (v === "default" && !isKey) ? "default" : String(v));
+    var sel = el("select", {id:newId("a")});
+    var opts = [["default", isKey ? "The default of the key" : "The default of the card type"], ["none", "Nothing"]];
+    if (isKey) {
+      opts.push(["next_page", "Show the next page"], ["prev_page", "Show the previous page"], ["setup", "Open the setup window"]);
+      pages().forEach(function(p, i){ opts.push(["page:" + (i + 1), "Show page " + (i + 1) + " (" + pageName(p, i) + ")"]); });
+      if (/^page:[0-9]+$/.test(choice) && !opts.some(function(o){ return o[0] === choice; })) opts.push([choice, "Show " + choice.replace(":", " ") + " (no such page)"]);
+    }
+    opts.push(["custom", "Send a Home Assistant action"]);
+    if (!opts.some(function(o){ return o[0] === choice; })) opts.push([choice, choice]);
+    opts.forEach(function(o){ var op = el("option", {value:o[0], textContent:o[1]}); if (o[0] === choice) op.selected = true; sel.appendChild(op); });
+    var custom = el("div", {className:"sub-form"});
+    function drawCustom(){
+      clear(custom);
+      var cur = spec.get();
+      if (!isObj(cur)) { custom.style.display = "none"; return; }
+      custom.style.display = "block";
+      var act = textInput(cur.action, {name:"action", placeholder:"light.turn_on", on:{input:function(ev){ cur.action = ev.target.value.trim(); touch(); }}});
+      field(custom, "Action (domain.service)", act, "Sent with the entity of the card, unless the values below have an entity_id.");
+      var rows = Object.keys(isObj(cur.data) ? cur.data : {}).map(function(k){ return {k:k, v:cur.data[k]}; });
+      function commit(){
+        var d = {};
+        rows.forEach(function(r){ if (r.k !== "") d[r.k] = r.v; });
+        if (Object.keys(d).length) cur.data = d; else delete cur.data;
+        touch();
+      }
+      var list = el("div", {});
+      function drawRows(){
+        clear(list);
+        rows.forEach(function(r, n){
+          var line = el("div", {className:"item"});
+          line.appendChild(el("input", {type:"text", className:"name", value:r.k, placeholder:"name", autocomplete:"off", "aria-label":"Name of value " + (n + 1),
+            on:{input:function(ev){ r.k = ev.target.value.trim(); commit(); }}}));
+          line.appendChild(el("input", {type:"text", className:"name", value:String(r.v), placeholder:"value", autocomplete:"off", "aria-label":"Value " + (n + 1),
+            on:{input:function(ev){ r.v = parseValue(ev.target.value); commit(); }}}));
+          line.appendChild(btn("Remove", "small danger", function(){ rows.splice(n, 1); commit(); drawRows(); }, "Remove the value"));
+          list.appendChild(line);
+        });
+      }
+      drawRows();
+      custom.appendChild(list);
+      custom.appendChild(btn("Add a value", "secondary", function(){ rows.push({k:"", v:""}); drawRows(); }));
+      custom.appendChild(el("div", {className:"hint", textContent:"Numbers and true or false keep their type. Home Assistant runs the action only when the ESPHome device of this panel may perform actions."}));
+    }
+    sel.addEventListener("change", function(ev){
+      var c = ev.target.value;
+      if (c === "default") spec.set(undefined);
+      else if (c === "custom") spec.set({action: guessAction(spec.card, "turn_on")});
+      else spec.set(c);
+      touch(); drawCustom();
+    });
+    field(parent, labelText, sel);
+    parent.appendChild(custom);
+    drawCustom();
+  }
+
+  // ---- the theme ----
+  function renderTheme(){
+    var box = clear($("theme-form"));
+    var keys = S.themeKeys.length ? S.themeKeys : Object.keys(THEME_NAME);
+    keys.forEach(function(k){
+      var cur = isObj(S.layout.theme) ? S.layout.theme[k] : undefined;
+      var line = el("div", {className:"row", style:{marginBottom:"8px"}});
+      var col = el("input", {type:"color", id:"th-" + k, value:(typeof cur === "string" && COLOR_RE.test(cur)) ? cur.toLowerCase() : (S.defaults.theme[k] || "#000000"),
+        disabled:cur === undefined, on:{input:function(ev){ setTheme(k, ev.target.value); }}});
+      var def = el("input", {type:"checkbox", id:"thd-" + k, checked:cur === undefined, on:{change:function(ev){
+        if (ev.target.checked) { setTheme(k, undefined); col.disabled = true; col.value = S.defaults.theme[k] || "#000000"; }
+        else { col.disabled = false; setTheme(k, col.value); }
+      }}});
+      line.appendChild(el("div", {className:"grow", style:{minWidth:"130px"}}, [el("b", {textContent:THEME_NAME[k] || k})]));
+      line.appendChild(col);
+      line.appendChild(el("div", {className:"toggle", style:{marginTop:"0"}}, [def, el("label", {textContent:"Default", htmlFor:def.id})]));
+      box.appendChild(line);
+    });
+  }
+  function setTheme(k, val){
+    if (!isObj(S.layout.theme)) { if (val === undefined) return; S.layout.theme = {}; }
+    if (val === undefined) delete S.layout.theme[k]; else S.layout.theme[k] = val;
+    if (!Object.keys(S.layout.theme).length) delete S.layout.theme;
+    touch();
+  }
+
+  // ---- the keys of the panel ----
+  function renderKeys(){
+    var box = clear($("keys-form"));
+    var names = KEY_NAMES.slice();
+    if (isObj(S.layout.keys)) Object.keys(S.layout.keys).forEach(function(k){ if (names.indexOf(k) < 0) names.push(k); });
+    names.forEach(function(k){
+      var line = el("div", {className:"keyrow"});
+      line.appendChild(el("div", {className:"kname", textContent:k}));
+      var holder = el("div", {});
+      actionEditor(holder, "", {
+        get: function(){ return isObj(S.layout.keys) ? S.layout.keys[k] : undefined; },
+        set: function(v){
+          if (v === undefined) { if (isObj(S.layout.keys)) { delete S.layout.keys[k]; if (!Object.keys(S.layout.keys).length) delete S.layout.keys; } }
+          else { if (!isObj(S.layout.keys)) S.layout.keys = {}; S.layout.keys[k] = v; }
+        },
+        mode: "key", card: null
+      });
+      line.appendChild(holder);
+      box.appendChild(line);
+    });
+    var add = el("div", {className:"row"});
+    var nm = textInput("", {name:"new_key", placeholder:"name of another key", className:"grow", "aria-label":"Name of another key"});
+    add.appendChild(nm);
+    add.appendChild(btn("Add a key", "secondary", function(){
+      var n = nm.value.trim();
+      if (!KEY_NAME_RE.test(n)) { $("keys-status").className = "status bad"; $("keys-status").textContent = "A key name has letters, digits, _, . and -."; return; }
+      if (!isObj(S.layout.keys)) S.layout.keys = {};
+      if (!(n in S.layout.keys)) S.layout.keys[n] = "none";
+      touch(); renderKeys();
+    }));
+    box.appendChild(add);
+    box.appendChild(el("div", {className:"status", id:"keys-status"}));
+    box.appendChild(el("div", {className:"hint", textContent:"The names are the keys of the panel. The default of a key is: home shows page 1, up shows the previous page, down shows the next page, the other keys do nothing."}));
+  }
+
+  // ---- the optional list of all Home Assistant entities ----
+  function haStatus(cls, text){ var s = $("ha-status"); if (s) { s.className = "status " + cls; s.textContent = text; } }
+  function renderHa(){
+    var box = clear($("ha-form"));
+    var n = S.entities.filter(function(e){ return e.source === "ha"; }).length;
+    box.appendChild(el("p", {className:"hint", style:{marginTop:"0"}, textContent:
+      "The editor suggests the entities of this layout and the entities that the panel app knows. " +
+      "For the full list of Home Assistant, give the address of Home Assistant and a long-lived access token (from your profile page in Home Assistant). " +
+      "The panel keeps the token as root and never shows it again. The panel only reads the list. It changes nothing in Home Assistant."}));
+    var url = el("input", {type:"url", id:"ha-url", placeholder:"https://homeassistant.local:8123", autocomplete:"off"});
+    var tok = el("input", {type:"password", id:"ha-token", autocomplete:"new-password",
+      placeholder:S.haToken ? "(a token is stored; enter a new one to replace it)" : "long-lived access token"});
+    field(box, "Home Assistant URL", url);
+    field(box, "Access token", tok);
+    box.appendChild(el("div", {className:"hint", textContent:S.haToken ? "A token is stored." + (n ? " The list has " + n + " entities." : "") : "No token is stored."}));
+    var row = el("div", {className:"row", style:{marginTop:"10px"}});
+    row.appendChild(btn("Store the token and load the list", "secondary", function(){
+      haStatus("", "Working...");
+      api("POST", "/setup/api/layout/ha-token", {url:url.value.trim(), token:tok.value.trim()}).then(function(r){
+        if (r.status !== 200) { haStatus("bad", (r.body && r.body.error) || "Not stored."); return null; }
+        tok.value = ""; S.haToken = true;
+        return loadHaList();
+      }).catch(function(){ haStatus("bad", "Network error. Try again."); });
+    }));
+    if (S.haToken) {
+      row.appendChild(btn("Load the list again", "secondary", function(){ haStatus("", "Working..."); loadHaList(); }));
+      row.appendChild(btn("Remove the token", "danger", function(){
+        api("POST", "/setup/api/layout/ha-token-clear", {}).then(function(r){
+          if (r.status !== 200) { haStatus("bad", (r.body && r.body.error) || "Not removed."); return; }
+          S.haToken = false; S.entities = S.entities.filter(function(e){ return e.source !== "ha"; });
+          renderHa(); haStatus("ok", "The token is removed."); if (curCard()) renderCardEdit();
+        }).catch(function(){ haStatus("bad", "Network error. Try again."); });
+      }));
+    }
+    box.appendChild(row);
+    box.appendChild(el("div", {className:"status", id:"ha-status"}));
+  }
+  function loadHaList(){
+    return api("POST", "/setup/api/layout/ha-entities", {}).then(function(r){
+      if (r.status !== 200) { haStatus("bad", (r.body && r.body.error) || "Could not read the list."); return; }
+      return api("GET", "/setup/api/layout/entities").then(function(e){
+        S.entities = (e.body && e.body.entities) || S.entities; S.haToken = !!(e.body && e.body.ha_token_set);
+        renderHa(); haStatus("ok", "The list has " + r.body.count + " entities."); if (curCard()) renderCardEdit();
+      });
+    });
+  }
+
+  // ---- the raw JSON ----
+  function rawText(){ return JSON.stringify(S.layout, null, 2); }
+  function updateRaw(force){
+    var t = $("raw-text");
+    if (S.rawEdited && !force) return;
+    if (force) S.rawEdited = false;
+    t.value = S.layout ? rawText() : S.text;
+  }
+  $("raw-text").addEventListener("input", function(){ S.rawEdited = true; });
+  $("raw-refresh").addEventListener("click", function(){ $("raw-status").textContent = ""; updateRaw(true); });
+  $("raw-apply").addEventListener("click", function(){
+    var st = $("raw-status"), obj;
+    try { obj = JSON.parse($("raw-text").value); } catch (e) { st.className = "status bad"; st.textContent = "Not valid JSON: " + e.message; return; }
+    if (!isObj(obj) || !Array.isArray(obj.pages) || !obj.pages.length) { st.className = "status bad"; st.textContent = "The layout needs an object with a list of pages."; return; }
+    S.layout = obj; S.page = 0; S.card = -1; S.check = null; S.rawEdited = false;
+    st.className = "status ok"; st.textContent = "Done.";
+    touch(); renderAll(); runCheck();
+  });
+  $("new-btn").addEventListener("click", function(){
+    S.layout = {version:1, pages:[{name:"Home", cards:[]}]}; S.page = 0; S.card = -1; S.check = null;
+    touch(); renderAll(); runCheck();
+  });
+
+  // ---- save, revert, load ----
+  function showStale(text){ if (text) $("stale-text").textContent = text; $("stale").style.display = "block"; }
+  $("save-btn").addEventListener("click", function(){
+    if (!S.layout) return;
+    var b = $("save-btn");
+    b.disabled = true;
+    api("POST", "/setup/api/layout/save", {layout: S.layout, revision: S.revision}).then(function(r){
+      b.disabled = false;
+      var body = r.body || {};
+      if (r.status === 200) {
+        S.revision = body.revision || ""; S.dirty = false; S.saved = true; S.source = "user";
+        $("stale").style.display = "none"; $("source-note").textContent = "";
+        updateBar(); runCheck();
+        return;
+      }
+      if (r.status === 409) { showStale(body.error); return; }
+      if (body.errors) {
+        S.check = {errors: body.errors, warnings: body.warnings || [], placed: null}; S.checkVersion = S.version;
+        renderProblems(); renderPreview(); renderCardList(); updateBar();
+        $("problems").scrollIntoView({behavior:"smooth", block:"start"});
+        return;
+      }
+      var t = $("bar-text"); t.className = "status bad"; t.textContent = body.error || "Not saved.";
+    }).catch(function(){
+      b.disabled = false; var t = $("bar-text"); t.className = "status bad"; t.textContent = "Network error. Try again.";
+    });
+  });
+  $("revert-btn").addEventListener("click", function(){
+    if (S.dirty && !S.revertArmed) { S.revertArmed = true; updateBar(); return; }
+    load();
+  });
+  $("reload-btn").addEventListener("click", function(){ $("stale").style.display = "none"; load(); });
+  $("pair-go").addEventListener("click", function(){
+    $("pair-status").textContent = "";
+    api("POST", "/setup/api/pair", {code: $("pair-code").value.trim()}).then(function(r){
+      if (r.status === 200) { load(); return; }
+      $("pair-status").className = "status bad";
+      $("pair-status").textContent = (r.body && r.body.error) || "wrong code";
+    });
+  });
+
+  function load(){
+    return api("GET", "/setup/api/layout").then(function(r){
+      var b = r.body || {};
+      $("gate").style.display = "none"; $("unavail").style.display = "none";
+      if (r.status === 403) { $("unavail").style.display = "block"; $("main").style.display = "none"; return; }
+      if (b.need_pairing) { $("gate").style.display = "block"; $("main").style.display = "none"; return; }
+      S.layout = isObj(b.layout) ? b.layout : null;
+      S.source = b.source || "none"; S.text = b.text || ""; S.revision = b.revision || "";
+      if (S.layout && (!Array.isArray(S.layout.pages) || !S.layout.pages.length || !S.layout.pages.every(isObj))) {
+        S.text = JSON.stringify(S.layout, null, 2); S.layout = null;
+      }
+      S.icons = b.icons || []; S.types = b.types || []; S.domains = b.domains || {}; S.typeKeys = b.type_keys || {};
+      S.themeKeys = b.theme_keys || []; S.entities = b.entities || []; S.haToken = !!b.ha_token_set;
+      if (b.limits) S.limits = b.limits;
+      if (b.defaults) S.defaults = b.defaults;
+      S.page = 0; S.card = -1; S.dirty = false; S.saved = false; S.revertArmed = false; S.check = null; S.checkVersion = -1; S.version++;
+      S.rawEdited = false;
+      var sel = clear($("card-add-type"));
+      S.types.forEach(function(t){ sel.appendChild(el("option", {value:t, textContent:TYPE_NAME[t] || t})); });
+      $("main").style.display = "block";
+      renderAll();
+      if (!b.checker) { var t = $("bar-text"); t.className = "status bad"; t.textContent = "The layout checker is not installed. A save is not possible."; }
+      return runCheck();
+    }).catch(function(){
+      $("unavail").style.display = "block"; $("unavail-text").textContent = "The panel does not answer. Try again.";
+    });
+  }
+  if (typeof window !== "undefined" && window.addEventListener) {
+    window.addEventListener("beforeunload", function(ev){ if (S.dirty) { ev.preventDefault(); ev.returnValue = ""; return ""; } });
+  }
+  load();
+})();
+</script>
+</body></html>

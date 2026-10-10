@@ -15,7 +15,7 @@ The repo has one directory for each package. A package directory holds the files
 | ledbar | tsx-ledbar | `tsx-ledbar` (C), `tsx-ledbard`, its init script and `ledbar.conf`. See [LED bar](ledbar.md) |
 | rescue | tsx-rescue-ui | `tsx-rescue-status`, `tsx-confont`, `tsx-rescue-login` |
 | splash | tsx-splash | `tsx-splash` (C), the splash images and tools |
-| panel-app | tsx-panel-app | The panel app: the ESPHome components `tsx_cards` and `tsx_runtime`, the generic ESPHome YAML and its patches, the service `tsx-panel-app` with `tsx-panel-app-run`, `tsx-layout-check` and the layout files. The program itself comes from the package of the board family. See [Panel app](panel-app.md) |
+| panel-app | tsx-panel-app | The panel app: the ESPHome components `tsx_cards` and `tsx_runtime`, the generic ESPHome YAML and its patches, the service `tsx-panel-app` with `tsx-panel-app-run`, `tsx-layout-check`, `tsx-ha-entities`, the layout files and the layout editor (a plugin of the setup page with its page). The program itself comes from the package of the board family. See [Panel app](panel-app.md) |
 | tests | none | host tests, fixtures (`tests/boards`), helper programs |
 
 `tsx_brightness.py` and `tsx-panelctl` are in tsx-base because every profile has tsx-base. The console profile has no tsx-kiosk. tsx-ha depends on `tsx-panelctl`.
@@ -151,7 +151,7 @@ A board package adds parts to the shared software with files in plugin folders. 
 
 | Folder | Read by | File | Adds | Test hook |
 |---|---|---|---|---|
-| `/usr/local/share/tsx/setup.d` | `tsx-setupd` | `NAME.py` | Fields of the setup page. The contract is in `ha/usr/local/share/tsx/setup.d/ha.py`. | `TSX_SETUP_PLUGIN_DIR` |
+| `/usr/local/share/tsx/setup.d` | `tsx-setupd` | `NAME.py` | Fields and API paths of the setup page. The contract is in `ha/usr/local/share/tsx/setup.d/ha.py`. The panel app adds the layout editor with `panel_layout.py`. | `TSX_SETUP_PLUGIN_DIR` |
 | `/usr/local/share/tsx/esphome.d` | `tsx-esphome` and the voice satellite | `NAME.py` | Entities and API messages of the ESPHome device (see [ESPHome device](esphome.md#plugins)) | `TSX_ESPHOME_PLUGIN_DIR` |
 | `/usr/local/lib/tsx/config.d` | `tsx-config` | `NAME.sh` | Keys of `panel.conf` | `TSX_CONFIG_PLUGIN_DIR` |
 | `/usr/local/lib/tsx/kiosk.d` | `kiosk-session` | `NAME.sh` | Changes of the renderer choice and the browser flags (see [Kiosk hooks](kiosk-hooks.md)) | `TSX_KIOSK_HOOK_DIR` |
@@ -239,7 +239,7 @@ A plugin names the keys that only the kiosk reads in `KIOSK_ONLY_KEYS`. The slot
 
 ### screen.json
 
-A native screen cannot read the pairing code from the page. So `tsx-setupd` writes the code to the file `screen.json` in its state folder. The folder is `/run/tsx-setup` (mode 0700, owner `tsx-setup`). The init script makes it. The environment variable `TSX_SETUP_STATE_DIR` changes it for tests.
+A native screen cannot read the pairing code from the page. So `tsx-setupd` writes the code to the file `screen.json` in its state folder. The folder is `/run/tsx-setup` (mode 0700, owner `tsx-setup`). The init script makes it. The environment variable `TSX_SETUP_STATE_DIR` changes it for tests. The same folder holds `layout.new`, a layout that waits for the helper (see [the layout editor](panel-app.md#the-layout-editor)).
 
 The daemon writes the file while `lan_allowed()` is true. That is the case while the panel is not configured and for the window after `tsx-config setup`. It writes the file at least every 5 s (every 2 s in practice). It writes a temporary file with mode 600 and renames it, so a reader never sees half a file. It removes the file when the LAN window closes, when the process ends and at the start. The file is one JSON object:
 
@@ -283,7 +283,7 @@ The test hooks of these commands are `TSX_SETUP_STATE_DIR`, `TSX_PANEL_LAYOUT_FI
 
 A test that needs a board file uses the made-up board in `tests/boards/fake`. A test sources `tests/lib/board.sh`, which sets `TSX_BOARD_CONF` and `TSX_BOARD_BIN`. The board holds `board.sh`, `panel-board.conf`, `buttons-board.conf` and `motd.board`. It also holds a fake plugin for each plugin folder: `config.d/fakeopt.sh` and `esphome.d/fakeent.py`. A test of a loader sets the test hook of the folder to a copy of the folder. `test-config-plugins.sh` covers `config.d`. `test-shim-plugins.sh` and `test-esphome.sh` cover `esphome.d`. The values of the board differ from the values of every real family. So a test fails when shared code has a family value built in. `test-board-fake.sh` runs the shared scripts against this board and against a second made-up board. It also runs `kiosk-session` with fake `kiosk.d` hooks.
 
-`test-panel-app-run.sh` covers the start script of the panel app: the identity from the host name and the MAC, the saved identity, the board file. `test-panel-editor.sh` covers the setup page of a panel with no kiosk and `screen.json`. It starts the real `tsx-setup-helper` and the real `tsx-setupd`. It also covers the helper commands of the panel app, and it runs `tsx-ha-entities` against a small fake Home Assistant. `test-setup.sh` covers the presence fields of the setup page (shown with `PRESENCE=yes`, hidden with `PRESENCE=no`). It also covers the save rule: a save writes only the changed fields, and the server refuses a page with an old revision of `panel.conf`. `test-setup-page.sh` runs the script of the setup page in node, with a small fake DOM. It checks the changed fields that a save sends and the refresh every 20 s. Without node, it prints SKIPPED. It also covers the hidden fields of a panel with no kiosk. `test-panel-board.sh` covers the board layer of `kiosk.conf`.
+`test-panel-app-run.sh` covers the start script of the panel app: the identity from the host name and the MAC, the saved identity, the board file. `test-panel-editor.sh` covers the setup page of a panel with no kiosk and `screen.json`. It starts the real `tsx-setup-helper` and the real `tsx-setupd`. It also covers the helper commands of the panel app and the API of the layout editor (the three sources of the layout, the check, the save through the helper, the stale revision and the pairing rule). It runs `tsx-ha-entities` against a small fake Home Assistant. `test-panel-editor-page.sh` runs the script of the editor page and the API key field in node, with the fake DOM of `tests/lib/fakedom.js`. It checks that a layout goes through the editor with no change, the payload of a save and the placement of the cards against `tsx-layout-check --placed`. Without node, it prints SKIPPED. `test-setup.sh` covers the presence fields of the setup page (shown with `PRESENCE=yes`, hidden with `PRESENCE=no`). It also covers the save rule: a save writes only the changed fields, and the server refuses a page with an old revision of `panel.conf`. `test-setup-page.sh` runs the script of the setup page in node, with a small fake DOM. It checks the changed fields that a save sends and the refresh every 20 s. Without node, it prints SKIPPED. It also covers the hidden fields of a panel with no kiosk. `test-panel-board.sh` covers the board layer of `kiosk.conf`.
 
 ### Tests of a family
 

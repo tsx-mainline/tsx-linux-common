@@ -562,6 +562,15 @@ class _Ctx:
     def show():
         return tcfg_show()
 
+    @staticmethod
+    def helper_call(line, timeout=None):
+        """One request to tsx-setup-helper: (ok, text). See helper_call."""
+        return helper_call(line, timeout)
+
+    @staticmethod
+    def lan_allowed():
+        return lan_allowed()
+
 
 def load_plugins(path=None):
     plugins = []

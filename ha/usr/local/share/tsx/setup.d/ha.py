@@ -23,6 +23,9 @@ What a plugin gives to tsx-setupd (all names are optional except NAME):
   init(ctx)          called once. ctx.validate(key, value) runs the check of
                      tsx-config. ctx.show() returns the panel.conf values
                      (secrets masked). ctx.no_zeroconf is the test switch.
+                     ctx.helper_call(line[, timeout]) sends one request line
+                     to tsx-setup-helper and returns (ok, text).
+                     ctx.lan_allowed() tells if the LAN window is open.
   SIMPLE_KEYS        panel.conf keys that the page sets with the same rules as
                      the keys of the base page
   CLEARABLE_BLANK    the keys among them that an empty value removes
@@ -53,7 +56,10 @@ What a plugin gives to tsx-setupd (all names are optional except NAME):
                      checkbox gives "on" or "off", a disabled field is not
                      sent. payload can change the object payload (the
                      changed fields, name -> value) before the page sends it.
-  GET_ROUTES, POST_ROUTES  {path: function(handler[, data])} for more API paths
+  GET_ROUTES, POST_ROUTES  {path: function(handler[, data])} for more API paths.
+                     handler._authorized() tells if the request may use the
+                     page, and handler._send_json(code, object) and
+                     handler._send_html(code, text) answer.
 
 Env override for host tests: TSX_VOICE_SERVICE (the init script of the voice
 service, default /etc/init.d/tsx-voice), TSX_BOARD_BIN (tsx-board, default

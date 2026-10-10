@@ -21,7 +21,10 @@ One program serves all panels of a family. The program holds no value of one pan
 | `panel-app/esphome/panel-app.yaml` | The generic part of the ESPHome configuration: the API, the Home Assistant time, the icon font, LVGL and `tsx_cards`. A board includes it as a package. |
 | `panel-app/esphome/icon-glyphs.yaml` | The glyph list of the icon font. `mkicons.py` writes it. |
 | `panel-app/esphome/mkicons.py` | Writes `icons.h` and `icon-glyphs.yaml` from `icons.txt`. `--check` tells if they are out of date. |
-| `panel-app/usr/local/bin/tsx-layout-check` | Checks a layout file with the same rules as the app. |
+| `panel-app/usr/local/bin/tsx-layout-check` | Checks a layout file with the same rules as the app. With `--install`, it also installs a checked layout. |
+| `panel-app/usr/local/bin/tsx-ha-entities` | Reads the list of entities from Home Assistant, for the layout editor. See "Entity picker". |
+| `panel-app/usr/local/share/tsx/setup.d/panel_layout.py` | The plugin of the setup page: the link to the editor, the field for the API encryption key and the API of the editor. |
+| `panel-app/usr/local/share/tsx/panel-app/layout-editor.html` | The page of the layout editor: one HTML file with its CSS and its script. |
 | `panel-app/usr/local/share/tsx/panel-app/icons.txt` | The icons of the app: the MDI name and the code point. |
 | `panel-app/usr/local/share/tsx/panel-app/example-layout.json` | An example layout with made-up entities. |
 | `panel-app/usr/local/share/tsx/panel-app/layout.schema.json` | A JSON schema of the layout format, for editors. |
@@ -171,6 +174,89 @@ The app leaves out a card with an error and shows the other cards. The log has a
 `tsx-layout-check FILE` reports the same errors. It also reports a card that the app leaves out, so an editor can refuse it. A warning (an unknown key, an icon that is not in the font) does not stop the app.
 
 `tsx-layout-check --install SRC DEST` checks `SRC` and installs it as `DEST`. The setup page uses it, through the helper of the setup page, to save a layout (see [Layout](layout.md)). The tool trusts nothing about `SRC`. It opens `SRC` with `O_NOFOLLOW` and refuses a file that is not a regular file or that has more than 65536 bytes. It refuses a layout with an error and prints each error on its own line. It installs the bytes that it checked, with no new serialization. It writes a temporary file in the folder of `DEST` (mode 644), calls `fsync`, renames the file and calls `fsync` on the folder. `DEST` stays as it was after every refusal.
+
+## The layout editor
+
+The layout editor is a page of the setup page. You can use it on a phone or on a PC. It needs no other software on the panel and no access to Home Assistant.
+
+### Open the editor
+
+1. Open the setup page of the panel (see [Layout](layout.md#setup-page-without-a-kiosk)). On the screen of the panel, the setup page is the loopback address. From a phone or a PC, use `http://ADDRESS:PORT/setup`. The panel allows this only while it is not configured, or for 15 minutes after `tsx-config setup`.
+2. Enter the pairing code that the screen shows, if the page asks for it.
+3. Tap "Edit the layout of the screen". The editor is at `/setup/layout`. It has the same rules for access as the setup page.
+
+### What the editor edits
+
+The editor edits the layout file in the format that this page describes. It shows the layout of the user (`/var/lib/tsx/panel-layout.json`). When the user has no file, it shows the default layout of the board (`/etc/tsx/panel-layout.json`), and then the example layout. The first save makes the file of the user.
+
+| Part | What you can do |
+|---|---|
+| Pages | Add, remove, rename and move a page. Set the columns and the rows of a page. |
+| Grid | Set the default columns, rows and gap. |
+| Cards | A preview of the grid shows the cards in the cells where the app places them. Add, remove and move a card in the list. Tap an empty cell to move the selected card there. |
+| One card | The type, the entity id, the label, the icon (a search in `icons.txt`), the size, the cell (empty means automatic), the tap action and the keys of the type. |
+| Theme | The five colors. Each color can use the default. |
+| Keys | One row for each of `home`, `up`, `down`, `power` and `lights`, and a row for each other key. A key can use the default, do nothing, show page N, show the next or the previous page, open the setup window, or send a Home Assistant action. |
+| Raw JSON | The text of the layout. Edit it and tap "Use this JSON". |
+
+The editor changes only the parts that you change. A key that it does not know stays in the file. An empty field removes its key from the file.
+
+The editor sends the layout to the panel for a check after each change. The check uses the same rules as `tsx-layout-check`. The editor shows the errors and the warnings at the top and next to the card. It also shows a card that the app leaves out, because an error or an overlap stops the card. "Save" is possible with a warning. The panel refuses a layout with an error.
+
+"Revert" loads the layout again and drops your changes. When you have unsaved changes, the button asks for a second tap.
+
+### The key action setup
+
+The action `"setup"` is for the entries of `keys`. When the user presses the key, the app runs `tsx-config setup`. This opens the setup window of the panel for 15 minutes, as the entry "Setup" of the overlay does. A tap on a card cannot use it.
+
+### The save path
+
+1. The editor sends the layout and the revision that it loaded to `POST /setup/api/layout/save`. The revision is the SHA-256 hash of the file of the user, or an empty text when the file does not exist.
+2. `tsx-setupd` refuses the save with the status 409 when the file changed after the page loaded. Then it saves nothing.
+3. `tsx-setupd` checks the layout. It refuses a layout with an error.
+4. `tsx-setupd` writes the layout (JSON with 2 spaces and UTF-8 text, with the order of the keys of the editor) to `/run/tsx-setup/layout.new` with mode 600.
+5. `tsx-setupd` sends the command `layout-save` to `tsx-setup-helper`. The helper runs `tsx-layout-check --install` as root. The tool checks the file again and installs it atomically in `/var/lib/tsx/panel-layout.json` with mode 644.
+6. The app sees the new file and shows it after a few seconds (see "Reload").
+
+`tsx-setupd` does not run as root. It never writes the layout file itself.
+
+### Entity picker
+
+The panel has no general access to Home Assistant, and the editor must not change anything in Home Assistant. So the editor uses three sources for the list of entities. The user can also type any entity id.
+
+| Source | What it gives | Needs |
+|---|---|---|
+| The layout | The entity ids that the layout uses. | Nothing. |
+| The app | The entities that the app knows, with name and state. The app writes `/run/tsx/panel-app/entities.json`: `{"uptime": 1234, "entities": [{"entity_id": "light.kitchen", "name": "Kitchen", "state": "on"}]}`. The file is missing when the app does not run. Then the list is empty. | The app. |
+| The full list (optional) | All entities of Home Assistant, with name and state. | A URL and a token, once. |
+
+The editor checks an entity id with the same rule as the checker (`domain.name`). A `light`, `scene`, `script` or `weather` card needs an entity of that domain. The field shows the name and the state of a known entity.
+
+For the full list, the user enters the URL of Home Assistant and a long-lived access token in the section "Home Assistant entity list". The token has these rules:
+
+- `tsx-setupd` sends the token to `tsx-setup-helper` (`ha-token-set`). The helper stores it as root in `/var/lib/tsx/panel-app/ha-token` (mode 600, two lines: the URL and the token). `tsx-setupd` does not keep it and does not log it.
+- The helper command `ha-entities` runs `tsx-ha-entities` as root. The tool sends `GET URL/api/states` with the token. It has a time limit of 10 s. It follows a redirect only to the same scheme, host and port. It writes `[{"entity_id": ..., "name": ..., "state": ...}]` to `/run/tsx/panel-app/ha-entities.json` (mode 640, group `tsx-setup`).
+- The page never gets the token back. It shows only "A token is stored". "Remove the token" (`ha-token-clear`) deletes the token and the list.
+- The panel reads from Home Assistant. It changes nothing there. The panel does not trust a certificate that it cannot check. For a Home Assistant with a private certificate, use the http address.
+
+The reasons for this design:
+
+- A browser in the user's network cannot read the entities of Home Assistant because of the same-origin rule. A browser-only list would need a token in the browser.
+- A token with a long life is a secret. Only root keeps it, and only as a file with mode 600. The unprivileged process of the setup page never has it.
+- The full list is optional. The editor works with the first two sources and a typed entity id.
+
+### The API encryption key
+
+The setup page has the field "API encryption key" (`HA_API_KEY` of `panel.conf`). It is the key for the ESPHome API of the app. The key is a secret. The page never shows the stored key. It shows only that a key is set. A blank field keeps the stored key.
+
+"Make a new key" makes 32 random bytes with `crypto.getRandomValues` in the browser and shows the base64 text in the field. To give the key to Home Assistant:
+
+1. Copy the key.
+2. In Home Assistant, open Settings, then Devices & services.
+3. Open the ESPHome device of the panel.
+4. Enter the key as the encryption key.
+
+Home Assistant and the panel need the same key. `tsx-config` checks the format when the page saves it. The plugin adds the field only when no other plugin in `setup.d` names `HA_API_KEY`.
 
 ## Home Assistant states
 
