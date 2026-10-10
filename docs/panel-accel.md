@@ -69,16 +69,27 @@ binary_sensor:
 |---|---|---|
 | `device` | empty | The DRM device, for example `/dev/dri/card0`. Empty: the first `/dev/dri/card*` with a connected output. The component skips a GPU render device, because it has no output. |
 | `page_flip` | `true` | `false`: one dumb buffer and no flip. This copies less, but the screen can show a half-drawn area for one frame. |
+| `off_mode` | `dpms` | How `set_power(false)` makes the screen dark. `dpms`: the output goes off. `black`: the output stays on and shows a black frame (a third dumb buffer). |
+| `dpms_after` | 0 s | With `off_mode: black`: the output also goes off after this dark time. 0 s: never. |
+| `power_on_delay` | 0 ms | After the output comes on from DPMS off: the wait after the first frame, before `set_power(true)` returns. |
 
 The size of the display comes from the preferred mode of the output. The
 snapshot action (`snapshot.take`) writes the screen copy to a BMP file.
 
-`set_power(false)` turns the display output off with the DPMS property of
-the connector, and `set_power(true)` turns it on again. While the output is
-off, the app can draw: the screen copy keeps the changes, and the output
-shows the full picture when it comes on. The panel app calls it from the
-`on_screen` automation of `tsx_cards` (see [Panel app](panel-app.md),
-"Screen"):
+`set_power(false)` makes the screen dark. With `off_mode: dpms` it turns the
+display output off with the DPMS property of the connector. A driver can
+also cut the panel supply then. A panel that comes on again can show a
+white frame before the picture. With `off_mode: black` the output stays on
+and shows a black frame, so the panel stays powered.
+
+`set_power(true)` turns the output on again if it is off. Then it puts the
+full picture into the back buffer, flips to it and waits for the flip (at
+most 50 ms). After DPMS off it also waits `power_on_delay`. So the caller
+can turn the backlight on when the function returns, and the glass shows
+the picture at once. While the screen is dark, the app can draw: the
+screen copy keeps the changes. The log line `display on` gives the times.
+The panel app calls `set_power` from the `on_screen` automation of
+`tsx_cards` (see [Panel app](panel-app.md), "Screen"):
 
 ```yaml
 tsx_cards:
@@ -99,6 +110,13 @@ The touchscreen platform takes the touch range from the device. The
 schema also work. It reads multi-touch (protocol B) and single-touch
 devices. Each touch report reaches LVGL in the next loop, so a fast swipe
 keeps all its points.
+
+`tsx_evdev` adds its device to the `select()` list of the ESPHome main
+loop. So an input event ends the wait of the loop at once, also with a long
+loop interval. The event times use `CLOCK_MONOTONIC`.
+`add_on_input_callback()` calls a function for each new touch, each later
+touch report and each key press, before the touchscreen platform and LVGL
+see the event. `tsx_cards` uses it for the wake and the CPU boost.
 
 A key of the `binary_sensor` platform is a name of
 `linux/input-event-codes.h` (`KEY_F13`, `BTN_LEFT`) or a number. Set

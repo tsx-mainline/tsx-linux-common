@@ -177,9 +177,12 @@ void TsxDrm::dump_config() {
   LOG_DISPLAY("", "TSX DRM", this);
   ESP_LOGCONFIG(TAG,
                 "  Device: %s\n"
-                "  Mode: %dx%d, RGB565, %d buffer(s)%s",
+                "  Mode: %dx%d, RGB565, %d buffer(s)%s\n"
+                "  Dark screen: %s, DPMS after %u ms (0: never), power-on delay %u ms",
                 this->device_.c_str(), this->width_, this->height_, this->nbuf_,
-                this->nbuf_ == 2 ? " with page flips" : "");
+                this->nbuf_ == 2 ? " with page flips" : "",
+                this->off_mode_ == OFF_BLACK ? "black frame" : "output off (DPMS)", (unsigned) this->dpms_after_,
+                (unsigned) this->power_on_delay_);
 }
 
 void TsxDrm::update() { this->do_update_(); }
@@ -339,6 +342,11 @@ void TsxDrm::loop() {
 #endif
   // Other writers (a display lambda), and frames that waited for a flip.
   this->present_(0);
+  // OFF_BLACK: a long dark time turns the output off too.
+  if (this->black_shown_ && this->dpms_after_ > 0 && millis() - this->dark_since_ >= this->dpms_after_) {
+    this->black_shown_ = false;
+    this->dpms_(false);
+  }
 }
 
 void TsxDrm::present_(int wait_ms) {
@@ -387,9 +395,7 @@ void TsxDrm::present_(int wait_ms) {
   this->dirty_full_ = false;
 }
 
-bool TsxDrm::set_power(bool on) {
-  if (this->fd_ < 0 || on == this->powered_)
-    return true;
+bool TsxDrm::dpms_(bool on) {
   if (this->dpms_prop_ == 0) {
     drmModeObjectProperties *props = drmModeObjectGetProperties(this->fd_, this->conn_id_, DRM_MODE_OBJECT_CONNECTOR);
     for (uint32_t i = 0; props != nullptr && i < props->count_props && this->dpms_prop_ == 0; i++) {
@@ -407,7 +413,7 @@ bool TsxDrm::set_power(bool on) {
   // A flip must not be pending while the CRTC goes off.
   if (this->flip_pending_)
     this->handle_events_(50);
-  uint64_t t0 = mono_us();
+  uint32_t t0 = mono_us();
   if (drmModeConnectorSetProperty(this->fd_, this->conn_id_, this->dpms_prop_,
                                   on ? DRM_MODE_DPMS_ON : DRM_MODE_DPMS_OFF) != 0) {
     ESP_LOGW(TAG, "display output %s: %s", on ? "on" : "off", strerror(errno));
@@ -418,16 +424,75 @@ bool TsxDrm::set_power(bool on) {
                        &this->mode_) != 0)
       return this->failed_("set the display mode again");
   }
-  this->powered_ = on;
+  this->dpms_off_ = !on;
   this->flip_pending_ = false;
   ESP_LOGI(TAG, "display output %s (%.1f ms)", on ? "on" : "off", (mono_us() - t0) / 1000.0);
-  if (on) {
-    // The buffers can lack changes from the time the output was off.
-    this->dirty_full_ = true;
-    this->dirty_.clear();
-    this->last_full_ = true;
-    this->present_(20);
+  return true;
+}
+
+// Show buffer b at the next vertical blank and wait (at most wait_ms) until
+// it is on the output. Without a flip (the driver refused it), set the mode
+// with b at once.
+bool TsxDrm::flip_to_(Buffer &b, int wait_ms) {
+  if (this->flip_pending_)
+    this->handle_events_(50);
+  if (drmModePageFlip(this->fd_, this->crtc_id_, b.fb, DRM_MODE_PAGE_FLIP_EVENT, &this->flip_pending_) == 0) {
+    this->flip_pending_ = true;
+    this->handle_events_(wait_ms);
+    return !this->flip_pending_;
   }
+  this->flip_pending_ = false;
+  return drmModeSetCrtc(this->fd_, this->crtc_id_, b.fb, 0, 0, &this->conn_id_, 1, &this->mode_) == 0;
+}
+
+bool TsxDrm::set_power(bool on) {
+  if (this->fd_ < 0 || on == this->powered_)
+    return true;
+  uint32_t t0 = mono_us();
+  if (!on) {
+    if (this->off_mode_ == OFF_BLACK && !this->dpms_off_) {
+      if (this->buf_[2].map == nullptr && !this->create_buffer_(this->buf_[2])) {
+        // No memory for the black frame: turn the output off.
+        this->off_mode_ = OFF_DPMS;
+        return this->set_power(false);
+      }
+      if (!this->flip_to_(this->buf_[2], 50))
+        ESP_LOGW(TAG, "the black frame is not on the output yet");
+      this->black_shown_ = true;
+      this->powered_ = false;
+      this->dark_since_ = millis();
+      ESP_LOGI(TAG, "display black, output stays on (%.1f ms)", (mono_us() - t0) / 1000.0);
+      return true;
+    }
+    if (!this->dpms_(false))
+      return false;
+    this->powered_ = false;
+    this->dark_since_ = millis();
+    return true;
+  }
+  bool from_dpms = this->dpms_off_;
+  if (from_dpms && !this->dpms_(true))
+    return false;
+  uint32_t t_out = mono_us();
+  // The buffers can lack changes from the time the screen was dark: put the
+  // full picture into the back buffer and flip to it. With OFF_BLACK the
+  // black buffer is on the output, so either picture buffer is free.
+  this->powered_ = true;
+  this->black_shown_ = false;
+  int back = this->nbuf_ == 2 ? 1 - this->front_ : 0;
+  this->copy_rects_(this->buf_[back], this->dirty_, true);
+  bool shown = this->flip_to_(this->buf_[back], 50);
+  this->front_ = back;
+  this->dirty_.clear();
+  this->dirty_full_ = false;
+  this->last_.clear();
+  this->last_full_ = true;  // the other buffer is old: the next frame copies all
+  uint32_t t_frame = mono_us();
+  if (from_dpms && this->power_on_delay_ > 0)
+    usleep(this->power_on_delay_ * 1000);
+  ESP_LOGI(TAG, "display on: %s %.1f ms, frame on the output %.1f ms%s, ready %.1f ms", from_dpms ? "output" : "black",
+           (t_out - t0) / 1000.0, (t_frame - t0) / 1000.0, shown ? "" : " (no flip event)",
+           (mono_us() - t0) / 1000.0);
   return true;
 }
 

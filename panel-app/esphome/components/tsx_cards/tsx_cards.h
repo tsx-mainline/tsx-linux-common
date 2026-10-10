@@ -120,6 +120,8 @@ class TsxCards : public Component {
   void setup() override;
   void loop() override;
   void dump_config() override;
+  /// Gives the CPU its full frequency range back (cpu.cpp).
+  void on_shutdown() override;
   float get_setup_priority() const override { return setup_priority::LATE; }
 
   void add_layout_file(const std::string &path) { this->layout_files_.push_back(path); }
@@ -164,6 +166,9 @@ class TsxCards : public Component {
     this->def_dim_level_ = dim_pct;
   }
   Trigger<bool> *get_screen_trigger() { return &this->screen_trigger_; }
+  /// The main loop interval while the screen is off (0: no change). Use it
+  /// only with input_id: tsx_evdev wakes the loop at once on an input event.
+  void set_off_loop_interval(uint32_t ms) { this->off_loop_interval_ = ms; }
   /// True while the screen is lit (on or dim).
   bool screen_is_on() const { return this->screen_ != SCREEN_OFF; }
   ScreenState screen_state() const { return this->screen_; }
@@ -244,6 +249,14 @@ class TsxCards : public Component {
   void save_level_();
   int pct_to_raw_(float pct) const;
   void read_screen_files_(bool force);
+  void on_input_(int kind);
+  // cpu.cpp: the CPU frequency boost (see docs/panel-app.md, "CPU speed").
+  void cpu_setup_();
+  void cpu_loop_();
+  void cpu_boost_();
+  void cpu_screen_(bool on);
+  enum CpuMode : uint8_t { CPU_FULL_RANGE = 0, CPU_BOOST, CPU_LOWEST };
+  void cpu_apply_(CpuMode m);
   void config_set_(const char *key, const std::string &value);
   void reap_children_();
   // overlay.cpp
@@ -344,6 +357,21 @@ class TsxCards : public Component {
   lv_obj_t *shield_{nullptr};
   uint32_t last_idle_{0};
   uint32_t last_screen_files_{0};
+  uint32_t off_loop_interval_{0}, on_loop_interval_{0};
+  uint64_t wake_event_us_{0};  // the input event of a wake (0: not from an input)
+
+  // The CPU frequency boost (cpu.cpp).
+  struct CpuPolicy {
+    std::string dir;          // /sys/devices/system/cpu/cpufreq/policyN
+    uint32_t min{0}, max{0};  // kHz, cpuinfo_min_freq and cpuinfo_max_freq
+    uint32_t set_min{0}, set_max{0};  // the limits written last
+  };
+  std::vector<CpuPolicy> cpu_policies_;
+  uint32_t cpu_boost_ms_{0};      // 0: no boost
+  uint32_t cpu_boost_until_{0};
+  CpuMode cpu_mode_{CPU_FULL_RANGE};
+  bool cpu_off_lowest_{false};    // screen off: the lowest frequency only
+  uint64_t last_render_start_{0};
   std::string pref_dir_;
   std::string run_dir_{"/run/tsx"};
   Trigger<bool> screen_trigger_;

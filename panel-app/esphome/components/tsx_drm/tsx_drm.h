@@ -44,10 +44,33 @@ class TsxDrm final : public display::Display, public snapshot::Snapshot {
                       display::ColorBitness bitness, bool big_endian, int x_offset, int y_offset, int x_pad) override;
   void fill(Color color) override;
 
-  /// Turn the display output on or off (the DPMS property of the connector).
-  /// While it is off, the app can still draw: the RAM copy keeps the
-  /// changes, and the output shows the full picture when it comes on.
-  /// Returns false when the driver refused the change.
+  /// How set_power(false) makes the screen dark.
+  enum OffMode : uint8_t {
+    /// The output goes off (the DPMS property of the connector). The driver
+    /// can also cut the panel supply. A panel that comes on again can show
+    /// a white or a random picture for some frames: see set_power_on_delay().
+    OFF_DPMS = 0,
+    /// The output stays on and shows a black frame (a third dumb buffer).
+    /// The panel stays powered, so the picture comes back with the next
+    /// vertical blank, with no power-on frames.
+    OFF_BLACK,
+  };
+  void set_off_mode(OffMode m) { this->off_mode_ = m; }
+  /// OFF_BLACK: turn the output off (DPMS) too when the screen stays dark
+  /// for this time. 0: never.
+  void set_dpms_after(uint32_t ms) { this->dpms_after_ = ms; }
+  /// After the output comes on from DPMS off: wait this time after the
+  /// first frame is on the output before set_power(true) returns, so the
+  /// panel is stable before the caller turns the backlight on.
+  void set_power_on_delay(uint32_t ms) { this->power_on_delay_ = ms; }
+
+  /// Show the picture (true) or make the screen dark (false, see OffMode).
+  /// While it is dark, the app can still draw: the RAM copy keeps the
+  /// changes. set_power(true) puts the full picture into a buffer, flips to
+  /// it and returns when the flip is done (the frame is on the output, at
+  /// most about 50 ms later), so the caller can turn the backlight on with
+  /// no old, black or white frame on the glass. Returns false when the
+  /// driver refused the change.
   bool set_power(bool on);
   bool is_powered() const { return this->powered_; }
 
@@ -81,6 +104,8 @@ class TsxDrm final : public display::Display, public snapshot::Snapshot {
   bool lvgl_hooked_{false};
 #endif
   bool failed_(const char *what);
+  bool dpms_(bool on);
+  bool flip_to_(Buffer &b, int wait_ms);
 
   std::string device_;
   bool flip_{true};
@@ -88,12 +113,16 @@ class TsxDrm final : public display::Display, public snapshot::Snapshot {
   uint32_t conn_id_{0}, crtc_id_{0};
   drmModeModeInfo mode_{};
   int width_{0}, height_{0};
-  Buffer buf_[2];
+  Buffer buf_[3];  // two for the picture, the third (OFF_BLACK) is black
   int nbuf_{0};
   int front_{0};
   bool flip_pending_{false};
   bool flip_failed_{false};
   bool powered_{true};
+  bool dpms_off_{false};    // the output is off (DPMS)
+  bool black_shown_{false}; // OFF_BLACK: the black buffer is on the output
+  OffMode off_mode_{OFF_DPMS};
+  uint32_t dpms_after_{0}, power_on_delay_{0}, dark_since_{0};
   uint32_t dpms_prop_{0};
   uint16_t *shadow_{nullptr};
   // Changed areas not shown yet, and the areas of the last frame shown

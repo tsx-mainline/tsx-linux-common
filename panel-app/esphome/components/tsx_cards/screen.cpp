@@ -15,6 +15,15 @@
 // - While the screen is dim or off, a transparent "shield" on the top layer
 //   takes the touch. A touch wakes the screen, and the shield stays until
 //   the finger lifts, so the touch that wakes does not act on a card.
+// - With input_id, the wake comes from the input device itself (tsx_evdev
+//   calls on_input_() for the first report of a touch), before LVGL reads
+//   the touch. So a short tap wakes the screen, also when LVGL never sees
+//   it pressed. The shield then stays until the finger lifts and LVGL had
+//   time to read the release (SHIELD_GUARD_MS).
+// - The wake order: the CPU at full speed (cpu.cpp), the picture on the
+//   output (on_screen: the display puts the full frame on the output and
+//   waits for the flip), and only then the backlight. So the glass never
+//   shows an old, a black or a white frame with the backlight on.
 #include "tsx_cards.h"
 
 #include <algorithm>
@@ -29,6 +38,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <ctime>
+
+#include "esphome/core/application.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
@@ -39,6 +51,15 @@ static const char *const TAG = "tsx_cards.screen";
 // A value set on the panel (overlay, Home Assistant) wins over the files
 // until tsx-config apply has written them.
 static const uint32_t LOCAL_SET_HOLD_MS = 30000;
+// The shield stays this long after the last touch report: the touchscreen
+// component and LVGL read the touch one or two loop passes later.
+static const uint32_t SHIELD_GUARD_MS = 120;
+
+static uint64_t now_us() {
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return uint64_t(ts.tv_sec) * 1000000ULL + ts.tv_nsec / 1000;
+}
 
 static bool read_line(const std::string &path, std::string &out) {
   FILE *f = fopen(path.c_str(), "r");
@@ -176,6 +197,27 @@ void TsxCards::screen_setup_() {
   lv_obj_add_flag(this->shield_, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(this->shield_, LV_OBJ_FLAG_HIDDEN);
   this->last_idle_ = lv_display_get_inactive_time(nullptr);
+#ifdef USE_TSX_CARDS_INPUT
+  if (this->input_ != nullptr)
+    this->input_->add_on_input_callback([this](tsx_evdev::TsxEvdev::Activity a) { this->on_input_(a); });
+#endif
+  this->on_loop_interval_ = App.get_loop_interval();
+  this->cpu_setup_();
+}
+
+// An input event, at once (tsx_evdev loop), before LVGL sees it.
+void TsxCards::on_input_(int kind) {
+#ifdef USE_TSX_CARDS_INPUT
+  if (kind == tsx_evdev::TsxEvdev::TOUCH_START && this->screen_ != SCREEN_ON) {
+    this->wake_event_us_ = this->input_->touch_start_us();
+    this->wake("touch");
+    return;
+  }
+  // A key wakes the screen in key_state(), which also keeps the key from
+  // acting.
+  if (this->screen_ == SCREEN_ON)
+    this->cpu_boost_();
+#endif
 }
 
 int TsxCards::pct_to_raw_(float pct) const {
@@ -225,19 +267,24 @@ static bool pointer_pressed() {
 
 void TsxCards::screen_loop_() {
   uint32_t now = millis();
+  this->cpu_loop_();
   if (now - this->last_screen_files_ >= 5000)
     this->read_screen_files_(false);
   uint32_t idle = lv_display_get_inactive_time(nullptr);
+  // With no input device of its own, LVGL tells of a touch.
   if (this->screen_ != SCREEN_ON && idle < this->last_idle_)
     this->wake("touch");
   this->last_idle_ = idle;
   if (this->shield_ != nullptr && !lv_obj_has_flag(this->shield_, LV_OBJ_FLAG_HIDDEN)) {
+    bool finger = false;
 #ifdef USE_TSX_CARDS_INPUT
     // A tap that woke the screen is no five-finger tap.
-    if (this->input_ != nullptr)
+    if (this->input_ != nullptr) {
       this->input_->take_tap();
+      finger = this->input_->touch_count() > 0 || now - this->input_->last_input_ms() < SHIELD_GUARD_MS;
+    }
 #endif
-    if (this->screen_ == SCREEN_ON && !pointer_pressed()) {
+    if (this->screen_ == SCREEN_ON && !finger && !pointer_pressed()) {
       lv_obj_add_flag(this->shield_, LV_OBJ_FLAG_HIDDEN);
       lv_display_trigger_activity(nullptr);
       this->last_idle_ = 0;
@@ -276,19 +323,44 @@ void TsxCards::screen_set_(ScreenState s, const char *origin) {
     }
   }
   switch (s) {
-    case SCREEN_ON:
+    case SCREEN_ON: {
+      // The CPU first: the frame copy and the first frames run at full
+      // speed. Then the picture on the output, then the backlight.
+      uint64_t t0 = now_us();
+      if (prev == SCREEN_OFF && this->off_loop_interval_ > 0)
+        App.set_loop_interval(this->on_loop_interval_);
+      this->cpu_screen_(true);
+      this->cpu_boost_();
+      uint64_t t_cpu = now_us();
       if (prev == SCREEN_OFF)
         this->screen_trigger_.trigger(true);
+      uint64_t t_out = now_us();
       this->write_backlight_(this->pct_to_raw_(this->level_pct_));
+      uint64_t t_bl = now_us();
       lv_display_trigger_activity(nullptr);
       this->last_idle_ = 0;
+      if (this->wake_event_us_ != 0 && this->wake_event_us_ <= t0)
+        ESP_LOGI("perf", "wake (%s): backlight on %.1f ms after the input event (to the wake %.1f ms, CPU %.1f ms, "
+                 "picture %.1f ms)",
+                 origin, (t_bl - this->wake_event_us_) / 1000.0, (t0 - this->wake_event_us_) / 1000.0,
+                 (t_cpu - t0) / 1000.0, (t_out - t_cpu) / 1000.0);
+      else
+        ESP_LOGI("perf", "wake (%s): backlight on %.1f ms after the wake (CPU %.1f ms, picture %.1f ms)", origin,
+                 (t_bl - t0) / 1000.0, (t_cpu - t0) / 1000.0, (t_out - t_cpu) / 1000.0);
+      this->wake_event_us_ = 0;
       break;
+    }
     case SCREEN_DIM:
       this->write_backlight_(this->pct_to_raw_(std::min<float>(this->dim_pct_, this->level_pct_)));
       break;
     case SCREEN_OFF:
       this->write_backlight_(0);
       this->screen_trigger_.trigger(false);
+      this->cpu_screen_(false);
+      if (this->off_loop_interval_ > 0) {
+        this->on_loop_interval_ = App.get_loop_interval();
+        App.set_loop_interval(this->off_loop_interval_);
+      }
       break;
   }
 }
@@ -298,6 +370,11 @@ void TsxCards::wake(const char *origin) {
     lv_display_trigger_activity(nullptr);
     return;
   }
+#ifdef USE_TSX_CARDS_INPUT
+  // A key: the time of its event, for the wake time in the log.
+  if (this->wake_event_us_ == 0 && this->input_ != nullptr && strncmp(origin, "key ", 4) == 0)
+    this->wake_event_us_ = this->input_->last_event_us();
+#endif
   this->screen_set_(SCREEN_ON, origin);
 }
 

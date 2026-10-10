@@ -2,6 +2,8 @@
 
 #ifdef USE_HOST
 #include <array>
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -61,6 +63,19 @@ class TsxEvdev : public Component {
   }
   /// millis() of the last touch or key event.
   uint32_t last_input_ms() const { return this->last_input_; }
+  /// The kernel time (CLOCK_MONOTONIC, microseconds) of the last event that
+  /// this component handled, and of the first report of the current or last
+  /// touch.
+  uint64_t last_event_us() const { return this->event_us_; }
+  uint64_t touch_start_us() const { return this->touch_start_us_; }
+
+  /// What a callback of add_on_input_callback() gets.
+  enum Activity : uint8_t { TOUCH_START = 0, TOUCH, KEY };
+  /// A function that runs at once, inside loop(), for each new touch (the
+  /// first finger comes down), each later touch report and each key press.
+  /// It runs before the touchscreen platform and LVGL see the report, so a
+  /// screen can wake and a CPU can speed up before they act on it.
+  void add_on_input_callback(std::function<void(Activity)> &&cb) { this->callbacks_.push_back(std::move(cb)); }
   void set_tap_time(uint32_t ms) { this->tap_ms_ = ms; }
   /// The range of the touch coordinates that the device reports.
   int x_min() const { return this->x_min_; }
@@ -87,6 +102,12 @@ class TsxEvdev : public Component {
   int count_{0}, gesture_max_{0}, tap_{0};
   bool moved_{false};
   uint32_t touch_t0_{0}, last_input_{0}, tap_ms_{600};
+  uint64_t event_us_{0}, touch_start_us_{0};
+  std::vector<std::function<void(Activity)>> callbacks_;
+  void notify_(Activity a) {
+    for (auto &cb : this->callbacks_)
+      cb(a);
+  }
   std::array<Point, kSlots> start_{};
 };
 

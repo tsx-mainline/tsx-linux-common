@@ -28,6 +28,10 @@ JSON layout file. See docs/panel-app.md of tsx-linux-common.
       overlay_timeout: 10s
       on_screen:                    # the screen goes on (on = true) or off
         - lambda: id(panel_display).set_power(on);
+      screen_off_loop_interval: 0ms # the main loop interval while the screen is off (0ms = no change)
+
+The CPU boost (CPUFREQ_BOOST_MS and CPUFREQ_SCREEN_OFF of panel-board.conf)
+needs no YAML: see docs/panel-app.md, "CPU speed".
 
 A key of the panel calls the component from a lambda, at each change:
     id(panel_cards).key_state("home", x);
@@ -59,6 +63,7 @@ CONF_BLANK_TIMEOUT = "blank_timeout"
 CONF_DIM_LEVEL = "dim_level"
 CONF_OVERLAY_TIMEOUT = "overlay_timeout"
 CONF_ON_SCREEN = "on_screen"
+CONF_OFF_LOOP_INTERVAL = "screen_off_loop_interval"
 
 # The font slots of tsx_cards.h (enum FontSlot).
 FONT_SLOTS = {"small": 0, "label": 1, "value": 2, "clock": 3, "icon": 4}
@@ -111,6 +116,13 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_DIM_LEVEL, default="30%"): cv.All(cv.percentage_int, cv.Range(min=1)),
             cv.Optional(CONF_OVERLAY_TIMEOUT, default="10s"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_ON_SCREEN): automation.validate_automation({}),
+            # The main loop interval while the screen is off (0ms: no
+            # change). With input_id a touch or a key still ends the wait
+            # at once.
+            cv.Optional(CONF_OFF_LOOP_INTERVAL, default="0ms"): cv.All(
+                cv.positive_time_period_milliseconds,
+                cv.Range(max=cv.TimePeriod(milliseconds=1000)),
+            ),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _lvgl_uses,
@@ -148,6 +160,7 @@ async def to_code(config):
         )
     )
     cg.add(var.set_overlay_timeout(config[CONF_OVERLAY_TIMEOUT].total_milliseconds))
+    cg.add(var.set_off_loop_interval(config[CONF_OFF_LOOP_INTERVAL].total_milliseconds))
     for conf in config.get(CONF_ON_SCREEN, []):
         await automation.build_automation(var.get_screen_trigger(), [(bool, "on")], conf)
     # The component subscribes to states and sends actions itself, through

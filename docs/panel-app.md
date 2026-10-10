@@ -60,6 +60,7 @@ The board YAML has no value of one panel and needs no `secrets.yaml`. The board 
 | `dim_timeout`, `blank_timeout`, `dim_level` | 60 s, 300 s, 30 % | The defaults of the screen (see "Screen"). |
 | `overlay_timeout` | 10 s | The time with no touch before the settings overlay closes. |
 | `on_screen` | none | An automation that runs when the screen goes off (`on` is false) or comes on again (`on` is true). |
+| `screen_off_loop_interval` | 0 ms | The main loop interval while the screen is off. 0 ms keeps the interval. Use it only with `input_id`: `tsx_evdev` ends the wait of the loop at once for a touch or a key. |
 | `fonts` | | The fonts: `small` (states, page bar), `label` (card names), `value` (sensor values), `clock` (the time) and `icon`. A font is an LVGL font name (for example `montserrat_20`) or the id of an ESPHome font. The `icon` font must hold the glyphs of `icon-glyphs.yaml`. |
 
 `/var/lib/tsx` keeps its contents after an image update (see the service `tsx-data` in [Layout](layout.md)). So the layout of the user goes there. A board can ship a default layout in `/etc/tsx`.
@@ -323,8 +324,10 @@ The app controls the backlight of the panel (the first folder in `/sys/class/bac
 
 - The brightness is a percent of the slider, 1 to 100. On a backlight with more than 64 steps, the slider maps to the steps with a square, as the slider of the kiosk overlay does. So the dark end has finer steps. `BACKLIGHT_MIN` and `BACKLIGHT_MAX` of `/etc/tsx/panel-board.conf` set the lowest lit level and the highest level.
 - The app keeps the brightness in `ESPHOME_PREFDIR/backlight` (`/var/lib/tsx/panel-app/backlight`). Before the first change, the app keeps the level that the panel has at the start.
-- After `dim_timeout` with no touch and no key, the backlight goes to the dim level. After `blank_timeout`, the backlight goes off and the app runs `on_screen` with `on` false. A board can turn the display output off there (for example the `set_power` of `tsx_drm`). Then the glass shows no picture in room light.
-- A touch or a key wakes the screen. While the screen is dim or off, a transparent object on the top layer takes the touch. It stays until the finger lifts. So the touch that wakes the screen does not tap a card and does not change the page. A key that wakes the screen does no action and sends no event.
+- After `dim_timeout` with no touch and no key, the backlight goes to the dim level. After `blank_timeout`, the backlight goes off and the app runs `on_screen` with `on` false. A board can make the display dark there (for example the `set_power` of `tsx_drm`, with a black frame or with the output off). Then the glass shows no picture in room light.
+- A touch or a key wakes the screen. While the screen is dim or off, a transparent object on the top layer takes the touch. It stays until the finger lifts and for 120 ms after the last touch report. So the touch that wakes the screen does not tap a card and does not change the page. A key that wakes the screen does no action and sends no event.
+- With `input_id`, the first report of a touch wakes the screen at once, in the loop of `tsx_evdev`. LVGL does not have to read the touch first. So a very short tap also wakes the screen.
+- The wake has a fixed order. First the CPU goes to full speed (see "CPU speed"). Then the app runs `on_screen` with `on` true: the display puts the full picture on the output and waits for the flip. Then the backlight comes on. So the glass shows no old, black or white frame with the backlight on.
 - A five-finger tap or a key opens the settings overlay only while the screen is on.
 
 The times and the dim level come from these places. A later place wins:
@@ -348,6 +351,17 @@ The app has these Home Assistant entities for the screen. Home Assistant can cha
 | Blank timeout | number, s | `BLANK_TIMEOUT`. |
 | Dim timeout | number, s | `DIM_TIMEOUT`. |
 | Dim level | number, 1 to 100 % | `DIM_LEVEL`. |
+
+## CPU speed
+
+A UI draws in short bursts. A load governor such as `ondemand` sees the load of a burst only after its sample time. So the first frames of a page change run at a low clock. The app can set the frequency limits of the CPU itself. Two keys of `/etc/tsx/panel-board.conf` turn this on:
+
+| Key | Meaning |
+|---|---|
+| `CPUFREQ_BOOST_MS` | After each touch report, key press, redraw burst (two frames within 100 ms) and wake, the app sets `scaling_min_freq` to the highest frequency for this time. Then it sets the lowest frequency again, and the governor scales the CPU down. 0 or no key: no boost. |
+| `CPUFREQ_SCREEN_OFF` | `lowest`: while the screen is off, the app sets `scaling_max_freq` to the lowest frequency. At the wake it sets the full range again, before the picture. `keep` or no key: the full range. |
+
+The app writes only the two limits of each policy in `/sys/devices/system/cpu/cpufreq` (`TSX_CPUFREQ_SYS` replaces this folder for tests). It writes the full range (`cpuinfo_min_freq` to `cpuinfo_max_freq`) at the start and at the end. The board sets the governor and its settings, for example in a boot service. A write that changes the frequency also changes the core voltage. On a single-core ARM CPU, such a write can take 2 to 10 ms.
 
 ## Settings overlay
 
@@ -420,6 +434,7 @@ The app writes the times of the start and of a reload to the log, with the tag `
 | `layout read and parse`, `build` | The time to read and parse the file and to make the LVGL objects. |
 | `layout reload` | The time from the file read to the new frame. |
 | `page change` | The time from a page change to the new frame. |
+| `wake (ORIGIN)` | The time from the input event (or from the wake call) to the backlight on, with the parts: to the wake, the CPU limits, and the picture on the output. |
 | `last 60 s` | The frames that LVGL drew in the last minute, and their average render time. A screen with no change draws no frame. |
 
 A tap or a key press writes a line with the tag `tsx_cards`, for example `tap on page 1 card 3 (light light.kitchen): action light.toggle`.

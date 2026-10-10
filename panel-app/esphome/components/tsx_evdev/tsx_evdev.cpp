@@ -8,8 +8,11 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <ctime>
+
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
+#include "esphome/core/wake.h"
 
 namespace esphome::tsx_evdev {
 
@@ -50,6 +53,14 @@ bool TsxEvdev::open_() {
         this->y_max_ = ai.maximum;
       }
     }
+    // Event times on the clock of mono_us() in the other components (the
+    // default is the wall clock). This changes only this reader.
+    int clk = CLOCK_MONOTONIC;
+    ioctl(fd, EVIOCSCLOCKID, &clk);
+    // The main loop sleeps in select() between its passes (up to the loop
+    // interval). With the device in its list, an event ends the sleep at
+    // once: a touch on a dark screen does not wait for the next pass.
+    wake_register_fd(fd);
     this->fd_ = fd;
     this->opened_ = p + " (" + name + ")";
     ESP_LOGI(TAG, "input %s", this->opened_.c_str());
@@ -59,8 +70,10 @@ bool TsxEvdev::open_() {
 }
 
 void TsxEvdev::close_() {
-  if (this->fd_ >= 0)
+  if (this->fd_ >= 0) {
+    wake_unregister_fd(this->fd_);
     close(this->fd_);
+  }
   this->fd_ = -1;
   for (auto &s : this->slots_)
     s.id = -1;
@@ -87,9 +100,11 @@ void TsxEvdev::track_touch_() {
       this->moved_ = true;
     }
   }
-  if (n > 0 && this->count_ == 0) {
+  bool start = n > 0 && this->count_ == 0;
+  if (start) {
     // The first finger of a new touch.
     this->touch_t0_ = now;
+    this->touch_start_us_ = this->event_us_;
     this->gesture_max_ = 0;
     this->moved_ = false;
   }
@@ -101,6 +116,8 @@ void TsxEvdev::track_touch_() {
       ESP_LOGD(TAG, "%d-finger tap", this->tap_);
   }
   this->count_ = n;
+  if (n > 0 || start)
+    this->notify_(start ? TOUCH_START : TOUCH);
 }
 
 void TsxEvdev::setup() {
@@ -139,6 +156,7 @@ void TsxEvdev::loop() {
     }
     for (size_t i = 0; i < size_t(n) / sizeof(input_event); i++) {
       const input_event &e = ev[i];
+      this->event_us_ = uint64_t(e.input_event_sec) * 1000000ULL + e.input_event_usec;
       if (e.type == EV_ABS) {
         this->touch_data_ = true;
         switch (e.code) {
@@ -176,6 +194,8 @@ void TsxEvdev::loop() {
           this->touch_data_ = true;
         } else if (e.value != 2) {  // 2: auto repeat
           this->last_input_ = millis();
+          if (e.value == 1)
+            this->notify_(KEY);
           for (auto &k : this->keys_) {
             if (k.first == e.code)
               k.second->publish_state(e.value != 0);

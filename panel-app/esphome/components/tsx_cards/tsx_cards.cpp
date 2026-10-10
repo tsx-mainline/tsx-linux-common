@@ -479,7 +479,13 @@ void TsxCards::mark_(const char *what) {
 
 void TsxCards::on_render(bool ready) {
   if (!ready) {
-    this->render_t0_ = mono_us();
+    uint64_t t = mono_us();
+    this->render_t0_ = t;
+    // A second frame within 100 ms is a redraw burst (an animation, a
+    // swipe, many state changes): the CPU at full speed for it.
+    if (t - this->last_render_start_ < 100000)
+      this->cpu_boost_();
+    this->last_render_start_ = t;
     return;
   }
   uint64_t now = mono_us();
