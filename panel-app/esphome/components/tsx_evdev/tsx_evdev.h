@@ -44,6 +44,24 @@ class TsxEvdev : public Component {
     return c;
   }
   const std::array<Point, kSlots> &points() const { return this->slots_; }
+
+  /// The number of fingers on the screen now.
+  int touch_count() const { return this->count_; }
+  /// The largest number of fingers of the current touch, or of the last one
+  /// when no finger is down. A touch starts when the first finger comes down
+  /// and ends when the last finger lifts.
+  int gesture_fingers() const { return this->gesture_max_; }
+  /// The number of fingers of the last tap, once: a touch that ended within
+  /// the tap time with no finger moved more than 1/20 of the touch range. 0
+  /// when there was no new tap.
+  int take_tap() {
+    int n = this->tap_;
+    this->tap_ = 0;
+    return n;
+  }
+  /// millis() of the last touch or key event.
+  uint32_t last_input_ms() const { return this->last_input_; }
+  void set_tap_time(uint32_t ms) { this->tap_ms_ = ms; }
   /// The range of the touch coordinates that the device reports.
   int x_min() const { return this->x_min_; }
   int x_max() const { return this->x_max_; }
@@ -63,6 +81,13 @@ class TsxEvdev : public Component {
   bool mt_{false};
   bool touch_data_{false}, touch_changed_{false};
   int x_min_{0}, x_max_{0}, y_min_{0}, y_max_{0};
+
+  // The tap tracker (a touch with any number of fingers).
+  void track_touch_();
+  int count_{0}, gesture_max_{0}, tap_{0};
+  bool moved_{false};
+  uint32_t touch_t0_{0}, last_input_{0}, tap_ms_{600};
+  std::array<Point, kSlots> start_{};
 };
 
 }  // namespace esphome::tsx_evdev

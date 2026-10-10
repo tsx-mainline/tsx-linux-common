@@ -39,10 +39,17 @@ import sys
 MAX_PAGES = 16
 MAX_CARDS = 48
 MAX_GRID = 12
-TYPES = ("light", "switch", "scene", "script", "sensor", "weather", "clock")
-NEEDS_DOMAIN = {"light": "light", "scene": "scene", "script": "script", "weather": "weather"}
-COMMON_KEYS = {"type", "entity_id", "label", "icon", "x", "y", "w", "h", "tap"}
-TYPE_KEYS = {"sensor": {"attribute", "unit", "precision"}, "clock": {"format", "date_format"}}
+TYPES = ("light", "switch", "scene", "script", "sensor", "weather", "clock",
+         "cover", "climate", "media_player", "fan", "conditional")
+NEEDS_DOMAIN = {"light": "light", "scene": "scene", "script": "script", "weather": "weather",
+                "cover": "cover", "climate": "climate", "media_player": "media_player", "fan": "fan"}
+COMMON_KEYS = {"type", "entity_id", "label", "icon", "x", "y", "w", "h", "tap", "hold"}
+TYPE_KEYS = {"sensor": {"attribute", "unit", "precision"}, "clock": {"format", "date_format"},
+             "climate": {"step"}}
+NO_HOLD = ("clock", "conditional")
+CONDITIONAL_KEYS = {"type", "entity_id", "x", "y", "w", "h", "state", "state_not", "card"}
+PLACE_KEYS = ("x", "y", "w", "h")
+KEY_ACTIONS = ("next_page", "prev_page", "setup", "overlay", "lights", "screen_off")
 THEME_KEYS = ("background", "card", "card_on", "text", "text_dim")
 ICON_FILE = "/usr/local/share/tsx/panel-app/icons.txt"
 ENTITY_RE = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
@@ -71,7 +78,7 @@ def check_action(v, is_key):
     if isinstance(v, str):
         if v == "none" or (not is_key and v == "default"):
             return
-        if is_key and v in ("next_page", "prev_page", "setup"):
+        if is_key and v in KEY_ACTIONS:
             return
         if is_key and re.fullmatch(r"page:[0-9]+", v) and 1 <= int(v[5:]) <= MAX_PAGES:
             return
@@ -92,34 +99,12 @@ def check_action(v, is_key):
                 raise CardError(f'data "{dk}" of an action must be a text, a number or true/false')
 
 
-def check_card(c, page, where, warnings, icons):
-    if not isinstance(c, dict):
-        raise CardError("a card must be an object")
-    t = c.get("type")
-    if not isinstance(t, str):
-        raise CardError('no "type"')
-    if t not in TYPES:
-        raise CardError(f'unknown type "{t}"')
-    for k in c:
-        if k not in COMMON_KEYS and k not in TYPE_KEYS.get(t, ()):
-            warnings.append(f'{where}: unknown key "{k}" (ignored)')
-    if t != "clock":
-        e = c.get("entity_id")
-        if not isinstance(e, str) or not ENTITY_RE.fullmatch(e):
-            raise CardError('no valid "entity_id" (domain.object_id)')
-        need = NEEDS_DOMAIN.get(t)
-        if need and e.split(".")[0] != need:
-            raise CardError(f"a {t} card needs a {need} entity")
-    elif "entity_id" in c:
-        warnings.append(f"{where}: a clock card has no entity_id (ignored)")
-    if "label" in c and not isinstance(c["label"], str):
-        raise CardError('"label" must be a text')
-    if "icon" in c:
-        if not isinstance(c["icon"], str) or not ICON_RE.fullmatch(c["icon"]):
-            raise CardError('"icon" must be "mdi:name"')
-        if icons is not None and c["icon"][4:] not in icons:
-            warnings.append(f'{where}: icon {c["icon"]} is not in the icon font (the card shows its default icon)')
+def card_place(c, page, inner):
+    """The size and the cell of a card: w, h, x and y, with the defaults.
+    An inner card has no place (the conditional card sets it)."""
     card = {"w": 1, "h": 1, "x": -1, "y": -1}
+    if inner:
+        return card
     if "w" in c:
         if not is_int(c["w"], 1, page["columns"]):
             raise CardError('"w" must be 1 to the columns of the page')
@@ -136,6 +121,73 @@ def check_card(c, page, where, warnings, icons):
         if c["x"] + card["w"] > page["columns"] or c["y"] + card["h"] > page["rows"]:
             raise CardError("the card goes past the edge of the grid")
         card["x"], card["y"] = c["x"], c["y"]
+    return card
+
+
+def check_states(c, name):
+    v = c[name]
+    if isinstance(v, str):
+        return
+    if not isinstance(v, list) or not 1 <= len(v) <= 16 or not all(isinstance(i, str) for i in v):
+        raise CardError(f'"{name}" must be a text or a list of 1 to 16 texts')
+
+
+def check_conditional(c, page, where, warnings, icons):
+    if "state" not in c and "state_not" not in c:
+        raise CardError('a conditional card needs "state" or "state_not"')
+    if "state" in c and "state_not" in c:
+        raise CardError('give "state" or "state_not", not both')
+    check_states(c, "state" if "state" in c else "state_not")
+    inner = c.get("card")
+    if not isinstance(inner, dict):
+        raise CardError('a conditional card needs a "card" object')
+    if inner.get("type") == "conditional":
+        raise CardError('"card": a conditional card cannot hold a conditional card')
+    try:
+        check_card(inner, page, f"{where} card", warnings, icons, inner=True)
+    except CardError as e:
+        raise CardError(f'"card": {e}') from None
+
+
+def check_card(c, page, where, warnings, icons, inner=False):
+    """Check one card. inner is True for the card inside a conditional card:
+    it has no place of its own, so x, y, w and h are not used."""
+    if not isinstance(c, dict):
+        raise CardError("a card must be an object")
+    t = c.get("type")
+    if not isinstance(t, str):
+        raise CardError('no "type"')
+    if t not in TYPES:
+        raise CardError(f'unknown type "{t}"')
+    allowed = CONDITIONAL_KEYS if t == "conditional" else COMMON_KEYS | TYPE_KEYS.get(t, set())
+    for k in c:
+        if inner and k in PLACE_KEYS:
+            warnings.append(f'{where}: "{k}" is ignored (the conditional card sets the place)')
+        elif k not in allowed or (t == "clock" and k == "hold"):
+            warnings.append(f'{where}: unknown key "{k}" (ignored)')
+    if t != "clock":
+        e = c.get("entity_id")
+        if not isinstance(e, str) or not ENTITY_RE.fullmatch(e):
+            raise CardError('no valid "entity_id" (domain.object_id)')
+        need = NEEDS_DOMAIN.get(t)
+        if need and e.split(".")[0] != need:
+            raise CardError(f"a {t} card needs a {need} entity")
+        if t == "conditional":
+            check_conditional(c, page, where, warnings, icons)
+    elif "entity_id" in c:
+        warnings.append(f"{where}: a clock card has no entity_id (ignored)")
+    if t == "conditional":
+        out = dict(c)
+        out.update(card_place(c, page, inner))
+        return out
+    if "label" in c and not isinstance(c["label"], str):
+        raise CardError('"label" must be a text')
+    if "icon" in c:
+        if not isinstance(c["icon"], str) or not ICON_RE.fullmatch(c["icon"]):
+            raise CardError('"icon" must be "mdi:name"')
+        if icons is not None and c["icon"][4:] not in icons:
+            warnings.append(f'{where}: icon {c["icon"]} is not in the icon font (the card shows its default icon)')
+    card = card_place(c, page, inner)
     if t == "sensor":
         if "attribute" in c and (not isinstance(c["attribute"], str) or not c["attribute"]):
             raise CardError('"attribute" must be a text')
@@ -148,11 +200,16 @@ def check_card(c, page, where, warnings, icons):
             raise CardError('"format" must be a text')
         if "date_format" in c and not isinstance(c["date_format"], str):
             raise CardError('"date_format" must be a text')
-    if "tap" in c:
-        try:
-            check_action(c["tap"], False)
-        except CardError as e:
-            raise CardError(f'"tap": {e}') from None
+    if t == "climate" and "step" in c:
+        v = c["step"]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0.1 <= v <= 10:
+            raise CardError('"step" must be a number from 0.1 to 10')
+    for name in ("tap", "hold"):
+        if name in c and not (name == "hold" and t in NO_HOLD):
+            try:
+                check_action(c[name], False)
+            except CardError as e:
+                raise CardError(f'"{name}": {e}') from None
     out = dict(c)
     out.update(card)
     return out

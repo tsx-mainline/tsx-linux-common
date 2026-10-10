@@ -9,8 +9,11 @@
 #    tsx-layout-check --placed, also with cards that the app leaves out)
 #  - pages: add, rename, move, remove (the keys that show a page follow)
 #  - cards: add, remove, move, the type keys, the entity id, the icon picker,
-#    the tap action and the entity suggestions
-#  - the theme, the keys (also the action "setup"), the raw JSON view
+#    the tap and hold actions, the entity suggestions, the new types (the
+#    step of a climate card) and the conditional card (the condition, the
+#    states as a text or a list, the inner card)
+#  - the theme, the keys (the actions setup, overlay, lights and screen_off,
+#    and the default of each key), the raw JSON view
 #  - the errors of the check, a refused save, a stale revision, the pairing gate
 #  - the list of Home Assistant entities: the token never comes back
 #  - the API key field of the setup page: "Make a new key" and the save payload
@@ -47,7 +50,20 @@ cat > "$T/tricky.json" <<'JSEOF'
             {"type": "clock", "h": 3}, {"type": "clock", "x": 1, "y": 1}, {"type": "clock", "w": 4}, {"type": "clock"}]},
  {"columns": 2, "rows": 2, "cards": [{"type": "clock", "w": 3}, {"type": "sensor", "entity_id": "sensor.a", "precision": 9},
             {"type": "weather", "entity_id": "weather.x", "x": 1, "y": 1}, {"type": "clock", "tap": "default"},
-            {"type": "clock", "tap": {"action": "light.toggle", "data": {"a": [1]}}}, {"type": "scene", "entity_id": "scene.s", "h": 2}]}]}
+            {"type": "clock", "tap": {"action": "light.toggle", "data": {"a": [1]}}}, {"type": "scene", "entity_id": "scene.s", "h": 2}]},
+ {"columns": 4, "rows": 2, "cards": [
+  {"type": "conditional", "entity_id": "binary_sensor.d", "state": ["on", "open"], "w": 2, "card": {"type": "switch", "entity_id": "switch.a", "x": 3, "w": 9}},
+  {"type": "conditional", "entity_id": "binary_sensor.d", "state": "on", "state_not": "off", "card": {"type": "clock"}},
+  {"type": "conditional", "entity_id": "binary_sensor.d", "state_not": [], "card": {"type": "clock"}},
+  {"type": "conditional", "entity_id": "binary_sensor.d", "state": "on", "card": {"type": "conditional", "entity_id": "light.a", "state": "on", "card": {"type": "clock"}}},
+  {"type": "conditional", "entity_id": "binary_sensor.d", "state": "on", "card": {"type": "light", "entity_id": "switch.a"}},
+  {"type": "conditional", "entity_id": "binary_sensor.d", "state": "", "card": {"type": "clock"}},
+  {"type": "climate", "entity_id": "climate.a", "step": 0.05},
+  {"type": "climate", "entity_id": "climate.a", "step": 0.5, "hold": "none"},
+  {"type": "fan", "entity_id": "fan.a", "hold": {"data": {}}},
+  {"type": "cover", "entity_id": "cover.a", "x": 0, "y": 1, "w": 2},
+  {"type": "conditional", "entity_id": "light.a", "state": "on", "x": 2, "y": 1, "card": {"type": "sensor", "entity_id": "sensor.a", "precision": 9}},
+  {"type": "media_player", "entity_id": "media_player.a"}]}]}
 JSEOF
 for n in example tricky; do
 	src="$T/tricky.json"; [ "$n" = example ] && src=$EXAMPLE
@@ -63,7 +79,9 @@ const fs = require("fs");
 const { createDom } = require(process.argv[2]);
 const read = (p) => fs.readFileSync(p, "utf8");
 const ED_TREE = JSON.parse(read(process.argv[3])), ED_SCRIPT = read(process.argv[4]);
-const EXAMPLE = JSON.parse(read(process.argv[5]));
+const EXAMPLE_FULL = JSON.parse(read(process.argv[5]));
+// the first two pages of the example layout: the tests of pages and keys use them
+const EXAMPLE = { ...EXAMPLE_FULL, pages: EXAMPLE_FULL.pages.slice(0, 2) };
 const ICONS = read(process.argv[6]).split("\n").filter(l => l && !l.startsWith("#")).map(l => l.split(/\s+/)[0]).sort();
 const PLACED = { example: JSON.parse(read(process.argv[7])), tricky: JSON.parse(read(process.argv[8])) };
 const TRICKY = JSON.parse(read(process.argv[9]));
@@ -83,9 +101,9 @@ const ENTITIES = [
   { entity_id: "switch.coffee_maker", name: "", state: "off", source: "layout" },
 ];
 const BASE = {
-  icons: ICONS, types: ["light", "switch", "scene", "script", "sensor", "weather", "clock"],
-  domains: { light: "light", scene: "scene", script: "script", weather: "weather" },
-  type_keys: { sensor: ["attribute", "precision", "unit"], clock: ["date_format", "format"] },
+  icons: ICONS, types: ["light", "switch", "scene", "script", "sensor", "weather", "clock", "cover", "climate", "media_player", "fan", "conditional"],
+  domains: { light: "light", scene: "scene", script: "script", weather: "weather", cover: "cover", climate: "climate", media_player: "media_player", fan: "fan" },
+  type_keys: { sensor: ["attribute", "precision", "unit"], clock: ["date_format", "format"], climate: ["step"] },
   theme_keys: ["background", "card", "card_on", "text", "text_dim"],
   limits: { max_pages: 16, max_cards: 48, max_grid: 12, max_gap: 40, max_precision: 6, max_file_bytes: 65536 },
   defaults: { theme: { background: "#101418", card: "#2a3038", card_on: "#c88a1e", text: "#f0f0f0", text_dim: "#9aa4b0" }, grid: { columns: 4, rows: 3, gap: 10 } },
@@ -162,7 +180,8 @@ const cellOf = (c) => { // "2 / span 3" -> [col, span]
   ok(p.$("source-note").textContent === "", "the layout of the user needs no note");
   ok(p.cardRows().length === 10, "the card list has 10 cards");
   ok(p.$("gr-columns").value === "4" && p.$("gr-gap").value === "10", "the grid defaults show");
-  ok(p.$("card-add-type").children.length === 7, "the card type list has 7 types");
+  ok(p.$("card-add-type").children.length === 12, "the card type list has 12 types");
+  ok(["cover", "climate", "media_player", "fan", "conditional"].every(t => p.$("card-add-type").children.some(o => o.value === t)), "the list has the new types");
 
   console.log("== a save with no change sends the same JSON ==");
   await p.save();
@@ -189,6 +208,17 @@ const cellOf = (c) => { // "2 / span 3" -> [col, span]
   ok(p.$("chips").children.length >= 2, "the cards that are not shown are listed under the preview");
   p.selectPage(1); got = p.pcards().map(cellOf);
   ok(same(got, PLACED.tricky[1]), "a page with cards that have bad values: " + JSON.stringify(got) + " (tsx-layout-check: " + JSON.stringify(PLACED.tricky[1]) + ")");
+
+  p = loadEditor({ layout: clone(EXAMPLE_FULL) });
+  await flush();
+  p.selectPage(2); got = p.pcards().map(cellOf);
+  ok(same(got, PLACED.example[2]) && got.length === 5, "page 3 of the example (the new types and a conditional card): " + JSON.stringify(got));
+  p.selectPage(2); p.selectCard(4);
+  ok(p.$("card-edit").textContent.indexOf("The card that the condition shows") >= 0, "the form of a conditional card has the inner card");
+  p = loadEditor({ layout: clone(TRICKY) });
+  await flush();
+  p.selectPage(2); got = p.pcards().map(cellOf);
+  ok(same(got, PLACED.tricky[2]), "cards with conditional rules, step and hold that the app leaves out: " + JSON.stringify(got) + " (tsx-layout-check: " + JSON.stringify(PLACED.tricky[2]) + ")");
 
   console.log("== the preview uses the places of the check when it matches the layout ==");
   p = loadEditor({ check: { status: 200, body: { ok: true, errors: [], warnings: [], placed: [{ name: "Home", columns: 4, rows: 3, cards: [{ index: 0, x: 1, y: 1, w: 1, h: 1 }] }, { name: "Outside", columns: 3, rows: 2, cards: [] }] } } });
@@ -322,7 +352,7 @@ const cellOf = (c) => { // "2 / span 3" -> [col, span]
   p = loadEditor();
   await flush();
   p.selectCard(2);
-  const tapSel = () => p.$("card-edit").querySelectorAll("select").slice(-1)[0];
+  const tapSel = () => p.cardEdit("[name=tap]");
   ok(tapSel().value === "default", "no tap: the default shows");
   p.pick(tapSel(), "custom");
   ok(p.cardEdit("[name=action]").value === "light.turn_on", "custom: the action is a guess from the entity");
@@ -349,6 +379,103 @@ const cellOf = (c) => { // "2 / span 3" -> [col, span]
   await p.save();
   ok(p.lastSave().layout.pages[0].cards[2].tap === undefined, "default removes the key");
 
+  console.log("== the new card types, the hold action and the conditional card ==");
+  p = loadEditor();
+  await flush();
+  const lastCard = () => p.lastSave().layout.pages[0].cards.slice(-1)[0];
+  p.$("card-add-type").value = "climate";
+  p.click(p.$("card-add"));
+  p.type(p.cardEdit("[name=entity_id]"), "switch.x");
+  ok(p.$("card-edit").textContent.indexOf("A climate card needs a climate entity") >= 0, "a climate card needs a climate entity");
+  p.type(p.cardEdit("[name=entity_id]"), "climate.living_room");
+  p.type(p.cardEdit("[name=step]"), "0.5");
+  await p.save();
+  ok(same(lastCard(), { type: "climate", entity_id: "climate.living_room", step: 0.5 }), "the step is a number in the payload: " + JSON.stringify(lastCard()));
+  p.type(p.cardEdit("[name=step]"), "");
+  await p.save();
+  ok(lastCard().step === undefined, "an empty step removes the key");
+  p.type(p.cardEdit("[name=step]"), "0.5");
+  p.pick(p.cardEdit("[name=hold]"), "none");
+  await p.save();
+  ok(lastCard().hold === "none" && lastCard().tap === undefined, "hold: Nothing is in the payload");
+  p.pick(p.cardEdit("[name=hold]"), "custom");
+  ok(p.cardEdit("[name=action]").value === "climate.turn_on", "hold: a custom action is a guess from the entity");
+  p.type(p.cardEdit("[name=action]"), "climate.set_hvac_mode");
+  await p.save();
+  ok(same(lastCard().hold, { action: "climate.set_hvac_mode" }), "hold: an action object");
+  p.pick(p.cardEdit("[name=hold]"), "default");
+  await p.save();
+  ok(lastCard().hold === undefined, "hold: the default removes the key");
+  p.pick(p.$("c-type"), "fan");
+  await p.save();
+  ok(same(lastCard(), { type: "fan", entity_id: "climate.living_room" }), "a new type removes the step: " + JSON.stringify(lastCard()));
+  ok(p.cardEdit("[name=hold]") !== null && p.cardEdit("[name=tap]") !== null, "a fan card has tap and hold");
+  p.pick(p.$("c-type"), "clock");
+  ok(p.cardEdit("[name=hold]") === null && p.cardEdit("[name=tap]") !== null, "a clock card has no hold");
+  p.pick(p.$("c-type"), "cover"); p.type(p.cardEdit("[name=entity_id]"), "cover.garage_door");
+  p.pick(p.cardEdit("[name=hold]"), "none");
+  p.pick(p.$("c-type"), "clock");
+  await p.save();
+  ok(same(lastCard(), { type: "clock" }), "a clock card drops hold and entity: " + JSON.stringify(lastCard()));
+  for (const t of ["cover", "media_player", "fan"]) {
+    p.pick(p.$("c-type"), t);
+    p.type(p.cardEdit("[name=entity_id]"), t + ".a");
+    ok(p.$("card-edit").textContent.indexOf("needs a") < 0, "a " + t + " card takes a " + t + " entity");
+  }
+  ok(p.$("entity-list").children.length === 0, "the suggestions for a fan card list no entity of another domain");
+
+  p.$("card-add-type").value = "conditional";
+  p.click(p.$("card-add"));
+  await p.save();
+  ok(same(lastCard(), { type: "conditional", entity_id: "", state: "on", card: { type: "light", entity_id: "" } }), "a new conditional card has a state and an inner card: " + JSON.stringify(lastCard()));
+  ok(p.$("card-edit").textContent.indexOf("The card that the condition shows") >= 0 && p.cardEdit("[name=label]") === null && p.cardEdit("[name=tap]") === null, "a conditional card has no label and no tap of its own");
+  ok(p.$("ci-type").children.every(o => o.value !== "conditional") && p.$("ci-type").children.length === 11, "the inner card cannot be a conditional card");
+  p.type(p.cardEdit("[name=entity_id]"), "binary_sensor.front_door");
+  p.type(p.cardEdit("[name=state_values]"), "on");
+  p.type(p.cardEdit("[name=inner_entity_id]"), "light.porch");
+  p.type(p.cardEdit("[name=inner_label]"), "Porch");
+  await p.save();
+  ok(same(lastCard(), { type: "conditional", entity_id: "binary_sensor.front_door", state: "on", card: { type: "light", entity_id: "light.porch", label: "Porch" } }),
+    "one state is a text: " + JSON.stringify(lastCard()));
+  p.type(p.cardEdit("[name=state_values]"), "on, open ,opening");
+  await p.save();
+  ok(same(lastCard().state, ["on", "open", "opening"]), "more states are a list, with the spaces cut: " + JSON.stringify(lastCard().state));
+  p.pick(p.cardEdit("[name=state_kind]"), "state_not");
+  await p.save();
+  ok(lastCard().state === undefined && same(lastCard().state_not, ["on", "open", "opening"]), "state_not takes the values: " + JSON.stringify(lastCard()));
+  p.type(p.cardEdit("[name=state_values]"), "off");
+  await p.save();
+  ok(lastCard().state_not === "off" && lastCard().state === undefined, "state_not with one value is a text");
+  p.type(p.cardEdit("[name=state_values]"), "");
+  await p.save();
+  ok(lastCard().state_not === "", "an empty field is the empty text (it matches an empty state)");
+  p.pick(p.cardEdit("[name=state_kind]"), "state");
+  p.type(p.cardEdit("[name=state_values]"), "on");
+  p.pick(p.cardEdit("[name=inner_hold]"), "none");
+  p.pick(p.cardEdit("[name=inner_tap]"), "custom");
+  p.type(p.cardEdit("[name=action]"), "light.toggle");
+  await p.save();
+  ok(lastCard().card.hold === "none" && same(lastCard().card.tap, { action: "light.toggle" }) && lastCard().hold === undefined && lastCard().tap === undefined,
+    "the tap and the hold of the inner card are in the inner card: " + JSON.stringify(lastCard()));
+  p.pick(p.$("ci-type"), "sensor");
+  p.type(p.cardEdit("[name=inner_precision]"), "1");
+  p.type(p.cardEdit("[name=inner_entity_id]"), "sensor.temp");
+  await p.save();
+  ok(same(lastCard().card, { type: "sensor", entity_id: "sensor.temp", label: "Porch", hold: "none", tap: { action: "light.toggle" }, precision: 1 }), "the inner card takes the keys of its type: " + JSON.stringify(lastCard().card));
+  p.pick(p.$("ci-type"), "climate");
+  ok(p.cardEdit("[name=inner_step]") !== null && p.cardEdit("[name=inner_precision]") === null, "the inner card shows the keys of the new type");
+  p.pick(p.$("ci-type"), "clock");
+  ok(p.cardEdit("[name=inner_hold]") === null && p.cardEdit("[name=inner_entity_id]") === null, "an inner clock card has no entity and no hold");
+  await p.save();
+  ok(same(lastCard().card, { type: "clock", label: "Porch", tap: { action: "light.toggle" } }), "an inner clock card drops its entity and hold: " + JSON.stringify(lastCard().card));
+  ok(p.cardEdit("[name=entity_id]").value === "binary_sensor.front_door", "the condition keeps its entity");
+  p.pick(p.$("c-type"), "switch");
+  await p.save();
+  ok(same(lastCard(), { type: "switch", entity_id: "binary_sensor.front_door" }), "a new type removes state and card: " + JSON.stringify(lastCard()));
+  p.pick(p.$("c-type"), "conditional");
+  await p.save();
+  ok(lastCard().state === "on" && lastCard().card.type === "light" && lastCard().label === undefined, "a switch card becomes a conditional card with a new inner card");
+
   console.log("== the theme ==");
   p = loadEditor();
   await flush();
@@ -372,6 +499,15 @@ const cellOf = (c) => { // "2 / span 3" -> [col, span]
   const sel = (name) => rows().find(r => r.children[0].textContent === name).querySelector("select");
   ok(sel("home").value === "page:1" && sel("up").value === "prev_page" && sel("power").value === "default", "the stored actions show");
   ok(sel("power").children.some(o => o.value === "setup"), "setup is a choice for a key");
+  ok(["overlay", "lights", "screen_off"].every(v => sel("power").children.some(o => o.value === v)), "overlay, lights and screen_off are choices for a key");
+  const defText = (n) => sel(n).children.find(o => o.value === "default").textContent;
+  ok(defText("home").indexOf("Show page 1") >= 0 && defText("up").indexOf("previous page") >= 0 && defText("down").indexOf("next page") >= 0, "the default of home, up and down shows in the list");
+  ok(defText("power").indexOf("settings overlay") >= 0 && defText("lights").indexOf("Panel lights") >= 0, "the default of power is the overlay and of lights the panel lights: " + defText("power") + " / " + defText("lights"));
+  ok(p.$("keys-form").textContent.indexOf("power opens the settings overlay, lights turns the panel lights on or off") >= 0, "the hint of the keys names the new defaults");
+  p.pick(sel("lights"), "screen_off"); p.pick(sel("up"), "overlay");
+  await p.save();
+  ok(p.lastSave().layout.keys.lights === "screen_off" && p.lastSave().layout.keys.up === "overlay", "the new key actions are in the payload");
+  p.pick(sel("lights"), "default"); p.pick(sel("up"), "prev_page");
   ok(sel("power").children.some(o => o.value === "page:2" && o.textContent.indexOf("Outside") >= 0), "a page is a choice, with its name");
   p.pick(sel("power"), "setup");
   await p.save();

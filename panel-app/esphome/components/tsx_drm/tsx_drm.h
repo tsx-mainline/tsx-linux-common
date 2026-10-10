@@ -44,6 +44,13 @@ class TsxDrm final : public display::Display, public snapshot::Snapshot {
                       display::ColorBitness bitness, bool big_endian, int x_offset, int y_offset, int x_pad) override;
   void fill(Color color) override;
 
+  /// Turn the display output on or off (the DPMS property of the connector).
+  /// While it is off, the app can still draw: the RAM copy keeps the
+  /// changes, and the output shows the full picture when it comes on.
+  /// Returns false when the driver refused the change.
+  bool set_power(bool on);
+  bool is_powered() const { return this->powered_; }
+
   /// Time in microseconds that loop() spent in copies to the dumb buffers
   /// since the last call, and the number of frames shown. For tests.
   uint32_t take_present_stats(uint32_t *frames);
@@ -86,6 +93,8 @@ class TsxDrm final : public display::Display, public snapshot::Snapshot {
   int front_{0};
   bool flip_pending_{false};
   bool flip_failed_{false};
+  bool powered_{true};
+  uint32_t dpms_prop_{0};
   uint16_t *shadow_{nullptr};
   // Changed areas not shown yet, and the areas of the last frame shown
   // (the back buffer lacks them). More than kMaxRects: a full copy.

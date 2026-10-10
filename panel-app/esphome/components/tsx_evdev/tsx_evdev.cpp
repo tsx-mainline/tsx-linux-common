@@ -2,6 +2,7 @@
 #include "tsx_evdev.h"
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -64,6 +65,42 @@ void TsxEvdev::close_() {
   for (auto &s : this->slots_)
     s.id = -1;
   this->touch_changed_ = true;
+  this->track_touch_();
+}
+
+// Count the fingers after a touch report and follow the touch for take_tap().
+void TsxEvdev::track_touch_() {
+  int n = 0;
+  int slop_x = (this->x_max_ - this->x_min_) / 20, slop_y = (this->y_max_ - this->y_min_) / 20;
+  uint32_t now = millis();
+  for (int i = 0; i < kSlots; i++) {
+    const Point &p = this->slots_[i];
+    if (p.id < 0) {
+      this->start_[i].id = -1;
+      continue;
+    }
+    n++;
+    if (this->start_[i].id != p.id) {
+      // A new finger in this slot: its start point.
+      this->start_[i] = p;
+    } else if (abs(p.x - this->start_[i].x) > slop_x || abs(p.y - this->start_[i].y) > slop_y) {
+      this->moved_ = true;
+    }
+  }
+  if (n > 0 && this->count_ == 0) {
+    // The first finger of a new touch.
+    this->touch_t0_ = now;
+    this->gesture_max_ = 0;
+    this->moved_ = false;
+  }
+  if (n > this->gesture_max_)
+    this->gesture_max_ = n;
+  if (n == 0 && this->count_ > 0 && !this->moved_ && now - this->touch_t0_ <= this->tap_ms_) {
+    this->tap_ = this->gesture_max_;
+    if (this->tap_ > 1)
+      ESP_LOGD(TAG, "%d-finger tap", this->tap_);
+  }
+  this->count_ = n;
 }
 
 void TsxEvdev::setup() {
@@ -138,6 +175,7 @@ void TsxEvdev::loop() {
             this->slots_[0].id = e.value ? 0 : -1;
           this->touch_data_ = true;
         } else if (e.value != 2) {  // 2: auto repeat
+          this->last_input_ = millis();
           for (auto &k : this->keys_) {
             if (k.first == e.code)
               k.second->publish_state(e.value != 0);
@@ -149,9 +187,12 @@ void TsxEvdev::loop() {
           for (auto &s : this->slots_)
             s.id = -1;
           this->touch_changed_ = true;
+          this->track_touch_();
         } else if (e.code == SYN_REPORT && this->touch_data_) {
           this->touch_data_ = false;
           this->touch_changed_ = true;
+          this->last_input_ = millis();
+          this->track_touch_();
         }
       }
     }

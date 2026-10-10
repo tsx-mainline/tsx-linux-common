@@ -17,7 +17,8 @@ struct TypeName {
 const TypeName TYPES[] = {
     {"light", CardType::LIGHT},   {"switch", CardType::SWITCH},   {"scene", CardType::SCENE},
     {"script", CardType::SCRIPT}, {"sensor", CardType::SENSOR},   {"weather", CardType::WEATHER},
-    {"clock", CardType::CLOCK},
+    {"clock", CardType::CLOCK},   {"cover", CardType::COVER},     {"climate", CardType::CLIMATE},
+    {"media_player", CardType::MEDIA}, {"fan", CardType::FAN},    {"conditional", CardType::CONDITIONAL},
 };
 
 std::string fmt(const char *f, const std::string &a, const std::string &b = "") {
@@ -108,7 +109,7 @@ bool scalar_text(JsonVariantConst v, std::string &out) {
 bool valid_action_name(const std::string &a) { return valid_entity_id(a); }
 
 // An action: "none", "default" (cards only), "next_page", "prev_page",
-// "page:N", "setup" (keys only) or {"action": "domain.service", "data": {...}}.
+// "page:N", "setup", "overlay", "lights", "screen_off" (keys only) or {"action": "domain.service", "data": {...}}.
 bool parse_action(JsonVariantConst v, bool is_key, ActionSpec &out, std::string &err) {
   if (v.is<const char *>()) {
     std::string s = v.as<const char *>();
@@ -130,6 +131,18 @@ bool parse_action(JsonVariantConst v, bool is_key, ActionSpec &out, std::string 
     }
     if (is_key && s == "setup") {
       out.kind = ActionSpec::SETUP;
+      return true;
+    }
+    if (is_key && s == "overlay") {
+      out.kind = ActionSpec::OVERLAY;
+      return true;
+    }
+    if (is_key && s == "lights") {
+      out.kind = ActionSpec::LIGHTS;
+      return true;
+    }
+    if (is_key && s == "screen_off") {
+      out.kind = ActionSpec::SCREEN_OFF;
       return true;
     }
     if (is_key && s.compare(0, 5, "page:") == 0) {
@@ -180,8 +193,28 @@ bool parse_action(JsonVariantConst v, bool is_key, ActionSpec &out, std::string 
   return true;
 }
 
+// A text or a list of 1 to 16 texts.
+bool parse_states(JsonVariantConst v, std::vector<std::string> &out) {
+  out.clear();
+  if (v.is<const char *>()) {
+    out.push_back(v.as<const char *>());
+    return true;
+  }
+  if (!v.is<JsonArrayConst>())
+    return false;
+  JsonArrayConst a = v.as<JsonArrayConst>();
+  if (a.size() < 1 || a.size() > 16)
+    return false;
+  for (JsonVariantConst x : a) {
+    if (!x.is<const char *>())
+      return false;
+    out.push_back(x.as<const char *>());
+  }
+  return true;
+}
+
 bool parse_card(JsonVariantConst v, const PageSpec &page, CardSpec &c, std::string &err,
-                std::vector<std::string> &warnings, const std::string &where) {
+                std::vector<std::string> &warnings, const std::string &where, bool inner = false) {
   if (!v.is<JsonObjectConst>()) {
     err = "a card must be an object";
     return false;
@@ -203,17 +236,37 @@ bool parse_card(JsonVariantConst v, const PageSpec &page, CardSpec &c, std::stri
     err = fmt("unknown type \"%s\"", t);
     return false;
   }
+  if (inner && c.type == CardType::CONDITIONAL) {
+    err = "a conditional card cannot hold a conditional card";
+    return false;
+  }
+  bool cond = c.type == CardType::CONDITIONAL;
   // The keys that each type accepts, after the common ones.
   static const char *const COMMON[] = {"type", "entity_id", "label", "icon", "x", "y", "w", "h", "tap"};
+  static const char *const PLACE[] = {"x", "y", "w", "h"};
   for (JsonPairConst kv : o) {
     std::string k = kv.key().c_str();
-    bool known = false;
-    for (const char *ck : COMMON)
-      known |= k == ck;
+    bool known = false, place = false;
+    for (const char *pk : PLACE)
+      place |= k == pk;
+    if (inner && place) {
+      warnings.push_back(where + fmt(": \"%s\" is ignored (the conditional card sets the place)", k));
+      continue;
+    }
+    if (cond) {
+      known = place || k == "type" || k == "entity_id" || k == "state" || k == "state_not" || k == "card";
+    } else {
+      for (const char *ck : COMMON)
+        known |= k == ck;
+      if (c.type != CardType::CLOCK)
+        known |= k == "hold";
+    }
     if (c.type == CardType::SENSOR)
       known |= k == "attribute" || k == "unit" || k == "precision";
     if (c.type == CardType::CLOCK)
       known |= k == "format" || k == "date_format";
+    if (c.type == CardType::CLIMATE)
+      known |= k == "step";
     if (!known)
       warnings.push_back(where + fmt(": unknown key \"%s\" (ignored)", k));
   }
@@ -239,6 +292,18 @@ bool parse_card(JsonVariantConst v, const PageSpec &page, CardSpec &c, std::stri
       case CardType::WEATHER:
         need = "weather";
         break;
+      case CardType::COVER:
+        need = "cover";
+        break;
+      case CardType::CLIMATE:
+        need = "climate";
+        break;
+      case CardType::MEDIA:
+        need = "media_player";
+        break;
+      case CardType::FAN:
+        need = "fan";
+        break;
       default:
         break;
     }
@@ -249,8 +314,29 @@ bool parse_card(JsonVariantConst v, const PageSpec &page, CardSpec &c, std::stri
   } else if (!o["entity_id"].isNull()) {
     warnings.push_back(where + ": a clock card has no entity_id (ignored)");
   }
+  if (cond) {
+    JsonVariantConst sv = o["state"], nv = o["state_not"];
+    if (sv.isNull() && nv.isNull()) {
+      err = "a conditional card needs \"state\" or \"state_not\"";
+      return false;
+    }
+    if (!sv.isNull() && !nv.isNull()) {
+      err = "give \"state\" or \"state_not\", not both";
+      return false;
+    }
+    c.state_not = sv.isNull();
+    if (!parse_states(c.state_not ? nv : sv, c.states)) {
+      err = c.state_not ? "\"state_not\" must be a text or a list of 1 to 16 texts"
+                        : "\"state\" must be a text or a list of 1 to 16 texts";
+      return false;
+    }
+    if (!o["card"].is<JsonObjectConst>()) {
+      err = "a conditional card needs a \"card\" object";
+      return false;
+    }
+  }
   JsonVariantConst lv = o["label"];
-  if (!lv.isNull()) {
+  if (!cond && !lv.isNull()) {
     if (!lv.is<const char *>()) {
       err = "\"label\" must be a text";
       return false;
@@ -258,22 +344,22 @@ bool parse_card(JsonVariantConst v, const PageSpec &page, CardSpec &c, std::stri
     c.label = lv.as<const char *>();
   }
   JsonVariantConst iv = o["icon"];
-  if (!iv.isNull()) {
+  if (!cond && !iv.isNull()) {
     if (!iv.is<const char *>() || !valid_icon(iv.as<const char *>())) {
       err = "\"icon\" must be \"mdi:name\"";
       return false;
     }
     c.icon = iv.as<const char *>() + 4;
   }
-  if (!o["w"].isNull() && !get_int(o["w"], 1, page.columns, c.w)) {
+  if (!inner && !o["w"].isNull() && !get_int(o["w"], 1, page.columns, c.w)) {
     err = "\"w\" must be 1 to the columns of the page";
     return false;
   }
-  if (!o["h"].isNull() && !get_int(o["h"], 1, page.rows, c.h)) {
+  if (!inner && !o["h"].isNull() && !get_int(o["h"], 1, page.rows, c.h)) {
     err = "\"h\" must be 1 to the rows of the page";
     return false;
   }
-  bool hx = !o["x"].isNull(), hy = !o["y"].isNull();
+  bool hx = !inner && !o["x"].isNull(), hy = !inner && !o["y"].isNull();
   if (hx != hy) {
     err = "give both \"x\" and \"y\", or none";
     return false;
@@ -328,12 +414,37 @@ bool parse_card(JsonVariantConst v, const PageSpec &page, CardSpec &c, std::stri
       c.date_format = d.as<const char *>();
     }
   }
-  if (!o["tap"].isNull()) {
+  if (c.type == CardType::CLIMATE && !o["step"].isNull()) {
+    JsonVariantConst sv = o["step"];
+    double st = sv.as<double>();
+    if (sv.is<bool>() || !(sv.is<int>() || sv.is<float>() || sv.is<double>()) || !(st >= 0.1 - 1e-9 && st <= 10 + 1e-9)) {
+      err = "\"step\" must be a number from 0.1 to 10";
+      return false;
+    }
+    c.step = st;
+  }
+  if (!cond && !o["tap"].isNull()) {
     std::string aerr;
     if (!parse_action(o["tap"], false, c.tap, aerr)) {
       err = "\"tap\": " + aerr;
       return false;
     }
+  }
+  if (!cond && c.type != CardType::CLOCK && !o["hold"].isNull()) {
+    std::string aerr;
+    if (!parse_action(o["hold"], false, c.hold, aerr)) {
+      err = "\"hold\": " + aerr;
+      return false;
+    }
+  }
+  if (cond) {
+    auto in = std::make_shared<CardSpec>();
+    std::string ierr;
+    if (!parse_card(o["card"], page, *in, ierr, warnings, where + " card", true)) {
+      err = "\"card\": " + ierr;
+      return false;
+    }
+    c.inner = in;
   }
   return true;
 }
@@ -550,6 +661,16 @@ bool parse_layout(const std::string &text, Layout &out, std::string &error, std:
         valid.push_back(std::move(c));
     page.cards = std::move(valid);
     place_cards(page, warnings, where);
+    // The inner card of a conditional card has the place of the outer card.
+    for (auto &c : page.cards) {
+      if (c.inner) {
+        c.inner->x = c.x;
+        c.inner->y = c.y;
+        c.inner->w = c.w;
+        c.inner->h = c.h;
+        c.inner->index = c.index;
+      }
+    }
     out.pages.push_back(std::move(page));
   }
   return true;

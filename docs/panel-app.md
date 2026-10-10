@@ -12,7 +12,9 @@ One program serves all panels of a family. The program holds no value of one pan
 
 | Path | Contents |
 |---|---|
-| `panel-app/esphome/components/tsx_cards/` | The ESPHome component `tsx_cards` (C++). It reads the layout, makes the pages and cards, subscribes to the states and sends the actions. It also shows the setup banner and writes the entity list. |
+| `panel-app/esphome/components/tsx_cards/` | The ESPHome component `tsx_cards` (C++). It reads the layout, makes the pages and cards, subscribes to the states and sends the actions. It also shows the setup banner and writes the entity list. It runs the screen (`screen.cpp`), the settings overlay (`overlay.cpp`) and the detail popups (`popup.cpp`). |
+| `panel-app/esphome/components/tsx_leds/` | The ESPHome light platform `tsx_leds` (C++): a light on a Linux LED device (see "Panel lights"). |
+| `panel-app/usr/local/lib/tsx/config.d/panel_app.sh` | The plugin of `tsx-config` with the keys `DIM_TIMEOUT` and `DIM_LEVEL` (see "Screen"). |
 | `panel-app/esphome/components/tsx_runtime/` | The ESPHome component `tsx_runtime` (C++). It sets the device name and the API encryption key at run time. |
 | `panel-app/esphome/patches/host-mac.patch` | A patch for the `host` component of ESPHome: the MAC comes from the environment. The board build applies it to the generated project. |
 | `panel-app/etc/init.d/tsx-panel-app` | The OpenRC service. |
@@ -36,8 +38,9 @@ A board gives the parts that the generic YAML does not know. The board YAML does
 1. It sets `esphome: name` and `friendly_name`, and the platform (for example `host:`).
 2. It includes `panel-app.yaml` with `packages:` and the components `tsx_cards` and `tsx_runtime` with `external_components:`.
 3. It makes a display with the id `panel_display` and a touchscreen with the id `panel_touch`. On a slow CPU, use the `tsx_drm` display and the `tsx_evdev` touchscreen and keys (see [Panel app display and input](panel-accel.md)).
-4. It sends each key of the panel to the app: `id(panel_cards).key_press("NAME")`. Use the key names of `buttons-board.conf` (for example `home`, `up`, `down`). A key that is a binary sensor needs `trigger_on_initial_state: true`. Without it, ESPHome ignores the first press after the start.
-5. It applies the patches of `panel-app/esphome/patches` to `src/esphome` of the generated project (`patch -p1`).
+4. It sends each change of a key of the panel to the app: `id(panel_cards).key_state("NAME", x)` in `on_state`. Use the key names of `buttons-board.conf` (for example `home`, `up`, `down`). A key that is a binary sensor needs `trigger_on_initial_state: true`. Without it, ESPHome ignores the first press after the start.
+5. Optional: it gives `tsx_cards` the input (`input_id`), the panel lights, the event entities of the keys and the `on_screen` automation (see "Component settings").
+6. It applies the patches of `panel-app/esphome/patches` to `src/esphome` of the generated project (`patch -p1`).
 
 The board YAML has no value of one panel and needs no `secrets.yaml`. The board package installs the program as `/usr/local/bin/tsx-panel-app` and the file `/etc/tsx/panel-app-board.conf` (see "Service"). The board docs tell how to build it.
 
@@ -50,6 +53,13 @@ The board YAML has no value of one panel and needs no `secrets.yaml`. The board 
 | `page_bar_height` | 36 | The height of the page bar at the bottom of the screen, in pixels. 0 removes the bar. |
 | `setup_file` | `/run/tsx-setup/screen.json` | The file of the setup page with the pairing code (see "Setup banner"). An empty text turns the banner off. |
 | `entities_file` | `/run/tsx/panel-app/entities.json` | The entity list for the layout editor (see "Entity list"). An empty text turns it off. |
+| `input_id` | none | A `tsx_evdev` input. With it, a five-finger tap opens the settings overlay, and a touch with two fingers or more taps no card. |
+| `panel_lights` | none | The ESPHome lights of the key action `"lights"` (see "Panel lights"). |
+| `key_events` | none | A map from a key name to an ESPHome event entity (see "Key events"). |
+| `backlight` | `auto` | The backlight folder, for example `/sys/class/backlight/backlight`. `auto` takes the first folder of `/sys/class/backlight`. |
+| `dim_timeout`, `blank_timeout`, `dim_level` | 60 s, 300 s, 30 % | The defaults of the screen (see "Screen"). |
+| `overlay_timeout` | 10 s | The time with no touch before the settings overlay closes. |
+| `on_screen` | none | An automation that runs when the screen goes off (`on` is false) or comes on again (`on` is true). |
 | `fonts` | | The fonts: `small` (states, page bar), `label` (card names), `value` (sensor values), `clock` (the time) and `icon`. A font is an LVGL font name (for example `montserrat_20`) or the id of an ESPHome font. The `icon` font must hold the glyphs of `icon-glyphs.yaml`. |
 
 `/var/lib/tsx` keeps its contents after an image update (see the service `tsx-data` in [Layout](layout.md)). So the layout of the user goes there. A board can ship a default layout in `/etc/tsx`.
@@ -103,32 +113,61 @@ The page bar shows the page names. Tap a name to show its page. A swipe to the l
 
 | Key | Cards | Meaning |
 |---|---|---|
-| `type` | all | `light`, `switch`, `scene`, `script`, `sensor`, `weather` or `clock`. Required. |
-| `entity_id` | all but `clock` | The Home Assistant entity. Required. A `light`, `scene`, `script` or `weather` card needs an entity of that domain. |
-| `label` | all | The name on the card. Default: the friendly name of the entity. |
-| `icon` | all but `clock` | An icon as `"mdi:name"`. The name must be in `icons.txt`. Default: an icon for the type and the state. |
+| `type` | all | `light`, `switch`, `scene`, `script`, `sensor`, `weather`, `clock`, `cover`, `climate`, `media_player`, `fan` or `conditional`. Required. |
+| `entity_id` | all but `clock` | The Home Assistant entity. Required. A `light`, `scene`, `script`, `weather`, `cover`, `climate`, `media_player` or `fan` card needs an entity of that domain. A `conditional` card takes any entity. It is the entity of the condition. |
+| `label` | all but `conditional` | The name on the card. Default: the friendly name of the entity. |
+| `icon` | all but `clock` and `conditional` | An icon as `"mdi:name"`. The name must be in `icons.txt`. Default: an icon for the type and the state. |
 | `w`, `h` | all | The size in cells. Default 1. |
 | `x`, `y` | all | The cell of the top left corner, from 0. Give both or none. |
-| `tap` | all | The action of a tap. See "Actions". Default: the action of the type. |
+| `tap` | all but `conditional` | The action of a tap. See "Actions". Default: the action of the type. |
+| `hold` | all but `clock` and `conditional` | The action of a long press (about 0.4 s). It has the same values as `tap`. Default: the detail popup of a `light`, `fan`, `cover`, `media_player` or `climate` card. The other types do nothing. See "Detail popups". |
 | `attribute` | `sensor` | Show this attribute of the entity, not its state. |
 | `unit` | `sensor` | The unit text. Default: the `unit_of_measurement` of the entity. |
 | `precision` | `sensor` | The number of decimals of a numeric value (0 to 6). Default: the value as Home Assistant sends it. |
 | `format` | `clock` | The format of the time (strftime). Default `%H:%M`. |
 | `date_format` | `clock` | The format of the date (strftime). Default `%a %d %b`. An empty text removes the date. |
+| `step` | `climate` | The change of the target temperature for one tap on - or +. A number from 0.1 to 10. Default: the attribute `target_temp_step` of the entity, else 0.5. |
+| `state` | `conditional` | A text, or a list of 1 to 16 texts. The inner card shows while the entity has one of these states. |
+| `state_not` | `conditional` | A text, or a list of 1 to 16 texts. The inner card shows while the entity has none of these states. |
+| `card` | `conditional` | The inner card: an object with the keys of a card. Required. |
 
 The card types:
 
 | Type | Shows | Default tap |
 |---|---|---|
 | `light` | On with the brightness in percent, or Off. The card has the `card_on` color when the light is on. | `light.toggle` |
-| `switch` | On or Off. For a `switch`, `input_boolean`, `fan` or other entity that has the action `toggle`. | `DOMAIN.toggle` |
+| `switch` | On or Off. For a `switch`, `input_boolean` or other entity that has the action `toggle`. | `DOMAIN.toggle` |
 | `scene` | A run button. | `scene.turn_on` |
 | `script` | A run button. "Running" while the script runs. | `script.turn_on` |
 | `sensor` | The state (or an attribute) and the unit. | none |
 | `weather` | The condition, the temperature and the humidity. | none |
 | `clock` | The local time and date from Home Assistant. | none |
+| `cover` | The state (Open, Closed, Opening or Closing) and the position in percent. Three buttons: open, stop and close. The card has the `card_on` color while the cover is open or moves. | `cover.toggle` |
+| `climate` | The current temperature, the mode and the target temperature. Two buttons, - and +, change the target by `step`. The card has the `card_on` color while the mode is not `off`. | none |
+| `media_player` | The state, or the title and the artist while the player plays. Also the volume. Three buttons: volume down, play/pause and volume up. The card has the `card_on` color while the player plays. | none |
+| `fan` | On with the speed in percent, or Off. The card has the `card_on` color while the fan is on. | `fan.toggle` |
+| `conditional` | The inner card while the condition is true. Else the cells stay empty. | The tap of the inner card |
 
 A value that is not known yet shows `--`.
+
+The buttons of the cards send these Home Assistant actions:
+
+| Button | Action |
+|---|---|
+| `cover`: open, stop, close | `cover.open_cover`, `cover.stop_cover`, `cover.close_cover` |
+| `climate`: - and + | `climate.set_temperature` with the value `temperature` |
+| `media_player`: volume down, play/pause, volume up | `media_player.volume_down`, `media_player.media_play_pause`, `media_player.volume_up` |
+
+A `conditional` card shows its inner card only while its condition is true. The entity of the card gives the state. The card needs `state` or `state_not`, and not both. An empty text matches an empty state. The card also needs a `card` object.
+
+The inner card is any card but a `conditional` card. It follows the normal rules of a card. It has no place of its own, because the `conditional` card sets the place and the size. So the app ignores `x`, `y`, `w` and `h` of the inner card. The checker gives a warning for each of them. A `conditional` card has only the keys `type`, `entity_id`, `x`, `y`, `w`, `h`, `state`, `state_not` and `card`. For any other key, the checker gives the warning "unknown key".
+
+Example:
+
+```json
+{"type": "conditional", "entity_id": "binary_sensor.front_door", "state": "on",
+ "card": {"type": "switch", "entity_id": "switch.porch_light", "label": "Porch Light"}}
+```
 
 ### Placement
 
@@ -137,18 +176,35 @@ The app gives each card its cells in two steps:
 1. The cards with `x` and `y` get their cells, in the order of the list.
 2. The other cards get the first free cells, row by row, in the order of the list.
 
-A card that overlaps an earlier card, or that has no free place, is left out.
+A card that overlaps an earlier card, or that has no free place, is left out. A `conditional` card takes its cells at all times, also while its inner card is hidden.
+
+### Detail popups
+
+A long press on a `light`, `fan`, `cover`, `media_player` or `climate` card opens a detail popup. This is the default of `hold`. Give `"hold": "none"` to turn the popup off. Give an action object to replace the popup with that action.
+
+| Card | The popup shows |
+|---|---|
+| `light` | A slider for the brightness (`light.turn_on` with `brightness_pct`). The buttons On and Off. |
+| `fan` | A slider for the speed (`fan.set_percentage`). The buttons On and Off. |
+| `cover` | A slider for the position (`cover.set_cover_position`). The buttons Open, Stop and Close. |
+| `media_player` | A slider for the volume (`media_player.volume_set`). The buttons Previous, Play/Pause and Next. |
+| `climate` | A button for each mode in `hvac_modes` (`climate.set_hvac_mode`). The buttons - and +. |
+
+A tap outside the popup closes it. The popup also closes after 10 s with no touch. The inner card of a `conditional` card has its own `tap` and `hold`.
 
 ### Actions
 
-A `tap` value or a `keys` value is one of these:
+A `tap` value, a `hold` value or a `keys` value is one of these:
 
 | Value | Meaning |
 |---|---|
-| `"default"` | The default action of the card type (`tap` only). |
+| `"default"` | The default action of the card type (`tap` and `hold` only). |
 | `"none"` | Nothing. |
 | `"page:N"` | Show page N, from 1 (`keys` only). |
 | `"setup"` | Open the setup window of the panel: the app runs `tsx-config setup` (`keys` only). |
+| `"overlay"` | Open the settings overlay of the app (`keys` only). |
+| `"lights"` | Turn the panel lights on or off (see "Panel lights"). This is a local action and sends nothing to Home Assistant (`keys` only). |
+| `"screen_off"` | Turn the screen off at once (`keys` only). |
 | `"next_page"`, `"prev_page"` | Show the next or the previous page. After the last page comes the first page (`keys` only). |
 | `{"action": "domain.service", "data": {...}}` | Send this Home Assistant action. The values of `data` are texts, numbers or true/false. |
 
@@ -165,6 +221,8 @@ The board names its keys (for example `power`, `home`, `lights`, `up`, `down`). 
 | `home` | `"page:1"` |
 | `up` | `"prev_page"` |
 | `down` | `"next_page"` |
+| `power` | `"overlay"` |
+| `lights` | `"lights"` |
 | any other key | `"none"` |
 
 ### Errors
@@ -194,9 +252,10 @@ The editor edits the layout file in the format that this page describes. It show
 | Pages | Add, remove, rename and move a page. Set the columns and the rows of a page. |
 | Grid | Set the default columns, rows and gap. |
 | Cards | A preview of the grid shows the cards in the cells where the app places them. Add, remove and move a card in the list. Tap an empty cell to move the selected card there. |
-| One card | The type, the entity id, the label, the icon (a search in `icons.txt`), the size, the cell (empty means automatic), the tap action and the keys of the type. |
+| One card | The type, the entity id, the label, the icon (a search in `icons.txt`), the size, the cell (empty means automatic), the tap action, the hold action and the keys of the type. A `climate` card has the field `step`. |
+| Conditional card | The entity of the condition, the choice "state" or "state_not", the states, and the inner card. The states are one text field with commas. The editor saves one state as a text and more states as a list. The inner card has a type, an entity id, a label, an icon, a tap action, a hold action and the keys of its type. |
 | Theme | The five colors. Each color can use the default. |
-| Keys | One row for each of `home`, `up`, `down`, `power` and `lights`, and a row for each other key. A key can use the default, do nothing, show page N, show the next or the previous page, open the setup window, or send a Home Assistant action. |
+| Keys | One row for each of `home`, `up`, `down`, `power` and `lights`, and a row for each other key. The list shows the default of the key. A key can use the default, do nothing, show page N, or show the next or the previous page. It can also open the setup window, open the settings overlay, turn the panel lights on or off, turn the screen off, or send a Home Assistant action. |
 | Raw JSON | The text of the layout. Edit it and tap "Use this JSON". |
 
 The editor changes only the parts that you change. A key that it does not know stays in the file. An empty field removes its key from the file.
@@ -230,7 +289,7 @@ The panel has no general access to Home Assistant, and the editor must not chang
 | The app | The entities that the app knows, with name and state. The app writes `/run/tsx/panel-app/entities.json`: `{"uptime": 1234, "entities": [{"entity_id": "light.kitchen", "name": "Kitchen", "state": "on"}]}`. The file is missing when the app does not run. Then the list is empty. | The app. |
 | The full list (optional) | All entities of Home Assistant, with name and state. | A URL and a token, once. |
 
-The editor checks an entity id with the same rule as the checker (`domain.name`). A `light`, `scene`, `script` or `weather` card needs an entity of that domain. The field shows the name and the state of a known entity.
+The editor checks an entity id with the same rule as the checker (`domain.name`). A card of a type with its own domain (for example `light` or `cover`) needs an entity of that domain. The field shows the name and the state of a known entity.
 
 For the full list, the user enters the URL of Home Assistant and a long-lived access token in the section "Home Assistant entity list". The token has these rules:
 
@@ -258,6 +317,75 @@ The setup page has the field "API encryption key" (`HA_API_KEY` of `panel.conf`)
 
 Home Assistant and the panel need the same key. `tsx-config` checks the format when the page saves it. The plugin adds the field only when no other plugin in `setup.d` names `HA_API_KEY`.
 
+## Screen
+
+The app controls the backlight of the panel (the first folder in `/sys/class/backlight`, or the `backlight` setting).
+
+- The brightness is a percent of the slider, 1 to 100. On a backlight with more than 64 steps, the slider maps to the steps with a square, as the slider of the kiosk overlay does. So the dark end has finer steps. `BACKLIGHT_MIN` and `BACKLIGHT_MAX` of `/etc/tsx/panel-board.conf` set the lowest lit level and the highest level.
+- The app keeps the brightness in `ESPHOME_PREFDIR/backlight` (`/var/lib/tsx/panel-app/backlight`). Before the first change, the app keeps the level that the panel has at the start.
+- After `dim_timeout` with no touch and no key, the backlight goes to the dim level. After `blank_timeout`, the backlight goes off and the app runs `on_screen` with `on` false. A board can turn the display output off there (for example the `set_power` of `tsx_drm`). Then the glass shows no picture in room light.
+- A touch or a key wakes the screen. While the screen is dim or off, a transparent object on the top layer takes the touch. It stays until the finger lifts. So the touch that wakes the screen does not tap a card and does not change the page. A key that wakes the screen does no action and sends no event.
+- A five-finger tap or a key opens the settings overlay only while the screen is on.
+
+The times and the dim level come from these places. A later place wins:
+
+| Setting | Default of the app | YAML | `panel.conf` key | Run-time file |
+|---|---|---|---|---|
+| Dim after | 60 s | `dim_timeout` | `DIM_TIMEOUT` | `/run/tsx/dim-timeout` |
+| Off after | 300 s | `blank_timeout` | `BLANK_TIMEOUT` | `/run/tsx/blank-timeout` |
+| Dim level | 30 % | `dim_level` | `DIM_LEVEL` | `/run/tsx/dim-level` |
+
+0 s means never. `BLANK_TIMEOUT` is the key that the kiosk panels use for `tsx-idled`. `tsx-config apply` writes the run-time files from `panel.conf`. The plugin `/usr/local/lib/tsx/config.d/panel_app.sh` adds the keys `DIM_TIMEOUT` (0 to 86400) and `DIM_LEVEL` (1 to 100) to `tsx-config`. The app reads the files every 5 s.
+
+When you change a time in the overlay or in Home Assistant, the app uses the new value at once. After 2 s it runs `tsx-config set` and `tsx-config apply`, so `panel.conf` keeps the value. For 30 s after a change, the app does not read the run-time files.
+
+The app has these Home Assistant entities for the screen. Home Assistant can change them, also when the device setting "Allow the device to perform Home Assistant actions" is off. That setting is only for the actions that the app sends.
+
+| Entity | Type | Function |
+|---|---|---|
+| Screen | switch | On while the screen is on or dim. Off turns the screen off. On wakes it. |
+| Backlight | number, 1 to 100 % | The brightness of the slider. |
+| Blank timeout | number, s | `BLANK_TIMEOUT`. |
+| Dim timeout | number, s | `DIM_TIMEOUT`. |
+| Dim level | number, 1 to 100 % | `DIM_LEVEL`. |
+
+## Settings overlay
+
+A tap with five fingers opens the settings overlay, as on the kiosk panels. The key action `"overlay"` also opens it (the default of the key `power`). A tap with two fingers or more never taps a card.
+
+The overlay has these items:
+
+| Item | Function |
+|---|---|
+| Brightness slider | Sets the backlight. On a panel with a light sensor (`LIGHT=yes` or `ALS=yes` in `/run/tsx/hw.conf`), the row "Auto brightness: off" under the slider tells that the app does not change the backlight from the sensor. On a panel with no light sensor, the overlay has no such row. |
+| Dim after, Screen off after | The times of the screen, with - and + buttons. The steps are Never, 15 s, 30 s, 1 min, 2 min, 5 min, 10 min, 15 min, 30 min, 1 h and 2 h. |
+| Screen off | Turns the screen off at once. |
+| Lights | Turns the panel lights on or off (see "Panel lights"). The button has the `card_on` color while a light is on. A board with no panel lights has no button. |
+| Open setup | Runs `tsx-config setup` and closes the overlay. The setup banner shows the address and the pairing code (see "Setup banner"). |
+| Reboot | Asks "Reboot the panel now?". "Reboot" runs `reboot`, "Cancel" closes the question. |
+| Facts | The address, the host name, the Home Assistant connection, the device name and the versions of the panel app packages. |
+| Close | Closes the overlay. |
+
+A tap outside the overlay closes it. The overlay also closes after `overlay_timeout` (10 s) with no touch. The item "Reload page" of the kiosk overlay is for a browser. The app does not have it.
+
+Test hooks: `TSX_PANEL_APP_REBOOT_CMD` replaces `reboot`, `TSX_PANEL_APP_CONFIG_CMD` replaces `tsx-config`, `TSX_RUN_DIR` replaces `/run/tsx`, `TSX_BACKLIGHT_DIR` replaces the backlight folder, `TSX_PANEL_BOARD_CONF` replaces `/etc/tsx/panel-board.conf`.
+
+## Panel lights
+
+A board can give the app the lights of the panel (`panel_lights`, ESPHome light ids). The key action `"lights"` and the overlay button turn them on or off. When one light is on, both go off. Else all lights go on with their last color and brightness. This is a local action. It sends nothing to Home Assistant.
+
+The light platform `tsx_leds` makes an ESPHome light from a Linux LED device in `/sys/class/leds`. A multicolor LED device (with `multi_index`) is an RGB light. The platform writes `multi_intensity` with the color and the brightness, and then `brightness`. A device with one color is a light with a brightness only. Use `restore_mode: ALWAYS_OFF`, so the lights are off after each start. Home Assistant sees each light as a light entity of the device and can change it.
+
+## Key events
+
+A board sends each key change to the app with `key_state("NAME", x)`. The app then does this:
+
+1. A press while the screen is dim or off only wakes the screen.
+2. Else the press runs the action of the key at once (see "Keys").
+3. The ESPHome event entity of the key (`key_events`) gets the event type `press` when the user releases the key. It gets `long` when the user holds the key for 0.8 s.
+
+The event entities have the names and the event types of the key events of the kiosk panels (for example "Key power"). A Home Assistant automation can use them with the trigger "Entity state" or the event trigger of the entity. `key_press("NAME")` runs only the action of the key, with no wake and no event.
+
 ## Home Assistant states
 
 The app subscribes to the states that its cards need, through the ESPHome API:
@@ -268,6 +396,11 @@ The app subscribes to the states that its cards need, through the ESPHome API:
 | `light` | `brightness` |
 | `sensor` | `unit_of_measurement` when the card has no `unit` and no `attribute`. The attribute of the card. |
 | `weather` | `temperature`, `temperature_unit`, `humidity` |
+| `cover` | `current_position` |
+| `climate` | `current_temperature`, `temperature`, `target_temp_step`, `hvac_modes` |
+| `media_player` | `media_title`, `media_artist`, `volume_level` |
+| `fan` | `percentage` |
+| `conditional` | The state of its entity, and the states of the inner card |
 
 The ESPHome API cannot remove a subscription. So a subscription stays until the program stops, also when a new layout does not use it. Home Assistant reads the list of subscriptions only when it connects. When a new layout adds an entity while Home Assistant is connected, the app closes the API connection. Home Assistant connects again and reads the full list. Until then, the page bar shows "Not connected" and the new cards show `--`.
 

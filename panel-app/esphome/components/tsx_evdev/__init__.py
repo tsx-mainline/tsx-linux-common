@@ -8,6 +8,8 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.const import CONF_DEVICE, CONF_ID, CONF_NAME, PLATFORM_HOST
 
+CONF_TAP_TIME = "tap_time"
+
 CONF_TSX_EVDEV_ID = "tsx_evdev_id"
 
 tsx_evdev_ns = cg.esphome_ns.namespace("tsx_evdev")
@@ -23,6 +25,9 @@ CONFIG_SCHEMA = cv.All(
                     # device name (cat /proc/bus/input/devices).
                     cv.Exclusive(CONF_DEVICE, "device"): cv.string,
                     cv.Exclusive(CONF_NAME, "device"): cv.string,
+                    # A touch that ends within this time with no finger
+                    # moved is a tap (take_tap(): the number of fingers).
+                    cv.Optional(CONF_TAP_TIME, default="600ms"): cv.positive_time_period_milliseconds,
                 }
             ).extend(cv.COMPONENT_SCHEMA),
             cv.has_exactly_one_key(CONF_DEVICE, CONF_NAME),
@@ -40,6 +45,7 @@ async def to_code(config) -> None:
             cg.add(var.set_device(conf[CONF_DEVICE]))
         else:
             cg.add(var.set_name_match(conf[CONF_NAME]))
+        cg.add(var.set_tap_time(conf[CONF_TAP_TIME]))
 
 
 def key_code(value):

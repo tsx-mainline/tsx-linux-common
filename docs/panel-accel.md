@@ -60,7 +60,7 @@ binary_sensor:
     key: KEY_F14
     trigger_on_initial_state: true
     on_press:
-      - lambda: id(panel_cards).key_press("home");
+      - lambda: id(panel_cards).key_state("home", x);
 ```
 
 `tsx_drm` options:
@@ -73,12 +73,26 @@ binary_sensor:
 The size of the display comes from the preferred mode of the output. The
 snapshot action (`snapshot.take`) writes the screen copy to a BMP file.
 
+`set_power(false)` turns the display output off with the DPMS property of
+the connector, and `set_power(true)` turns it on again. While the output is
+off, the app can draw: the screen copy keeps the changes, and the output
+shows the full picture when it comes on. The panel app calls it from the
+`on_screen` automation of `tsx_cards` (see [Panel app](panel-app.md),
+"Screen"):
+
+```yaml
+tsx_cards:
+  on_screen:
+    - lambda: id(panel_display).set_power(on);
+```
+
 `tsx_evdev` options:
 
 | Option | Meaning |
 |---|---|
 | `device` | The input device path, for example `/dev/input/event0`. |
 | `name` | A part of the device name (see `/proc/bus/input/devices`). Use `device` or `name`. |
+| `tap_time` | A touch that ends within this time (default 600 ms) with no finger moved more than 1/20 of the touch range is a tap. |
 
 The touchscreen platform takes the touch range from the device. The
 `calibration`, `transform` and other options of the ESPHome touchscreen
@@ -91,6 +105,14 @@ A key of the `binary_sensor` platform is a name of
 `trigger_on_initial_state: true`: the first press after the start is the
 first state of the sensor, and without the option ESPHome does not run
 `on_press` for it.
+
+The component counts the fingers of each touch. `touch_count()` is the
+number of fingers at this time. `gesture_fingers()` is the largest number of fingers
+of the current touch, or of the last one. `take_tap()` gives the number of
+fingers of the last tap once. `tsx_cards` uses them for the five-finger tap
+of the settings overlay, and it ignores a tap on a card when more than one
+finger touched the screen. `last_input_ms()` is the time of the last touch
+or key event.
 
 The component does not grab the input device. Other programs still get the
 events.
@@ -123,7 +145,9 @@ single-core ARM CPU. A plain card page is 1.0.
 | 2 px outline on each card | 1.7 |
 | Shadow on each card (width 16) | 2.5 |
 
-- Avoid shadows and opacity below 100 % on large objects.
+- Avoid shadows and opacity below 100 % on large objects. The panel app
+  shows a pressed card or button with another color, not with opacity, and
+  its overlay and popups have a border, not a shadow.
 - Radius, borders and gradients cost little.
 - Keep the display in RGB565. A 32-bit buffer costs 1.4 to 2.8 times more.
 - The NEON blend code of LVGL (`LV_USE_DRAW_SW_ASM`) gives no gain on a

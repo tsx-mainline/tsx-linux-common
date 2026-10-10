@@ -249,9 +249,11 @@ def _layout_entity_ids(layout):
     if isinstance(layout, dict) and isinstance(layout.get("pages"), list):
         for p in layout["pages"]:
             for c in (p.get("cards") if isinstance(p, dict) and isinstance(p.get("cards"), list) else []):
-                e = c.get("entity_id") if isinstance(c, dict) else None
-                if isinstance(e, str) and ENTITY_RE.fullmatch(e) and e not in ids:
-                    ids.append(e)
+                # a conditional card holds a second card with its own entity
+                for d in (c, c.get("card")) if isinstance(c, dict) else ():
+                    e = d.get("entity_id") if isinstance(d, dict) else None
+                    if isinstance(e, str) and ENTITY_RE.fullmatch(e) and e not in ids:
+                        ids.append(e)
     return ids
 
 
@@ -324,9 +326,12 @@ def _api_layout(h):
     chk = _checker()
     layout, source, text, rev = _current()
     resp = {"layout": layout, "source": source, "revision": rev,
-            "icons": [], "types": ["light", "switch", "scene", "script", "sensor", "weather", "clock"],
-            "domains": {"light": "light", "scene": "scene", "script": "script", "weather": "weather"},
-            "type_keys": {"sensor": ["attribute", "unit", "precision"], "clock": ["format", "date_format"]},
+            "icons": [], "types": ["light", "switch", "scene", "script", "sensor", "weather", "clock",
+                                   "cover", "climate", "media_player", "fan", "conditional"],
+            "domains": {"light": "light", "scene": "scene", "script": "script", "weather": "weather",
+                        "cover": "cover", "climate": "climate", "media_player": "media_player", "fan": "fan"},
+            "type_keys": {"sensor": ["attribute", "unit", "precision"], "clock": ["format", "date_format"],
+                          "climate": ["step"]},
             "theme_keys": ["background", "card", "card_on", "text", "text_dim"],
             "limits": _limits(chk), "defaults": {"theme": DEFAULT_THEME, "grid": {"columns": 4, "rows": 3, "gap": 10}},
             "entities": _entities(layout), "ha_token_set": _ha_token_set(), "checker": chk is not None}

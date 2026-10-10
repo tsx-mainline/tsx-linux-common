@@ -382,9 +382,9 @@ r=$(hcall "${HV[@]}" -- "layout-save")
 [ "$r" = ok ] && [ "$(cat "$LV")" = "$GOODLAYOUT" ] && ok "layout-save installs a good layout" || bad "layout-save: '$r' / $(cat "$LV" 2>&1)"
 [ "$(stat -c %a "$LV")" = 644 ] && ok "the installed layout has mode 644" || bad "layout mode"
 [ ! -e "$T/state2/layout.new" ] && ok "layout-save removes layout.new" || bad "layout.new stays"
-printf '{"version": 1, "pages": [{"cards": [{"type": "fan"}]}]}\n' > "$T/state2/layout.new"
+printf '{"version": 1, "pages": [{"cards": [{"type": "gauge"}]}]}\n' > "$T/state2/layout.new"
 r=$(hcall "${HV[@]}" -- "layout-save")
-[ "$r" = 'err page 1 card 1: unknown type "fan"' ] && [ "$(cat "$LV")" = "$GOODLAYOUT" ] && ok "a layout with an error: err with the first error line, the layout stays" || bad "bad layout: '$r'"
+[ "$r" = 'err page 1 card 1: unknown type "gauge"' ] && [ "$(cat "$LV")" = "$GOODLAYOUT" ] && ok "a layout with an error: err with the first error line, the layout stays" || bad "bad layout: '$r'"
 ln -sf "$T/panel.conf" "$T/state2/layout.new"
 r=$(hcall "${HV[@]}" -- "layout-save")
 case "$r" in err*) [ "$(cat "$LV")" = "$GOODLAYOUT" ] && ok "a link as layout.new is refused: $r";; *) bad "link: '$r'";; esac
@@ -561,8 +561,10 @@ python3 -c 'import json, sys
 d = json.load(open(sys.argv[1]))
 names = [l.split()[0] for l in open(sys.argv[2]) if l.strip() and not l.startswith("#")]
 assert d["icons"] == sorted(names), d["icons"]
-assert d["types"] == ["light", "switch", "scene", "script", "sensor", "weather", "clock"]
-assert d["domains"]["light"] == "light" and "switch" not in d["domains"]
+assert d["types"] == ["light", "switch", "scene", "script", "sensor", "weather", "clock", "cover", "climate", "media_player", "fan", "conditional"], d["types"]
+assert d["domains"]["light"] == "light" and "switch" not in d["domains"] and "conditional" not in d["domains"]
+assert all(d["domains"][t] == t for t in ("cover", "climate", "media_player", "fan"))
+assert d["type_keys"]["climate"] == ["step"] and d["type_keys"]["sensor"] == ["attribute", "precision", "unit"]
 assert d["limits"]["max_pages"] == 16 and d["limits"]["max_cards"] == 48 and d["limits"]["max_file_bytes"] == 65536
 assert d["theme_keys"] == ["background", "card", "card_on", "text", "text_dim"]
 assert d["defaults"]["grid"] == {"columns": 4, "rows": 3, "gap": 10} and d["checker"] is True and d["ha_token_set"] is False' "$T/r.json" "$ICONS" && ok "icons.txt, the types, the limits and the defaults are in the answer" || bad "answer details"
@@ -580,6 +582,9 @@ st=$(api GET /setup/api/layout)
 pyok "$T/r.json" 'd["layout"] is None and d["text"] == "[1, 2]"' && ok "JSON that is not an object: layout null, the text" || bad "array: $(head -c 300 "$T/r.json")"
 
 echo "== the entities for the picker =="
+printf '%s\n' '{"version": 1, "pages": [{"cards": [{"type": "conditional", "entity_id": "binary_sensor.door", "state": "on", "card": {"type": "fan", "entity_id": "fan.bedroom"}}]}]}' > "$LAYOUT_USER"
+st=$(api GET /setup/api/layout)
+pyok "$T/r.json" '[e["entity_id"] for e in d["entities"]] == ["binary_sensor.door", "fan.bedroom"]' && ok "a conditional card gives its entity and the entity of its inner card" || bad "entities (conditional): $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["entities"])' "$T/r.json")"
 printf '%s\n' '{"version": 1, "pages": [{"cards": [{"type": "switch", "entity_id": "switch.coffee"}, {"type": "light", "entity_id": "light.kitchen"}]}]}' > "$LAYOUT_USER"
 st=$(api GET /setup/api/layout)
 pyok "$T/r.json" '[e["entity_id"] for e in d["entities"]] == ["light.kitchen", "switch.coffee"] and all(e["source"] == "layout" for e in d["entities"])' && ok "no list of the app: the entities of the layout" || bad "entities (layout): $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["entities"])' "$T/r.json")"
@@ -606,7 +611,8 @@ python3 -c 'import json, sys
 d = json.load(open(sys.argv[1]))
 assert d["ok"] is True and d["errors"] == [] and d["warnings"] == [], d
 p = d["placed"]
-assert [x["name"] for x in p] == ["Home", "Outside"] and p[0]["columns"] == 4 and p[1]["columns"] == 3 and p[1]["rows"] == 2
+assert [x["name"] for x in p] == ["Home", "Outside", "More"] and p[0]["columns"] == 4 and p[1]["columns"] == 3 and p[1]["rows"] == 2
+assert len(p[2]["cards"]) == 5 and p[2]["cards"][2] == {"index": 2, "x": 2, "y": 0, "w": 2, "h": 1}, p[2]["cards"]
 assert p[0]["cards"][0] == {"index": 0, "x": 0, "y": 0, "w": 2, "h": 1}, p[0]["cards"][0]
 assert len(p[0]["cards"]) == 10 and p[1]["cards"][3] == {"index": 3, "x": 0, "y": 1, "w": 3, "h": 1}, p[1]["cards"]' "$T/r.json" && ok "a good layout: ok, no error, and the cells of the cards as the app places them" || bad "check (good): $st $(head -c 400 "$T/r.json")"
 BADL='{"version": 1, "pages": [{"cards": [{"type": "clock"}, {"type": "light", "entity_id": "switch.a"}, {"type": "clock", "colour": 1}, {"type": "light", "entity_id": "light.a", "icon": "mdi:no-such-icon"}]}]}'
@@ -617,6 +623,13 @@ assert d["ok"] is False and any(e.startswith("page 1 card 2:") and "needs a ligh
 assert any("unknown key" in w for w in d["warnings"]) and any("icon mdi:no-such-icon" in w for w in d["warnings"]), d["warnings"]
 assert [c["index"] for c in d["placed"][0]["cards"]] == [0, 2, 3], d["placed"]
 assert [(c["x"], c["y"]) for c in d["placed"][0]["cards"]] == [(0, 0), (1, 0), (2, 0)], d["placed"]' "$T/r.json" && ok "a bad layout: the errors, the warnings, and the places of the cards that are left (the index follows the list)" || bad "check (bad): $(cat "$T/r.json")"
+CONDL='{"version": 1, "pages": [{"cards": [{"type": "conditional", "entity_id": "binary_sensor.d", "state": "on", "card": {"type": "light", "entity_id": "switch.a"}}, {"type": "climate", "entity_id": "climate.a", "step": 0.5}, {"type": "conditional", "entity_id": "binary_sensor.d", "state": "on", "card": {"type": "clock", "x": 1}}]}]}'
+st=$(api POST /setup/api/layout/check --data "{\"layout\": $CONDL}")
+python3 -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["ok"] is False and d["errors"] == ["page 1 card 1: \"card\": a light card needs a light entity"], d["errors"]
+assert d["warnings"] == ["page 1 card 3 card: \"x\" is ignored (the conditional card sets the place)"], d["warnings"]
+assert [(c["index"], c["x"]) for c in d["placed"][0]["cards"]] == [(1, 0), (2, 1)], d["placed"]' "$T/r.json" && ok "a conditional card: the error of the inner card, the warning for x, and the places" || bad "check (conditional): $(cat "$T/r.json")"
 st=$(api POST /setup/api/layout/check --data '{"layout": {"version": 2}}')
 pyok "$T/r.json" 'd["ok"] is False and d["placed"] == [] and "version" in d["errors"][0]' && ok "a layout that cannot be used: the error, no places" || bad "check (version): $(cat "$T/r.json")"
 st=$(api POST /setup/api/layout/check --data '{"layout": [1]}'); [ "$st" = 400 ] && ok "a layout that is not an object: 400" || bad "check (array): $st"
@@ -714,6 +727,7 @@ stop_setupd
 start_setupd "$T/setupd5.log" TSX_SETUP_KIOSK=off TSX_LAYOUT_CHECK_BIN="$T/bin/not-installed" || bad "tsx-setupd did not start"
 st=$(api GET /setup/api/layout)
 pyok "$T/r.json" 'd["checker"] is False and d["icons"] == [] and d["layout"] is not None' && ok "the layout API still answers, with no checker and no icons" || bad "no checker answer: $(head -c 300 "$T/r.json")"
+pyok "$T/r.json" 'len(d["types"]) == 12 and d["types"][-5:] == ["cover", "climate", "media_player", "fan", "conditional"] and d["domains"]["fan"] == "fan" and d["type_keys"]["climate"] == ["step"]' && ok "without the checker, the fixed list has the new types, domains and the step key" || bad "no checker types: $(head -c 400 "$T/r.json")"
 st=$(api POST /setup/api/layout/check --data '{"layout": {"version": 1, "pages": [{}]}}'); [ "$st" = 503 ] && ok "check: 503" || bad "check without checker: $st"
 st=$(api POST /setup/api/layout/save --data "{\"layout\": {\"version\": 1, \"pages\": [{}]}, \"revision\": \"$(sha_of "$LAYOUT_USER")\"}"); [ "$st" = 503 ] && ok "save: 503" || bad "save without checker: $st"
 

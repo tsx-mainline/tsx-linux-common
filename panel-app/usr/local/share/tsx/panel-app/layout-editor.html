@@ -168,14 +168,22 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     </details>
   </div>
   <datalist id="entity-list"></datalist>
+  <datalist id="entity-list-inner"></datalist>
 </div>
 <script>
 (function(){
   "use strict";
   var $ = function(id){ return document.getElementById(id); };
 
-  var TYPE_NAME = {light:"Light", "switch":"Switch", scene:"Scene", script:"Script", sensor:"Sensor", weather:"Weather", clock:"Clock"};
+  var TYPE_NAME = {light:"Light", "switch":"Switch", scene:"Scene", script:"Script", sensor:"Sensor", weather:"Weather", clock:"Clock",
+    cover:"Cover", climate:"Climate", media_player:"Media player", fan:"Fan", conditional:"Conditional"};
   var KEY_NAMES = ["home", "up", "down", "power", "lights"];
+  // the actions of a key that no card can use, with the text of the editor
+  var KEY_ACTION_NAME = {next_page:"Show the next page", prev_page:"Show the previous page", setup:"Open the setup window",
+    overlay:"Open the settings overlay", lights:"Panel lights on/off", screen_off:"Screen off"};
+  // what a key does when the layout has no entry for it (the same as docs/panel-app.md)
+  var KEY_DEFAULT = {home:"page:1", up:"prev_page", down:"next_page", power:"overlay", lights:"lights"};
+  var NO_HOLD = ["clock", "conditional"];
   var THEME_NAME = {background:"Background", card:"Card", card_on:"Card that is on", text:"Text", text_dim:"Dim text"};
   var ENTITY_RE = /^[a-z0-9_]+\.[a-z0-9_]+$/;
   var ICON_RE = /^mdi:[a-z0-9-]+$/;
@@ -303,24 +311,39 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     }
     return true;
   }
-  // the size and the cell of a card, or null when the app leaves the card out
-  function cardGeometry(c, cols, rows){
+  function validStates(v){
+    if (typeof v === "string") return true;
+    if (!Array.isArray(v) || v.length < 1 || v.length > 16) return false;
+    return v.every(function(i){ return typeof i === "string"; });
+  }
+  // the size and the cell of a card, or null when the app leaves the card out.
+  // inner is true for the card inside a conditional card (it has no place).
+  function cardGeometry(c, cols, rows, inner){
     if (!isObj(c) || typeof c.type !== "string" || S.types.indexOf(c.type) < 0) return null;
     if (c.type !== "clock") {
       if (typeof c.entity_id !== "string" || !ENTITY_RE.test(c.entity_id)) return null;
       var need = S.domains[c.type];
       if (need && c.entity_id.split(".")[0] !== need) return null;
     }
-    if ("label" in c && typeof c.label !== "string") return null;
-    if ("icon" in c && (typeof c.icon !== "string" || !ICON_RE.test(c.icon))) return null;
+    if (c.type === "conditional") {
+      if (!("state" in c) && !("state_not" in c)) return null;
+      if ("state" in c && "state_not" in c) return null;
+      if (!validStates("state" in c ? c.state : c.state_not)) return null;
+      if (!isObj(c.card) || c.card.type === "conditional" || !cardGeometry(c.card, cols, rows, true)) return null;
+    } else {
+      if ("label" in c && typeof c.label !== "string") return null;
+      if ("icon" in c && (typeof c.icon !== "string" || !ICON_RE.test(c.icon))) return null;
+    }
     var g = {w:1, h:1, x:-1, y:-1};
-    if ("w" in c) { if (!isInt(c.w, 1, cols)) return null; g.w = c.w; }
-    if ("h" in c) { if (!isInt(c.h, 1, rows)) return null; g.h = c.h; }
-    if (("x" in c) !== ("y" in c)) return null;
-    if ("x" in c) {
-      if (!isInt(c.x, 0, cols - 1) || !isInt(c.y, 0, rows - 1)) return null;
-      if (c.x + g.w > cols || c.y + g.h > rows) return null;
-      g.x = c.x; g.y = c.y;
+    if (!inner) {
+      if ("w" in c) { if (!isInt(c.w, 1, cols)) return null; g.w = c.w; }
+      if ("h" in c) { if (!isInt(c.h, 1, rows)) return null; g.h = c.h; }
+      if (("x" in c) !== ("y" in c)) return null;
+      if ("x" in c) {
+        if (!isInt(c.x, 0, cols - 1) || !isInt(c.y, 0, rows - 1)) return null;
+        if (c.x + g.w > cols || c.y + g.h > rows) return null;
+        g.x = c.x; g.y = c.y;
+      }
     }
     if (c.type === "sensor") {
       if ("attribute" in c && (typeof c.attribute !== "string" || c.attribute === "")) return null;
@@ -331,7 +354,9 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
       if ("format" in c && (typeof c.format !== "string" || c.format === "")) return null;
       if ("date_format" in c && typeof c.date_format !== "string") return null;
     }
-    if ("tap" in c && !validTap(c.tap)) return null;
+    if (c.type === "climate" && "step" in c && !(typeof c.step === "number" && c.step >= 0.1 && c.step <= 10)) return null;
+    if (c.type !== "conditional" && "tap" in c && !validTap(c.tap)) return null;
+    if (NO_HOLD.indexOf(c.type) < 0 && "hold" in c && !validTap(c.hold)) return null;
     return g;
   }
   // Fixed cards first, then the others in the first free cell, row by row.
@@ -618,6 +643,7 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     var t = $("card-add-type").value || "light";
     var c = {type:t};
     if (t !== "clock") c.entity_id = "";
+    if (t === "conditional") { c.state = "on"; c.card = {type:"light", entity_id:""}; }
     p.cards.push(c);
     S.card = p.cards.length - 1; S.check = null;
     touch(); renderCardList(); renderCardEdit(); renderProblems();
@@ -630,8 +656,8 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     for (var i = 0; i < S.entities.length; i++) if (S.entities[i].entity_id === id) return S.entities[i];
     return null;
   }
-  function fillEntityList(type){
-    var dl = clear($("entity-list")), dom = S.domains[type];
+  function fillEntityList(type, listId){
+    var dl = clear($(listId || "entity-list")), dom = S.domains[type];
     S.entities.forEach(function(e){
       if (dom && e.entity_id.split(".")[0] !== dom) return;
       var o = document.createElement("option");
@@ -650,72 +676,94 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     if (info) return {cls:"status ok", text:(info.name ? info.name : id) + (info.state ? " · " + info.state : "")};
     return {cls:"status", text:S.entities.length ? "The panel does not know this entity yet." : ""};
   }
-  function renderCardEdit(){
-    var box = clear($("card-edit")), c = curCard();
-    if (!c) { box.appendChild(el("div", {className:"hint", textContent:"Select a card in the preview or in the list, or add a card."})); return; }
-    box.appendChild(el("b", {textContent:"Card " + (S.card + 1) + " of " + pageName(curPage(), S.page)}));
-    fillEntityList(c.type);
+  // The text of the states field: one text, or the items of a list with commas.
+  function statesText(v){ return Array.isArray(v) ? v.join(", ") : (typeof v === "string" ? v : ""); }
+  function statesValue(text){
+    var items = text.split(",").map(function(t){ return t.trim(); });
+    return items.length === 1 ? items[0] : items;
+  }
+  // The fields of one card. inner is true for the card inside a conditional
+  // card: it has no place, it cannot be a conditional card, and its field
+  // names start with "inner_".
+  function drawCardFields(box, c, inner){
+    var pre = inner ? "inner_" : "";
+    var listId = inner ? "entity-list-inner" : "entity-list";
+    fillEntityList(c.type, listId);
 
-    var typeSel = el("select", {id:"c-type", on:{change:function(ev){
+    var typeSel = el("select", {id:inner ? "ci-type" : "c-type", on:{change:function(ev){
       var t = ev.target.value;
       c.type = t;
       ["attribute", "unit", "precision"].forEach(function(k){ if (t !== "sensor") delete c[k]; });
       ["format", "date_format"].forEach(function(k){ if (t !== "clock") delete c[k]; });
+      if (t !== "climate") delete c.step;
+      if (NO_HOLD.indexOf(t) >= 0) delete c.hold;
+      if (t !== "conditional") { delete c.state; delete c.state_not; delete c.card; }
+      else {
+        delete c.label; delete c.icon; delete c.tap;
+        if (!("state" in c) && !("state_not" in c)) c.state = "on";
+        if (!isObj(c.card)) c.card = {type:"light", entity_id:""};
+      }
       if (t === "clock") { delete c.entity_id; delete c.icon; }
       else if (c.entity_id === undefined) c.entity_id = "";
       S.check = null;
       touch(); renderCardEdit(); renderProblems();
     }}});
-    S.types.forEach(function(t){ var o = el("option", {value:t, textContent:TYPE_NAME[t] || t}); if (t === c.type) o.selected = true; typeSel.appendChild(o); });
+    S.types.forEach(function(t){
+      if (inner && t === "conditional") return;
+      var o = el("option", {value:t, textContent:TYPE_NAME[t] || t}); if (t === c.type) o.selected = true; typeSel.appendChild(o);
+    });
     var f1 = el("div", {className:"fields"});
     field(f1, "Type", typeSel);
 
     if (c.type !== "clock") {
       var st = el("div", {className:"status"});
-      var ent = textInput(c.entity_id, {name:"entity_id", placeholder:"light.kitchen", list:"entity-list", on:{input:function(ev){
+      var ent = textInput(c.entity_id, {name:pre + "entity_id", placeholder:c.type === "conditional" ? "binary_sensor.front_door" : "light.kitchen", list:listId, on:{input:function(ev){
         c.entity_id = ev.target.value.trim();
         var m = entityMessage(c); st.className = m.cls; st.textContent = m.text;
         touch();
       }}});
-      var box1 = field(f1, "Entity id", ent);
+      var box1 = field(f1, c.type === "conditional" ? "Entity of the condition" : "Entity id", ent);
       box1.appendChild(st);
       var m0 = entityMessage(c); st.className = m0.cls; st.textContent = m0.text;
     }
-    var lab = textInput(c.label, {name:"label", placeholder:"(the name of the entity)", on:{input:function(ev){ setOrDelete(c, "label", ev.target.value); touch(); }}});
-    field(f1, "Label", lab);
+    if (c.type !== "conditional") {
+      var lab = textInput(c.label, {name:pre + "label", placeholder:"(the name of the entity)", on:{input:function(ev){ setOrDelete(c, "label", ev.target.value); touch(); }}});
+      field(f1, "Label", lab);
+    }
     box.appendChild(f1);
 
-    if (c.type !== "clock") iconPicker(box, c);
+    if (c.type !== "clock" && c.type !== "conditional") iconPicker(box, c, pre);
 
-    var nums = el("div", {className:"nums"});
-    [["w", "Width"], ["h", "Height"], ["x", "Column"], ["y", "Row"]].forEach(function(f){
-      var lim = (f[0] === "w" || f[0] === "x") ? "columns" : "rows";
-      var inp = el("input", {type:"number", id:newId("n"), name:f[0], min:(f[0] === "x" || f[0] === "y") ? "0" : "1", max:String(S.limits.max_grid),
-        value:c[f[0]] === undefined ? "" : String(c[f[0]]), placeholder:(f[0] === "x" || f[0] === "y") ? "auto" : "1",
-        on:{input:function(ev){ numOrDelete(c, f[0], ev.target.value); touch(); }}});
-      field(nums, f[1], inp);
-    });
-    box.appendChild(nums);
-    box.appendChild(el("div", {className:"hint", textContent:"Column and row count from 0. Leave both empty to let the app place the card."}));
+    if (!inner) {
+      var nums = el("div", {className:"nums"});
+      [["w", "Width"], ["h", "Height"], ["x", "Column"], ["y", "Row"]].forEach(function(f){
+        var inp = el("input", {type:"number", id:newId("n"), name:f[0], min:(f[0] === "x" || f[0] === "y") ? "0" : "1", max:String(S.limits.max_grid),
+          value:c[f[0]] === undefined ? "" : String(c[f[0]]), placeholder:(f[0] === "x" || f[0] === "y") ? "auto" : "1",
+          on:{input:function(ev){ numOrDelete(c, f[0], ev.target.value); touch(); }}});
+        field(nums, f[1], inp);
+      });
+      box.appendChild(nums);
+      box.appendChild(el("div", {className:"hint", textContent:"Column and row count from 0. Leave both empty to let the app place the card."}));
+    }
 
     if (c.type === "sensor") {
       var f2 = el("div", {className:"fields"});
-      field(f2, "Attribute", textInput(c.attribute, {name:"attribute", placeholder:"(the state)", on:{input:function(ev){ setOrDelete(c, "attribute", ev.target.value); touch(); }}}),
+      field(f2, "Attribute", textInput(c.attribute, {name:pre + "attribute", placeholder:"(the state)", on:{input:function(ev){ setOrDelete(c, "attribute", ev.target.value); touch(); }}}),
         "Show this attribute of the entity, not its state.");
-      field(f2, "Unit", textInput(c.unit, {name:"unit", placeholder:"(the unit of the entity)", on:{input:function(ev){ setOrDelete(c, "unit", ev.target.value); touch(); }}}));
-      field(f2, "Decimals (0 to " + S.limits.max_precision + ")", el("input", {type:"number", id:newId("n"), name:"precision", min:"0", max:String(S.limits.max_precision),
+      field(f2, "Unit", textInput(c.unit, {name:pre + "unit", placeholder:"(the unit of the entity)", on:{input:function(ev){ setOrDelete(c, "unit", ev.target.value); touch(); }}}));
+      field(f2, "Decimals (0 to " + S.limits.max_precision + ")", el("input", {type:"number", id:newId("n"), name:pre + "precision", min:"0", max:String(S.limits.max_precision),
         value:c.precision === undefined ? "" : String(c.precision), placeholder:"(as Home Assistant sends it)", on:{input:function(ev){ numOrDelete(c, "precision", ev.target.value); touch(); }}}));
       box.appendChild(f2);
     }
     if (c.type === "clock") {
       var f3 = el("div", {className:"fields"});
-      field(f3, "Time format", textInput(c.format, {name:"format", placeholder:"%H:%M", on:{input:function(ev){ setOrDelete(c, "format", ev.target.value); touch(); }}}),
+      field(f3, "Time format", textInput(c.format, {name:pre + "format", placeholder:"%H:%M", on:{input:function(ev){ setOrDelete(c, "format", ev.target.value); touch(); }}}),
         "strftime codes, for example %H:%M.");
       var dfBox = el("div", {});
-      var dfIn = textInput(c.date_format, {name:"date_format", placeholder:"%a %d %b", disabled:c.date_format === "",
+      var dfIn = textInput(c.date_format, {name:pre + "date_format", placeholder:"%a %d %b", disabled:c.date_format === "",
         on:{input:function(ev){ setOrDelete(c, "date_format", ev.target.value); touch(); }}});
       field(dfBox, "Date format", dfIn);
-      var nd = el("input", {type:"checkbox", id:newId("c"), name:"no_date", checked:c.date_format === "", on:{change:function(ev){
+      var nd = el("input", {type:"checkbox", id:newId("c"), name:pre + "no_date", checked:c.date_format === "", on:{change:function(ev){
         if (ev.target.checked) { c.date_format = ""; dfIn.value = ""; dfIn.disabled = true; }
         else { delete c.date_format; dfIn.disabled = false; }
         touch();
@@ -724,23 +772,75 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
       f3.appendChild(dfBox);
       box.appendChild(f3);
     }
+    if (c.type === "climate") {
+      var f4 = el("div", {className:"fields"});
+      field(f4, "Step (degrees, 0.1 to 10)", el("input", {type:"number", id:newId("n"), name:pre + "step", min:"0.1", max:"10", step:"0.1",
+        value:c.step === undefined ? "" : String(c.step), placeholder:"(the step of the entity, else 0.5)",
+        on:{input:function(ev){ numOrDelete(c, "step", ev.target.value); touch(); }}}),
+        "The - and + buttons change the target temperature by this value.");
+      box.appendChild(f4);
+    }
 
-    var tapBox = el("div", {});
-    actionEditor(tapBox, "When you tap the card", {
-      get: function(){ return c.tap; },
-      set: function(v){ if (v === undefined) delete c.tap; else c.tap = v; },
-      mode: "tap", card: c
-    });
-    box.appendChild(tapBox);
+    if (c.type === "conditional") {
+      var f5 = el("div", {className:"sub-form"});
+      var useNot = "state_not" in c && !("state" in c);
+      var which = el("select", {id:newId("a"), name:"state_kind", on:{change:function(ev){
+        var cur = "state_not" in c ? c.state_not : c.state;
+        delete c.state; delete c.state_not;
+        c[ev.target.value] = cur === undefined ? "" : cur;
+        touch();
+      }}});
+      [["state", "while the entity has one of these states"], ["state_not", "while the entity has none of these states"]].forEach(function(o){
+        var op = el("option", {value:o[0], textContent:o[1]}); if ((o[0] === "state_not") === useNot) op.selected = true; which.appendChild(op);
+      });
+      field(f5, "Show the card", which);
+      var vals = textInput(statesText(useNot ? c.state_not : c.state), {name:"state_values", placeholder:"on, open",
+        on:{input:function(ev){
+          var key = "state_not" in c && !("state" in c) ? "state_not" : "state";
+          c[key] = statesValue(ev.target.value);
+          touch();
+        }}});
+      field(f5, "States", vals, "Separate the states with commas. Use 1 to 16 states. An empty field matches an empty state.");
+      box.appendChild(f5);
+      var innerBox = el("div", {className:"sub-form"});
+      innerBox.appendChild(el("b", {textContent:"The card that the condition shows"}));
+      if (isObj(c.card)) drawCardFields(innerBox, c.card, true);
+      box.appendChild(innerBox);
+    }
+
+    if (c.type !== "conditional") {
+      var tapBox = el("div", {});
+      actionEditor(tapBox, "When you tap the card", {
+        get: function(){ return c.tap; },
+        set: function(v){ if (v === undefined) delete c.tap; else c.tap = v; },
+        mode: "tap", card: c, name: pre + "tap"
+      });
+      box.appendChild(tapBox);
+    }
+    if (NO_HOLD.indexOf(c.type) < 0) {
+      var holdBox = el("div", {});
+      actionEditor(holdBox, "When you press the card for a long time", {
+        get: function(){ return c.hold; },
+        set: function(v){ if (v === undefined) delete c.hold; else c.hold = v; },
+        mode: "tap", card: c, name: pre + "hold"
+      });
+      box.appendChild(holdBox);
+    }
+  }
+  function renderCardEdit(){
+    var box = clear($("card-edit")), c = curCard();
+    if (!c) { box.appendChild(el("div", {className:"hint", textContent:"Select a card in the preview or in the list, or add a card."})); return; }
+    box.appendChild(el("b", {textContent:"Card " + (S.card + 1) + " of " + pageName(curPage(), S.page)}));
+    drawCardFields(box, c, false);
   }
 
-  function iconPicker(parent, c){
+  function iconPicker(parent, c, pre){
     var wrap = el("div", {className:"sub-form"});
     var sum = el("summary", {textContent:"Icon: " + (c.icon || "default")});
     var det = el("details", {});
     det.appendChild(sum);
     var list = el("div", {className:"icons"});
-    var inp = textInput(c.icon, {name:"icon", placeholder:"search, or mdi:name (empty = the default icon)"});
+    var inp = textInput(c.icon, {name:(pre || "") + "icon", placeholder:"search, or mdi:name (empty = the default icon)"});
     function show(){
       clear(list);
       var q = (inp.value || "").toLowerCase().replace(/^mdi:/, "");
@@ -778,14 +878,20 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     if (/^-?[0-9]+(\.[0-9]+)?$/.test(t)) return Number(t);
     return t;
   }
+  // " (Show page 1)": what a key does with no entry in "keys"
+  function keyDefaultText(k){
+    var d = KEY_DEFAULT[k] || "none";
+    var text = KEY_ACTION_NAME[d] || (/^page:[0-9]+$/.test(d) ? "Show page " + d.slice(5) : "Nothing");
+    return " (" + text + ")";
+  }
   function actionEditor(parent, labelText, spec){
     var isKey = spec.mode === "key";
     var v = spec.get();
     var choice = isObj(v) ? "custom" : (v === undefined || (v === "default" && !isKey) ? "default" : String(v));
-    var sel = el("select", {id:newId("a")});
-    var opts = [["default", isKey ? "The default of the key" : "The default of the card type"], ["none", "Nothing"]];
+    var sel = el("select", {id:newId("a"), name:spec.name || ""});
+    var opts = [["default", isKey ? "The default of the key" + keyDefaultText(spec.name) : "The default of the card type"], ["none", "Nothing"]];
     if (isKey) {
-      opts.push(["next_page", "Show the next page"], ["prev_page", "Show the previous page"], ["setup", "Open the setup window"]);
+      ["next_page", "prev_page", "setup", "overlay", "lights", "screen_off"].forEach(function(a){ opts.push([a, KEY_ACTION_NAME[a]]); });
       pages().forEach(function(p, i){ opts.push(["page:" + (i + 1), "Show page " + (i + 1) + " (" + pageName(p, i) + ")"]); });
       if (/^page:[0-9]+$/.test(choice) && !opts.some(function(o){ return o[0] === choice; })) opts.push([choice, "Show " + choice.replace(":", " ") + " (no such page)"]);
     }
@@ -878,7 +984,7 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
           if (v === undefined) { if (isObj(S.layout.keys)) { delete S.layout.keys[k]; if (!Object.keys(S.layout.keys).length) delete S.layout.keys; } }
           else { if (!isObj(S.layout.keys)) S.layout.keys = {}; S.layout.keys[k] = v; }
         },
-        mode: "key", card: null
+        mode: "key", card: null, name: k
       });
       line.appendChild(holder);
       box.appendChild(line);
@@ -895,7 +1001,7 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     }));
     box.appendChild(add);
     box.appendChild(el("div", {className:"status", id:"keys-status"}));
-    box.appendChild(el("div", {className:"hint", textContent:"The names are the keys of the panel. The default of a key is: home shows page 1, up shows the previous page, down shows the next page, the other keys do nothing."}));
+    box.appendChild(el("div", {className:"hint", textContent:"The names are the keys of the panel. The default of a key is: home shows page 1, up shows the previous page, down shows the next page, power opens the settings overlay, lights turns the panel lights on or off, the other keys do nothing."}));
   }
 
   // ---- the optional list of all Home Assistant entities ----

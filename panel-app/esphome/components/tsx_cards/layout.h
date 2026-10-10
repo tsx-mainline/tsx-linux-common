@@ -4,6 +4,7 @@
 #pragma once
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -11,13 +12,14 @@
 namespace esphome {
 namespace tsx_cards {
 
-enum class CardType { LIGHT, SWITCH, SCENE, SCRIPT, SENSOR, WEATHER, CLOCK };
+enum class CardType { LIGHT, SWITCH, SCENE, SCRIPT, SENSOR, WEATHER, CLOCK, COVER, CLIMATE, MEDIA, FAN, CONDITIONAL };
 
 const char *card_type_name(CardType t);
 
-// What a tap on a card or a key press does.
+// What a tap on a card, a long press or a key press does. OVERLAY, LIGHTS,
+// SCREEN_OFF, SETUP and the page actions are for keys only.
 struct ActionSpec {
-  enum Kind { DEFAULT, NONE, CALL, PAGE, NEXT_PAGE, PREV_PAGE, SETUP };
+  enum Kind { DEFAULT, NONE, CALL, PAGE, NEXT_PAGE, PREV_PAGE, SETUP, OVERLAY, LIGHTS, SCREEN_OFF };
   Kind kind{DEFAULT};
   std::string action;                                       // CALL: "domain.service"
   std::vector<std::pair<std::string, std::string>> data;    // CALL: data, as text
@@ -38,6 +40,13 @@ struct CardSpec {
   int w{1}, h{1};           // size in cells
   int index{0};             // number of the card in its page (1 = first), for messages
   ActionSpec tap;
+  ActionSpec hold;          // long press (DEFAULT: the detail popup of the type)
+  double step{0};           // climate: the target step (0 = target_temp_step or 0.5)
+  // conditional: the inner card shows while the entity state is one of
+  // `states` (or none of them, when state_not is set).
+  std::vector<std::string> states;
+  bool state_not{false};
+  std::shared_ptr<CardSpec> inner;
 };
 
 struct PageSpec {

@@ -198,6 +198,7 @@ void TsxCards::setup() {
         s += (s.empty() ? "" : ", ") + p;
       return s;
     }());
+  this->screen_setup_();
 }
 
 void TsxCards::dump_config() {
@@ -293,6 +294,42 @@ void TsxCards::loop() {
     this->entities_dirty_ = false;
     this->write_entities_();
   }
+
+  // The actions of the buttons run here, after the LVGL event: an action can
+  // delete the button (Close).
+  if (!this->pending_.empty()) {
+    auto run = std::move(this->pending_);
+    this->pending_.clear();
+    for (auto &fn : run)
+      fn();
+  }
+  this->screen_loop_();
+  this->overlay_loop_();
+  this->popup_loop_();
+  for (auto &it : this->keys_) {
+    KeyState &k = it.second;
+    if (k.down && !k.swallowed && !k.long_sent && now - k.down_at >= 800) {
+      k.long_sent = true;
+      ESP_LOGI(TAG, "key %s: long press", it.first.c_str());
+#ifdef USE_EVENT
+      if (k.event != nullptr)
+        k.event->trigger("long");
+#endif
+    }
+  }
+#ifdef USE_TSX_CARDS_INPUT
+  if (this->input_ != nullptr) {
+    // The five-finger tap opens or closes the overlay, as on the other
+    // panels (tsx-idled). A tap with another number of fingers does
+    // nothing here.
+    int n = this->input_->take_tap();
+    if (n == 5 && this->screen_ == SCREEN_ON)
+      this->toggle_overlay("five-finger tap");
+    else if (n > 1)
+      ESP_LOGD(TAG, "%d-finger tap: no action", n);
+  }
+#endif
+  this->reap_children_();
 }
 
 // ---- the setup banner and the entity list ---------------------------------------------
@@ -578,7 +615,9 @@ void TsxCards::show_error_(const std::string &text) {
   this->views_.clear();
   this->clocks_.clear();
   this->bar_buttons_.clear();
+  this->close_popup_();
   lv_obj_clean(this->root_);
+  this->card_btns_.clear();
   this->tiles_ = this->bar_ = this->bar_status_ = nullptr;
   this->pages_.clear();
   lv_obj_t *l = this->label_(this->root_, FONT_LABEL, this->layout_.theme.text);
@@ -590,6 +629,7 @@ void TsxCards::show_error_(const std::string &text) {
 }
 
 void TsxCards::build_() {
+  this->close_popup_();
   this->entities_dirty_ = true;
   for (auto &it : this->slots_)
     it.second->views.clear();
@@ -597,6 +637,7 @@ void TsxCards::build_() {
   this->clocks_.clear();
   this->bar_buttons_.clear();
   lv_obj_clean(this->root_);
+  this->card_btns_.clear();
   this->bar_ = this->bar_status_ = nullptr;
   const Theme &th = this->layout_.theme;
   lv_obj_set_style_bg_color(this->root_, lv_color_hex(th.background), 0);
@@ -629,6 +670,11 @@ void TsxCards::build_() {
       auto v = std::make_unique<CardView>();
       v->owner = this;
       v->spec = &spec;
+      if (spec.type == CardType::CONDITIONAL && spec.inner) {
+        // The view shows the inner card. The outer card gives the condition.
+        v->spec = spec.inner.get();
+        v->cond = &spec;
+      }
       v->page = i;
       this->build_card_(v.get(), tile, cell_w, cell_h);
       this->views_.push_back(std::move(v));
@@ -650,6 +696,32 @@ void TsxCards::build_() {
 #endif
 }
 
+// The action of a tap on a card of this type, or "" for none.
+static std::string default_tap(const CardSpec &c) {
+  switch (c.type) {
+    case CardType::LIGHT:
+      return "light.toggle";
+    case CardType::SWITCH:
+      return entity_domain(c.entity_id) + ".toggle";
+    case CardType::SCENE:
+      return "scene.turn_on";
+    case CardType::SCRIPT:
+      return "script.turn_on";
+    case CardType::COVER:
+      return "cover.toggle";
+    case CardType::FAN:
+      return "fan.toggle";
+    default:
+      return "";
+  }
+}
+
+// True when a long press of this card type opens the detail popup.
+static bool has_popup(CardType t) {
+  return t == CardType::LIGHT || t == CardType::FAN || t == CardType::COVER || t == CardType::MEDIA ||
+         t == CardType::CLIMATE;
+}
+
 void TsxCards::build_card_(CardView *v, lv_obj_t *tile, int cell_w, int cell_h) {
   const CardSpec &c = *v->spec;
   const Theme &th = this->layout_.theme;
@@ -666,21 +738,30 @@ void TsxCards::build_card_(CardView *v, lv_obj_t *tile, int cell_w, int cell_h) 
   lv_obj_set_style_bg_color(o, lv_color_hex(th.card), 0);
   lv_obj_set_style_pad_all(o, CARD_PAD, 0);
   lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+  if (v->cond != nullptr) {
+    // A conditional card is hidden until the state of its entity is known.
+    lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+    v->shown = 0;
+  }
   // A drag on a card scrolls the page view (swipe to the next page) and
   // cancels the tap.
-  bool tappable = c.tap.kind == ActionSpec::CALL || c.tap.kind == ActionSpec::PAGE ||
-                  (c.tap.kind == ActionSpec::DEFAULT && c.type != CardType::SENSOR && c.type != CardType::WEATHER &&
-                   c.type != CardType::CLOCK);
-  if (tappable) {
+  bool tap = c.tap.kind == ActionSpec::CALL || c.tap.kind == ActionSpec::PAGE ||
+             (c.tap.kind == ActionSpec::DEFAULT && !default_tap(c).empty());
+  bool hold = c.type != CardType::CLOCK &&
+              (c.hold.kind == ActionSpec::CALL || (c.hold.kind == ActionSpec::DEFAULT && has_popup(c.type)));
+  if (tap || hold) {
     lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
     // A finger that slides off the card cancels the tap (LVGL keeps the
     // press by default and clicks on the release).
     lv_obj_remove_flag(o, LV_OBJ_FLAG_PRESS_LOCK);
-    lv_obj_set_style_bg_opa(o, LV_OPA_60, LV_STATE_PRESSED);
+    // The pressed card changes its color. Opacity below 100 % costs 1.7
+    // times the drawing time on this kind of CPU (docs/panel-accel.md).
+    lv_obj_set_style_bg_color(o, lv_color_mix(lv_color_hex(th.text), lv_color_hex(th.card), 64), LV_STATE_PRESSED);
     lv_obj_add_event_cb(
         o,
         [](lv_event_t *e) {
           auto *cv = static_cast<CardView *>(lv_event_get_user_data(e));
+          cv->long_fired = false;
           lv_indev_t *indev = lv_indev_active();
           if (indev != nullptr)
             lv_indev_get_point(indev, &cv->press_point);
@@ -690,26 +771,32 @@ void TsxCards::build_card_(CardView *v, lv_obj_t *tile, int cell_w, int cell_h) 
         o,
         [](lv_event_t *e) {
           auto *cv = static_cast<CardView *>(lv_event_get_user_data(e));
-          // A drag that LVGL did not turn into a page swipe (for example
-          // toward a side with no page) is not a tap.
-          lv_indev_t *indev = lv_indev_active();
-          lv_point_t p = cv->press_point;
-          if (indev != nullptr)
-            lv_indev_get_point(indev, &p);
-          int dx = p.x - cv->press_point.x, dy = p.y - cv->press_point.y;
-          if (dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
-            ESP_LOGI(TAG, "tap on page %d card %d ignored: the finger moved %d,%d px", cv->page + 1, cv->spec->index,
-                     dx, dy);
+          // A long press ran its own action. A drag that LVGL did not turn
+          // into a page swipe (for example toward a side with no page) is
+          // not a tap. A touch with more than one finger is not a tap.
+          if (cv->long_fired || cv->owner->finger_moved_(cv))
             return;
-          }
           cv->owner->on_card_tap(cv);
         },
         LV_EVENT_CLICKED, v);
+    if (hold) {
+      lv_obj_add_event_cb(
+          o,
+          [](lv_event_t *e) {
+            auto *cv = static_cast<CardView *>(lv_event_get_user_data(e));
+            if (cv->owner->finger_moved_(cv))
+              return;
+            cv->long_fired = true;
+            cv->owner->on_card_hold(cv);
+          },
+          LV_EVENT_LONG_PRESSED, v);
+    }
   } else {
     lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
   }
 
   int inner_w = w - 2 * CARD_PAD;
+  int inner_h = h - 2 * CARD_PAD;
   if (c.type == CardType::CLOCK) {
     bool date = !c.date_format.empty();
     v->value = this->label_(o, FONT_CLOCK, th.text);
@@ -719,6 +806,8 @@ void TsxCards::build_card_(CardView *v, lv_obj_t *tile, int cell_w, int cell_h) 
       lv_obj_align(v->state, LV_ALIGN_CENTER, 0, lv_font_get_line_height(this->font_(FONT_CLOCK)) / 2 + 2);
     }
     this->clocks_.push_back(v);
+    if (v->cond != nullptr)
+      v->cond_slot = this->watch_(v->cond->entity_id, "", v);
     return;
   }
 
@@ -732,6 +821,7 @@ void TsxCards::build_card_(CardView *v, lv_obj_t *tile, int cell_w, int cell_h) 
   switch (c.type) {
     case CardType::SENSOR:
     case CardType::WEATHER:
+    case CardType::CLIMATE:
       v->value = this->label_(o, FONT_VALUE, th.text);
       lv_obj_set_width(v->value, inner_w - ICON_W);
       lv_label_set_long_mode(v->value, LV_LABEL_LONG_MODE_DOTS);
@@ -753,6 +843,8 @@ void TsxCards::build_card_(CardView *v, lv_obj_t *tile, int cell_w, int cell_h) 
       lv_obj_align(v->state, LV_ALIGN_TOP_RIGHT, 0, 4);
       break;
   }
+  if (c.type == CardType::COVER || c.type == CardType::CLIMATE || c.type == CardType::MEDIA)
+    this->card_buttons_(v, inner_w, inner_h);
 
   const std::string &e = c.entity_id;
   v->main = this->watch_(e, c.type == CardType::SENSOR ? c.attribute.c_str() : "", v);
@@ -771,9 +863,98 @@ void TsxCards::build_card_(CardView *v, lv_obj_t *tile, int cell_w, int cell_h) 
       v->temp_unit = this->watch_(e, "temperature_unit", v);
       v->humidity = this->watch_(e, "humidity", v);
       break;
+    case CardType::COVER:
+      v->position = this->watch_(e, "current_position", v);
+      break;
+    case CardType::CLIMATE:
+      v->current = this->watch_(e, "current_temperature", v);
+      v->target = this->watch_(e, "temperature", v);
+      v->tstep = this->watch_(e, "target_temp_step", v);
+      v->modes = this->watch_(e, "hvac_modes", v);
+      break;
+    case CardType::MEDIA:
+      v->title = this->watch_(e, "media_title", v);
+      v->artist = this->watch_(e, "media_artist", v);
+      v->volume = this->watch_(e, "volume_level", v);
+      break;
+    case CardType::FAN:
+      v->percentage = this->watch_(e, "percentage", v);
+      break;
     default:
       break;
   }
+  if (v->cond != nullptr)
+    v->cond_slot = this->watch_(v->cond->entity_id, "", v);
+}
+
+// The buttons in the middle of a cover, climate or media player card. A card
+// with too little room gets no buttons (the long press still works).
+void TsxCards::card_buttons_(CardView *v, int inner_w, int inner_h) {
+  const CardSpec &c = *v->spec;
+  int top = 40;                                               // below the icon
+  int bottom = lv_font_get_line_height(this->font_(FONT_LABEL)) + 2;  // above the name
+  int avail = inner_h - top - bottom;
+  if (avail < 28 || inner_w < 120)
+    return;
+  int bh = avail > 48 ? 48 : avail;
+  int y = top + (avail - bh) / 2;
+  const std::string e = c.entity_id;
+  if (c.type == CardType::CLIMATE) {
+    int bw = bh + 8;
+    v->btn[0] = this->button_(v->obj, this->card_btns_, "minus", nullptr, bw, bh, [this, v]() {
+      this->climate_step_(v, -1);
+    }, &v->btn_icon[0]);
+    lv_obj_set_pos(v->btn[0], 0, y);
+    v->btn[1] = this->button_(v->obj, this->card_btns_, "plus", nullptr, bw, bh, [this, v]() {
+      this->climate_step_(v, 1);
+    }, &v->btn_icon[1]);
+    lv_obj_set_pos(v->btn[1], inner_w - bw, y);
+    v->mid = this->label_(v->obj, FONT_SMALL, this->layout_.theme.text);
+    lv_obj_set_width(v->mid, inner_w - 2 * bw - 8);
+    lv_label_set_long_mode(v->mid, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_align(v->mid, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(v->mid, bw + 4, y + bh / 2 - lv_font_get_line_height(this->font_(FONT_SMALL)));
+    return;
+  }
+  static const char *const COVER_ICONS[3] = {"arrow-up", "stop", "arrow-down"};
+  static const char *const COVER_ACTIONS[3] = {"cover.open_cover", "cover.stop_cover", "cover.close_cover"};
+  static const char *const MEDIA_ICONS[3] = {"volume-minus", "play", "volume-plus"};
+  static const char *const MEDIA_ACTIONS[3] = {"media_player.volume_down", "media_player.media_play_pause",
+                                               "media_player.volume_up"};
+  bool cover = c.type == CardType::COVER;
+  int gapx = 6;
+  int bw = (inner_w - 2 * gapx) / 3;
+  for (int i = 0; i < 3; i++) {
+    std::string action = cover ? COVER_ACTIONS[i] : MEDIA_ACTIONS[i];
+    v->btn[i] = this->button_(v->obj, this->card_btns_, cover ? COVER_ICONS[i] : MEDIA_ICONS[i], nullptr, bw, bh,
+                              [this, v, action]() {
+                                char origin[96];
+                                snprintf(origin, sizeof origin, "button on page %d card %d", v->page + 1,
+                                         v->spec->index);
+                                ESP_LOGI(TAG, "%s: action %s", origin, action.c_str());
+                                this->call_ha_(action, v->spec->entity_id, {});
+                              },
+                              &v->btn_icon[i]);
+    lv_obj_set_pos(v->btn[i], i * (bw + gapx), y);
+  }
+}
+
+// The - and + buttons of a climate card: the target temperature by one step.
+void TsxCards::climate_step_(CardView *v, int dir) {
+  double t, step = v->spec->step;
+  if (step <= 0 && v->tstep != nullptr && v->tstep->has_value)
+    parse_number(v->tstep->value, step);
+  if (step <= 0)
+    step = 0.5;
+  if (v->target == nullptr || !v->target->has_value || !parse_number(v->target->value, t)) {
+    ESP_LOGW(TAG, "%s: no target temperature yet", v->spec->entity_id.c_str());
+    return;
+  }
+  double n = std::round((t + dir * step) / step) * step;
+  char buf[32];
+  snprintf(buf, sizeof buf, step < 0.1 ? "%.2f" : step < 1 ? "%.1f" : "%.0f", n);
+  ESP_LOGI(TAG, "button on page %d card %d: target %s", v->page + 1, v->spec->index, buf);
+  this->call_ha_("climate.set_temperature", v->spec->entity_id, {{"temperature", buf}});
 }
 
 void TsxCards::build_bar_() {
@@ -873,8 +1054,11 @@ void TsxCards::on_value_(Slot *s) {
     this->first_value_logged_ = true;
     this->mark_("first entity value");
   }
-  for (auto *v : s->views)
+  for (auto *v : s->views) {
     this->update_card_(v);
+    if (v == this->popup_view_)
+      this->popup_refresh_();
+  }
   if (!this->all_values_logged_ && s->attribute.empty()) {
     for (auto &it : this->slots_)
       if (it.second->attribute.empty() && !it.second->views.empty() && !it.second->has_value)
@@ -943,9 +1127,54 @@ void TsxCards::set_icon_(lv_obj_t *label, const std::string &name, const char *f
   this->set_text_(label, buf);
 }
 
+// "heat_cool" -> "Heat cool"
+static std::string nice_state(const std::string &s) {
+  std::string out = s;
+  for (auto &ch : out)
+    if (ch == '_')
+      ch = ' ';
+  if (!out.empty() && out[0] >= 'a' && out[0] <= 'z')
+    out[0] = out[0] - 'a' + 'A';
+  return out;
+}
+
+static std::string temp_text(double t) {
+  char buf[32];
+  snprintf(buf, sizeof buf, "%.1f\xC2\xB0", t);
+  // 21.0 -> 21
+  std::string s = buf;
+  size_t p = s.find(".0\xC2\xB0");
+  if (p != std::string::npos)
+    s.erase(p, 2);
+  return s;
+}
+
+// A conditional card: show the inner card while the state of the entity
+// matches. Before the first state, the card stays hidden.
+void TsxCards::update_condition_(CardView *v) {
+  if (v->cond == nullptr)
+    return;
+  bool show = false;
+  if (v->cond_slot != nullptr && v->cond_slot->has_value) {
+    bool match = false;
+    for (const auto &st : v->cond->states)
+      match |= st == v->cond_slot->value;
+    show = v->cond->state_not ? !match : match;
+  }
+  if ((int) show == v->shown)
+    return;
+  v->shown = show;
+  if (show)
+    lv_obj_remove_flag(v->obj, LV_OBJ_FLAG_HIDDEN);
+  else
+    lv_obj_add_flag(v->obj, LV_OBJ_FLAG_HIDDEN);
+  ESP_LOGI(TAG, "conditional card %d on page %d: %s", v->spec->index, v->page + 1, show ? "shown" : "hidden");
+}
+
 void TsxCards::update_card_(CardView *v) {
   const CardSpec &c = *v->spec;
   const Theme &th = this->layout_.theme;
+  this->update_condition_(v);
   if (c.type == CardType::CLOCK)
     return;
   bool has = v->main != nullptr && v->main->has_value;
@@ -1045,10 +1274,81 @@ void TsxCards::update_card_(CardView *v) {
       }
       break;
     }
+    case CardType::COVER: {
+      double p;
+      bool hp = v->position != nullptr && v->position->has_value && parse_number(v->position->value, p);
+      lit = st == "open" || st == "opening" || st == "closing";
+      icon = lit ? "window-shutter-open" : "window-shutter";
+      if (!has)
+        state = "--";
+      else if (unavailable)
+        state = "Unavailable";
+      else {
+        state = nice_state(st);
+        if (hp && st != "closed")
+          state += " " + std::to_string((int) lround(p)) + "%";
+      }
+      break;
+    }
+    case CardType::CLIMATE: {
+      lit = has && !unavailable && st != "off";
+      icon = "thermostat";
+      double t;
+      value = v->current != nullptr && v->current->has_value && parse_number(v->current->value, t) ? temp_text(t)
+                                                                                                   : "--";
+      std::string tgt = v->target != nullptr && v->target->has_value && parse_number(v->target->value, t)
+                            ? temp_text(t)
+                            : "--";
+      std::string mode = !has ? "--" : unavailable ? "Unavailable" : nice_state(st);
+      if (v->mid != nullptr)
+        this->set_text_(v->mid, (tgt + "\n" + mode).c_str());
+      else
+        state = mode + " " + tgt;
+      break;
+    }
+    case CardType::MEDIA: {
+      bool playing = st == "playing";
+      lit = playing;
+      icon = playing ? "music" : "speaker";
+      std::string title = v->title != nullptr && v->title->has_value ? v->title->value : "";
+      if (!title.empty() && v->artist != nullptr && v->artist->has_value && !v->artist->value.empty())
+        title += " - " + v->artist->value;
+      if (!has)
+        state = "--";
+      else if (unavailable)
+        state = "Unavailable";
+      else if ((playing || st == "paused") && !title.empty())
+        state = title;
+      else
+        state = nice_state(st);
+      double vol;
+      if (has && !unavailable && st != "off" && v->volume != nullptr && v->volume->has_value &&
+          parse_number(v->volume->value, vol))
+        state += "  " + std::to_string((int) lround(vol * 100)) + "%";
+      if (v->btn_icon[1] != nullptr)
+        this->set_icon_(v->btn_icon[1], playing ? "pause" : "play", "play");
+      break;
+    }
+    case CardType::FAN: {
+      bool on = st == "on";
+      lit = on;
+      icon = on ? "fan" : "fan-off";
+      double pc;
+      if (!has)
+        state = "--";
+      else if (unavailable)
+        state = "Unavailable";
+      else if (on && v->percentage != nullptr && v->percentage->has_value && parse_number(v->percentage->value, pc))
+        state = "On " + std::to_string((int) lround(pc)) + "%";
+      else
+        state = on ? "On" : "Off";
+      break;
+    }
     default:
       break;
   }
-  this->set_fit_text_(v->name, name.c_str(), 2, FONT_LABEL, FONT_LABEL);
+  // A card with buttons has room for one line of the name only.
+  this->set_fit_text_(v->name, name.c_str(), v->btn[0] != nullptr ? 1 : 2, FONT_LABEL, FONT_LABEL);
   this->set_fit_text_(v->state, state.c_str(), 1, FONT_SMALL, FONT_SMALL);
   this->set_fit_text_(v->value, value.c_str(), 1, FONT_VALUE, FONT_LABEL);
   this->set_icon_(v->icon, c.icon, icon);
@@ -1101,6 +1401,34 @@ void TsxCards::update_bar_() {
 
 // ---- taps, keys and pages ---------------------------------------------------------------
 
+bool TsxCards::multi_touch_() const {
+#ifdef USE_TSX_CARDS_INPUT
+  return this->input_ != nullptr && this->input_->gesture_fingers() > 1;
+#else
+  return false;
+#endif
+}
+
+// True when the touch on the card is no tap: the finger moved more than
+// TAP_SLOP, or more than one finger touched the screen.
+bool TsxCards::finger_moved_(CardView *v) const {
+  if (this->multi_touch_()) {
+    ESP_LOGI(TAG, "touch on page %d card %d ignored: more than one finger", v->page + 1, v->spec->index);
+    return true;
+  }
+  lv_indev_t *indev = lv_indev_active();
+  lv_point_t p = v->press_point;
+  if (indev != nullptr)
+    lv_indev_get_point(indev, &p);
+  int dx = p.x - v->press_point.x, dy = p.y - v->press_point.y;
+  if (dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
+    ESP_LOGI(TAG, "touch on page %d card %d ignored: the finger moved %d,%d px", v->page + 1, v->spec->index, dx,
+             dy);
+    return true;
+  }
+  return false;
+}
+
 void TsxCards::on_card_tap(CardView *v) {
   const CardSpec &c = *v->spec;
   char origin[96];
@@ -1111,25 +1439,90 @@ void TsxCards::on_card_tap(CardView *v) {
     return;
   }
   ActionSpec a;
-  a.kind = ActionSpec::CALL;
-  switch (c.type) {
-    case CardType::LIGHT:
-      a.action = "light.toggle";
-      break;
-    case CardType::SWITCH:
-      a.action = entity_domain(c.entity_id) + ".toggle";
-      break;
-    case CardType::SCENE:
-      a.action = "scene.turn_on";
-      break;
-    case CardType::SCRIPT:
-      a.action = "script.turn_on";
-      break;
-    default:
-      a.kind = ActionSpec::NONE;
-      break;
-  }
+  a.action = default_tap(c);
+  a.kind = a.action.empty() ? ActionSpec::NONE : ActionSpec::CALL;
   this->run_action_(a, c.entity_id, origin);
+}
+
+void TsxCards::on_card_hold(CardView *v) {
+  const CardSpec &c = *v->spec;
+  char origin[96];
+  snprintf(origin, sizeof origin, "long press on page %d card %d (%s %s)", v->page + 1, c.index,
+           card_type_name(c.type), c.entity_id.c_str());
+  if (c.hold.kind == ActionSpec::DEFAULT && has_popup(c.type)) {
+    ESP_LOGI(TAG, "%s: detail popup", origin);
+    this->open_popup_(v);
+    return;
+  }
+  this->run_action_(c.hold, c.entity_id, origin);
+}
+
+void TsxCards::on_button(UiButton *b) {
+  if (this->multi_touch_())
+    return;
+  // Run it in loop(), not in the LVGL event: the action can delete the button.
+  this->pending_.push_back(b->fn);
+}
+
+lv_obj_t *TsxCards::box_(lv_obj_t *parent, int x, int y, int w, int h, uint32_t color, int radius) {
+  lv_obj_t *o = lv_obj_create(parent);
+  lv_obj_remove_style_all(o);
+  lv_obj_set_pos(o, x, y);
+  lv_obj_set_size(o, w, h);
+  lv_obj_set_style_radius(o, radius, 0);
+  lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(o, lv_color_hex(color), 0);
+  lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+  return o;
+}
+
+// A button: an icon, a text, or both (the icon above the text when the
+// button is 64 px high or more, else left of it). The click runs `fn` in
+// the next loop(). No opacity, no shadow: the pressed button changes its
+// color.
+lv_obj_t *TsxCards::button_(lv_obj_t *parent, ButtonPool &pool, const char *icon, const char *text, int w, int h,
+                            std::function<void()> fn, lv_obj_t **label) {
+  const Theme &th = this->layout_.theme;
+  lv_obj_t *b = this->box_(parent, 0, 0, w, h, th.background, 10);
+  lv_obj_set_style_bg_color(b, lv_color_hex(th.card_on), LV_STATE_PRESSED);
+  lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_remove_flag(b, LV_OBJ_FLAG_PRESS_LOCK);
+  auto ub = std::make_unique<UiButton>();
+  ub->owner = this;
+  ub->fn = std::move(fn);
+  lv_obj_add_event_cb(
+      b,
+      [](lv_event_t *e) {
+        auto *u = static_cast<UiButton *>(lv_event_get_user_data(e));
+        u->owner->on_button(u);
+      },
+      LV_EVENT_CLICKED, ub.get());
+  pool.push_back(std::move(ub));
+  lv_obj_t *il = nullptr, *tl = nullptr;
+  if (icon != nullptr) {
+    il = this->label_(b, FONT_ICON, th.text);
+    this->set_icon_(il, icon, "help-circle-outline");
+  }
+  if (text != nullptr) {
+    tl = this->label_(b, FONT_SMALL, th.text);
+    lv_label_set_text(tl, text);
+  }
+  if (il != nullptr && tl != nullptr) {
+    if (h >= 64) {
+      lv_obj_align(il, LV_ALIGN_TOP_MID, 0, 4);
+      lv_obj_align(tl, LV_ALIGN_BOTTOM_MID, 0, -6);
+    } else {
+      lv_obj_align(il, LV_ALIGN_LEFT_MID, 10, 0);
+      lv_obj_align(tl, LV_ALIGN_LEFT_MID, 52, 0);
+    }
+  } else if (il != nullptr) {
+    lv_obj_center(il);
+  } else if (tl != nullptr) {
+    lv_obj_center(tl);
+  }
+  if (label != nullptr)
+    *label = il != nullptr ? il : tl;
+  return b;
 }
 
 void TsxCards::key_press(const std::string &name) {
@@ -1144,11 +1537,45 @@ void TsxCards::key_press(const std::string &name) {
     a.kind = ActionSpec::PREV_PAGE;
   } else if (name == "down") {
     a.kind = ActionSpec::NEXT_PAGE;
+  } else if (name == "power") {
+    a.kind = ActionSpec::OVERLAY;
+  } else if (name == "lights") {
+    a.kind = ActionSpec::LIGHTS;
   } else {
     a.kind = ActionSpec::NONE;
   }
   std::string origin = "key " + name;
   this->run_action_(a, "", origin.c_str());
+}
+
+void TsxCards::key_state(const std::string &name, bool pressed) {
+  KeyState &k = this->keys_[name];
+  if (pressed) {
+    if (k.down)
+      return;
+    k.down = true;
+    k.down_at = millis();
+    k.long_sent = false;
+    k.swallowed = this->screen_ != SCREEN_ON;
+    if (k.swallowed) {
+      // A key on a dark or dim screen only wakes it.
+      ESP_LOGI(TAG, "key %s: wakes the screen (no action)", name.c_str());
+      this->wake(("key " + name).c_str());
+      return;
+    }
+    lv_display_trigger_activity(nullptr);
+    this->key_press(name);
+    return;
+  }
+  if (!k.down)
+    return;
+  k.down = false;
+  if (k.swallowed || k.long_sent)
+    return;
+#ifdef USE_EVENT
+  if (k.event != nullptr)
+    k.event->trigger("press");
+#endif
 }
 
 void TsxCards::run_action_(const ActionSpec &a, const std::string &entity, const char *origin) {
@@ -1175,7 +1602,17 @@ void TsxCards::run_action_(const ActionSpec &a, const std::string &entity, const
       break;
     case ActionSpec::SETUP:
       ESP_LOGI(TAG, "%s: open the setup page", origin);
+      this->close_overlay();
       this->open_setup_();
+      break;
+    case ActionSpec::OVERLAY:
+      this->toggle_overlay(origin);
+      break;
+    case ActionSpec::LIGHTS:
+      this->toggle_panel_lights(origin);
+      break;
+    case ActionSpec::SCREEN_OFF:
+      this->screen_off(origin);
       break;
     default:
       ESP_LOGI(TAG, "%s: no action", origin);

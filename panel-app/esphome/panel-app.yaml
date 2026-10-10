@@ -12,7 +12,10 @@
 #     names of the panel at run time), and the platform (for example host:)
 #   - a display with the id panel_display and a touchscreen with the id
 #     panel_touch
-#   - the keys of the panel: each key calls id(panel_cards).key_press("NAME")
+#   - the keys of the panel: each key calls id(panel_cards).key_state("NAME", x)
+#     at each change (a press on a dark screen only wakes it)
+#   - optional: tsx_cards input_id (the five-finger tap), panel_lights,
+#     key_events and on_screen (the display output off and on)
 # The program has no per-panel value: tsx_runtime reads the names and the
 # API encryption key at start, and patches/host-mac.patch the MAC.
 
@@ -69,3 +72,74 @@ tsx_cards:
     value: montserrat_28
     clock: montserrat_48
     icon: tsx_icon_font
+
+# The screen as Home Assistant entities, the same names as on the kiosk
+# panels. Home Assistant can change them: the setting "Allow the device to
+# perform Home Assistant actions" is only for actions that the app sends.
+switch:
+  - platform: template
+    name: Screen
+    id: panel_screen
+    icon: mdi:monitor
+    # No action at the start: the screen starts on.
+    restore_mode: DISABLED
+    lambda: return id(panel_cards).screen_is_on();
+    turn_on_action:
+      - lambda: id(panel_cards).wake("Home Assistant");
+    turn_off_action:
+      - lambda: id(panel_cards).screen_off("Home Assistant");
+
+number:
+  - platform: template
+    name: Backlight
+    id: panel_backlight
+    icon: mdi:brightness-6
+    min_value: 1
+    max_value: 100
+    step: 1
+    unit_of_measurement: "%"
+    update_interval: 1s
+    lambda: return id(panel_cards).backlight();
+    set_action:
+      - lambda: id(panel_cards).set_backlight(x);
+  - platform: template
+    name: Blank timeout
+    id: panel_blank_timeout
+    icon: mdi:timer-outline
+    entity_category: config
+    mode: box
+    min_value: 0
+    max_value: 86400
+    step: 10
+    unit_of_measurement: s
+    update_interval: 5s
+    lambda: return id(panel_cards).blank_timeout();
+    set_action:
+      - lambda: id(panel_cards).set_blank_timeout(x);
+  - platform: template
+    name: Dim timeout
+    id: panel_dim_timeout
+    icon: mdi:timer-outline
+    entity_category: config
+    mode: box
+    min_value: 0
+    max_value: 86400
+    step: 5
+    unit_of_measurement: s
+    update_interval: 5s
+    lambda: return id(panel_cards).dim_timeout();
+    set_action:
+      - lambda: id(panel_cards).set_dim_timeout(x);
+  - platform: template
+    name: Dim level
+    id: panel_dim_level
+    icon: mdi:brightness-4
+    entity_category: config
+    min_value: 1
+    max_value: 100
+    step: 1
+    unit_of_measurement: "%"
+    update_interval: 5s
+    lambda: return id(panel_cards).dim_level();
+    set_action:
+      - lambda: id(panel_cards).set_dim_level(x);

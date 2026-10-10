@@ -32,6 +32,17 @@
         {"type": "light", "entity_id": "light.garden", "label": "Garden", "tap": {"action": "light.turn_on", "data": {"brightness_pct": 50}}},
         {"type": "switch", "entity_id": "switch.sprinkler", "label": "Sprinkler", "icon": "mdi:sprinkler", "w": 3}
       ]
+    },
+    {
+      "name": "More",
+      "cards": [
+        {"type": "cover", "entity_id": "cover.garage_door", "label": "Garage"},
+        {"type": "climate", "entity_id": "climate.living_room", "label": "Thermostat", "step": 0.5},
+        {"type": "media_player", "entity_id": "media_player.kitchen_speaker", "label": "Kitchen", "w": 2},
+        {"type": "fan", "entity_id": "fan.bedroom", "label": "Bedroom Fan", "hold": "none"},
+        {"type": "conditional", "entity_id": "binary_sensor.front_door", "state": "on",
+         "card": {"type": "switch", "entity_id": "switch.porch_light", "label": "Porch Light", "icon": "mdi:outdoor-lamp"}}
+      ]
     }
   ]
 }

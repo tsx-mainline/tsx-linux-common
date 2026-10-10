@@ -342,7 +342,7 @@ void TsxDrm::loop() {
 }
 
 void TsxDrm::present_(int wait_ms) {
-  if (this->fd_ < 0 || this->shadow_ == nullptr)
+  if (this->fd_ < 0 || this->shadow_ == nullptr || !this->powered_)
     return;
   if (this->flip_pending_)
     this->handle_events_(0);
@@ -385,6 +385,50 @@ void TsxDrm::present_(int wait_ms) {
   this->last_full_ = this->dirty_full_;
   this->dirty_.clear();
   this->dirty_full_ = false;
+}
+
+bool TsxDrm::set_power(bool on) {
+  if (this->fd_ < 0 || on == this->powered_)
+    return true;
+  if (this->dpms_prop_ == 0) {
+    drmModeObjectProperties *props = drmModeObjectGetProperties(this->fd_, this->conn_id_, DRM_MODE_OBJECT_CONNECTOR);
+    for (uint32_t i = 0; props != nullptr && i < props->count_props && this->dpms_prop_ == 0; i++) {
+      drmModePropertyRes *p = drmModeGetProperty(this->fd_, props->props[i]);
+      if (p != nullptr && strcmp(p->name, "DPMS") == 0)
+        this->dpms_prop_ = p->prop_id;
+      drmModeFreeProperty(p);
+    }
+    drmModeFreeObjectProperties(props);
+    if (this->dpms_prop_ == 0) {
+      ESP_LOGW(TAG, "the output has no DPMS property: it stays on");
+      return false;
+    }
+  }
+  // A flip must not be pending while the CRTC goes off.
+  if (this->flip_pending_)
+    this->handle_events_(50);
+  uint64_t t0 = mono_us();
+  if (drmModeConnectorSetProperty(this->fd_, this->conn_id_, this->dpms_prop_,
+                                  on ? DRM_MODE_DPMS_ON : DRM_MODE_DPMS_OFF) != 0) {
+    ESP_LOGW(TAG, "display output %s: %s", on ? "on" : "off", strerror(errno));
+    if (!on)
+      return false;
+    // Set the mode again with the buffer on the screen.
+    if (drmModeSetCrtc(this->fd_, this->crtc_id_, this->buf_[this->front_].fb, 0, 0, &this->conn_id_, 1,
+                       &this->mode_) != 0)
+      return this->failed_("set the display mode again");
+  }
+  this->powered_ = on;
+  this->flip_pending_ = false;
+  ESP_LOGI(TAG, "display output %s (%.1f ms)", on ? "on" : "off", (mono_us() - t0) / 1000.0);
+  if (on) {
+    // The buffers can lack changes from the time the output was off.
+    this->dirty_full_ = true;
+    this->dirty_.clear();
+    this->last_full_ = true;
+    this->present_(20);
+  }
+  return true;
 }
 
 uint32_t TsxDrm::take_present_stats(uint32_t *frames) {

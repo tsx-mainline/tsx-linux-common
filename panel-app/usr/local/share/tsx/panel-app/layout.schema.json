@@ -60,9 +60,22 @@
     },
     "keyAction": {
       "oneOf": [
-        {"enum": ["none", "next_page", "prev_page", "setup"]},
+        {"enum": ["none", "next_page", "prev_page", "setup", "overlay", "lights", "screen_off"]},
         {"type": "string", "pattern": "^page:([1-9]|1[0-6])$"},
         {"$ref": "#/$defs/call"}
+      ]
+    },
+    "stateList": {
+      "oneOf": [
+        {"type": "string"},
+        {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string"}}
+      ]
+    },
+    "innerCard": {
+      "description": "The card inside a conditional card. The conditional card sets the place and the size, so x, y, w and h are ignored.",
+      "allOf": [
+        {"$ref": "#/$defs/card"},
+        {"properties": {"type": {"not": {"const": "conditional"}}}}
       ]
     },
     "page": {
@@ -78,7 +91,8 @@
       "type": "object",
       "required": ["type"],
       "properties": {
-        "type": {"enum": ["light", "switch", "scene", "script", "sensor", "weather", "clock"]},
+        "type": {"enum": ["light", "switch", "scene", "script", "sensor", "weather", "clock",
+                          "cover", "climate", "media_player", "fan", "conditional"]},
         "entity_id": {"$ref": "#/$defs/entityId"},
         "label": {"type": "string"},
         "icon": {"type": "string", "pattern": "^mdi:[a-z0-9-]+$"},
@@ -87,6 +101,11 @@
         "w": {"$ref": "#/$defs/gridSize"},
         "h": {"$ref": "#/$defs/gridSize"},
         "tap": {"$ref": "#/$defs/tapAction"},
+        "hold": {"$ref": "#/$defs/tapAction"},
+        "step": {"type": "number", "minimum": 0.1, "maximum": 10},
+        "state": {"$ref": "#/$defs/stateList"},
+        "state_not": {"$ref": "#/$defs/stateList"},
+        "card": {"$ref": "#/$defs/innerCard"},
         "attribute": {"type": "string", "minLength": 1},
         "unit": {"type": "string"},
         "precision": {"type": "integer", "minimum": 0, "maximum": 6},
@@ -114,6 +133,29 @@
         {
           "if": {"properties": {"type": {"const": "weather"}}},
           "then": {"properties": {"entity_id": {"pattern": "^weather\\."}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "cover"}}},
+          "then": {"properties": {"entity_id": {"pattern": "^cover\\."}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "climate"}}},
+          "then": {"properties": {"entity_id": {"pattern": "^climate\\."}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "media_player"}}},
+          "then": {"properties": {"entity_id": {"pattern": "^media_player\\."}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "fan"}}},
+          "then": {"properties": {"entity_id": {"pattern": "^fan\\."}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "conditional"}}},
+          "then": {
+            "required": ["card"],
+            "oneOf": [{"required": ["state"]}, {"required": ["state_not"]}]
+          }
         }
       ]
     }

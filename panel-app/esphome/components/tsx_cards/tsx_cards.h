@@ -6,14 +6,20 @@
 // the Home Assistant states of the entities in the layout (api component,
 // homeassistant_states) and sends the Home Assistant action of a card when
 // it is tapped (homeassistant_services).
+//
+// It also runs the screen of the panel (screen.cpp: the backlight, dim and
+// off after an idle time, wake on a touch or a key), the settings overlay
+// (overlay.cpp) and the detail popups of the cards (popup.cpp).
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
 #include "lvgl.h"
@@ -24,6 +30,15 @@
 #endif
 #ifdef USE_TIME
 #include "esphome/components/time/real_time_clock.h"
+#endif
+#ifdef USE_LIGHT
+#include "esphome/components/light/light_state.h"
+#endif
+#ifdef USE_EVENT
+#include "esphome/components/event/event.h"
+#endif
+#ifdef USE_TSX_CARDS_INPUT
+#include "esphome/components/tsx_evdev/tsx_evdev.h"
 #endif
 
 namespace esphome {
@@ -43,6 +58,13 @@ struct Slot {
   std::vector<struct CardView *> views;
 };
 
+// A button made by TsxCards::button_(): the click runs `fn`.
+struct UiButton {
+  TsxCards *owner{nullptr};
+  std::function<void()> fn;
+};
+using ButtonPool = std::vector<std::unique_ptr<UiButton>>;
+
 struct CardView {
   TsxCards *owner{nullptr};
   const CardSpec *spec{nullptr};
@@ -59,8 +81,38 @@ struct CardView {
   Slot *temperature{nullptr};
   Slot *temp_unit{nullptr};
   Slot *humidity{nullptr};
+  Slot *position{nullptr};   // cover: current_position
+  Slot *current{nullptr};    // climate: current_temperature
+  Slot *target{nullptr};     // climate: temperature (the target)
+  Slot *tstep{nullptr};      // climate: target_temp_step
+  Slot *modes{nullptr};      // climate: hvac_modes
+  Slot *title{nullptr};      // media_player: media_title
+  Slot *artist{nullptr};     // media_player: media_artist
+  Slot *volume{nullptr};     // media_player: volume_level
+  Slot *percentage{nullptr}; // fan: percentage
+  const CardSpec *cond{nullptr};  // conditional: the outer card (spec is the inner card)
+  Slot *cond_slot{nullptr};       // conditional: the state of its entity
+  lv_obj_t *btn[3]{};        // the buttons on the card (cover, climate, media_player)
+  lv_obj_t *btn_icon[3]{};
+  lv_obj_t *mid{nullptr};    // climate: the target between the - and + buttons
   int lit{-1};               // the "on" look: -1 not set yet, 0 off, 1 on
+  int shown{-1};             // conditional: -1 not set yet, 0 hidden, 1 shown
+  bool long_fired{false};    // a long press ran: no tap at the release
   lv_point_t press_point{};  // where the finger touched the card
+};
+
+// The state of the screen (screen.cpp).
+enum ScreenState : uint8_t { SCREEN_ON = 0, SCREEN_DIM, SCREEN_OFF };
+
+// A key of the panel and its Home Assistant event.
+struct KeyState {
+#ifdef USE_EVENT
+  event::Event *event{nullptr};
+#endif
+  uint32_t down_at{0};
+  bool down{false};
+  bool swallowed{false};  // the press woke the screen: no action, no event
+  bool long_sent{false};
 };
 
 class TsxCards : public Component {
@@ -87,7 +139,56 @@ class TsxCards : public Component {
 
   /// A key of the panel was pressed. `name` is the key name of the board
   /// (for example "home"). The layout maps it to an action (see "keys").
+  /// No wake and no Home Assistant event: use key_state() for that.
   void key_press(const std::string &name);
+  /// A key of the panel went down (true) or up (false). A press on a dark
+  /// or dim screen only wakes the screen. Else the press runs the action of
+  /// the key at once. The Home Assistant event of the key (set_key_event)
+  /// gets "press" at the release, or "long" after 0.8 s.
+  void key_state(const std::string &name, bool pressed);
+#ifdef USE_EVENT
+  void set_key_event(const std::string &name, event::Event *e) { this->keys_[name].event = e; }
+#endif
+#ifdef USE_LIGHT
+  void add_panel_light(light::LightState *l) { this->panel_lights_.push_back(l); }
+#endif
+#ifdef USE_TSX_CARDS_INPUT
+  void set_input(tsx_evdev::TsxEvdev *in) { this->input_ = in; }
+#endif
+
+  // ---- the screen (screen.cpp) ----
+  void set_backlight_dir(const std::string &dir) { this->backlight_dir_ = dir; }
+  void set_screen_defaults(int dim_s, int blank_s, int dim_pct) {
+    this->def_dim_timeout_ = dim_s;
+    this->def_blank_timeout_ = blank_s;
+    this->def_dim_level_ = dim_pct;
+  }
+  Trigger<bool> *get_screen_trigger() { return &this->screen_trigger_; }
+  /// True while the screen is lit (on or dim).
+  bool screen_is_on() const { return this->screen_ != SCREEN_OFF; }
+  ScreenState screen_state() const { return this->screen_; }
+  void wake(const char *origin);
+  void screen_off(const char *origin);
+  /// The backlight level of the user, 1 to 100 (percent of the slider).
+  float backlight() const { return this->level_pct_; }
+  void set_backlight(float pct, bool save = true);
+  float blank_timeout() const { return this->blank_timeout_; }
+  float dim_timeout() const { return this->dim_timeout_; }
+  float dim_level() const { return this->dim_pct_; }
+  /// Set the time and keep it in panel.conf (tsx-config set and apply).
+  void set_blank_timeout(float s);
+  void set_dim_timeout(float s);
+  void set_dim_level(float pct);
+
+  // ---- the settings overlay (overlay.cpp) ----
+  void set_overlay_timeout(uint32_t ms) { this->overlay_timeout_ = ms; }
+  void open_overlay(const char *origin);
+  void close_overlay();
+  void toggle_overlay(const char *origin);
+  bool overlay_open() const { return this->ov_catcher_ != nullptr; }
+  /// The lights of the panel (panel_lights): all off when one is on, else all on (a local action).
+  void toggle_panel_lights(const char *origin);
+  bool panel_lights_on() const;
   void next_page();
   void prev_page();
   /// 0-based page index.
@@ -97,6 +198,8 @@ class TsxCards : public Component {
 
   // For the LVGL event callbacks.
   void on_card_tap(CardView *v);
+  void on_card_hold(CardView *v);
+  void on_button(UiButton *b);
   void on_gesture();
   void on_render(bool ready);
 
@@ -125,6 +228,34 @@ class TsxCards : public Component {
   void write_entities_();
   std::string pick_file_() const;
   void mark_(const char *what);
+  bool multi_touch_() const;
+  bool finger_moved_(CardView *v) const;
+  lv_obj_t *button_(lv_obj_t *parent, ButtonPool &pool, const char *icon, const char *text, int w, int h,
+                    std::function<void()> fn, lv_obj_t **label = nullptr);
+  lv_obj_t *box_(lv_obj_t *parent, int x, int y, int w, int h, uint32_t color, int radius);
+  void card_buttons_(CardView *v, int inner_w, int inner_h);
+  void update_condition_(CardView *v);
+  void climate_step_(CardView *v, int dir);
+  // screen.cpp
+  void screen_setup_();
+  void screen_loop_();
+  void screen_set_(ScreenState s, const char *origin);
+  void write_backlight_(int raw);
+  void save_level_();
+  int pct_to_raw_(float pct) const;
+  void read_screen_files_(bool force);
+  void config_set_(const char *key, const std::string &value);
+  void reap_children_();
+  // overlay.cpp
+  void overlay_loop_();
+  void overlay_refresh_();
+  void overlay_confirm_reboot_();
+  std::string version_text_();
+  // popup.cpp
+  void open_popup_(CardView *v);
+  void close_popup_();
+  void popup_refresh_();
+  void popup_loop_();
 
   std::vector<std::string> layout_files_;
   int bar_h_{36};
@@ -185,6 +316,62 @@ class TsxCards : public Component {
 
   // Clock cards.
   uint32_t last_clock_check_{0};
+
+  // Button actions to run in the next loop() (see on_button).
+  std::vector<std::function<void()>> pending_;
+  // Buttons of the cards, the popup and the overlay.
+  ButtonPool card_btns_, popup_btns_, ov_btns_;
+
+  // Keys, the lights of the panel and the touch input.
+  std::map<std::string, KeyState> keys_;
+#ifdef USE_LIGHT
+  std::vector<light::LightState *> panel_lights_;
+#endif
+#ifdef USE_TSX_CARDS_INPUT
+  tsx_evdev::TsxEvdev *input_{nullptr};
+#endif
+
+  // The screen.
+  std::string backlight_dir_{"auto"};
+  int bl_max_{0}, bl_min_{1};
+  float level_pct_{80};
+  bool level_saved_{false};
+  int def_dim_timeout_{60}, def_blank_timeout_{300}, def_dim_level_{20};
+  int dim_timeout_{60}, blank_timeout_{300}, dim_pct_{20};
+  uint32_t local_set_at_{0};  // a value set here wins over the files for a while
+  bool local_set_{false};
+  ScreenState screen_{SCREEN_ON};
+  lv_obj_t *shield_{nullptr};
+  uint32_t last_idle_{0};
+  uint32_t last_screen_files_{0};
+  std::string pref_dir_;
+  std::string run_dir_{"/run/tsx"};
+  Trigger<bool> screen_trigger_;
+  std::vector<int> children_;
+  std::map<std::string, std::string> config_pending_;
+  uint32_t config_due_{0};
+
+  // The settings overlay.
+  uint32_t overlay_timeout_{10000};
+  lv_obj_t *ov_catcher_{nullptr};
+  lv_obj_t *ov_box_{nullptr};
+  lv_obj_t *ov_slider_{nullptr};
+  lv_obj_t *ov_level_{nullptr};
+  lv_obj_t *ov_dim_{nullptr};
+  lv_obj_t *ov_blank_{nullptr};
+  lv_obj_t *ov_info_{nullptr};
+  lv_obj_t *ov_bars_{nullptr};
+  lv_obj_t *ov_confirm_{nullptr};
+  uint32_t ov_last_refresh_{0};
+  std::string version_;
+
+  // The detail popup of a card.
+  CardView *popup_view_{nullptr};
+  lv_obj_t *popup_catcher_{nullptr};
+  lv_obj_t *popup_slider_{nullptr};
+  lv_obj_t *popup_value_{nullptr};
+  lv_obj_t *popup_mid_{nullptr};
+  std::vector<std::pair<lv_obj_t *, std::string>> popup_modes_;
 
   // Timing (logs with the tag "perf").
   bool first_frame_done_{false};
