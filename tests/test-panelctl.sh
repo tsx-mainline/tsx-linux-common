@@ -433,6 +433,78 @@ send "brightness 1"
 [ "$(cat "$T/run/brightness" 2>/dev/null)" = 1 ] && ok "without a min line the floor is 1" || bad "floor without a min line"
 rm -f "$T/run/brightness"
 
+echo "== backlight in percent (brightness-pct, get backlight-pct): the scale of tsx-level.h =="
+printf 'level 17\nmax 23\nmin 1\n' > "$T/run/brightness.state"; rm -f "$T/run/brightness"
+send "brightness-pct 50"
+[ "$(cat "$T/run/brightness" 2>/dev/null)" = 12 ] && ok "brightness-pct 50 on 1..23 (linear) writes the level 12" || bad "brightness-pct 50: '$(cat "$T/run/brightness" 2>/dev/null)'"
+printf 'level 2400\nmax 4095\nmin 1\n' > "$T/run/brightness.state"
+send "brightness-pct 50"
+[ "$(cat "$T/run/brightness" 2>/dev/null)" = 1025 ] && ok "brightness-pct 50 on 1..4095 (square) writes the level 1025" || bad "brightness-pct 50 square: '$(cat "$T/run/brightness" 2>/dev/null)'"
+send "brightness-pct 100"
+[ "$(cat "$T/run/brightness" 2>/dev/null)" = 4095 ] && ok "brightness-pct 100 writes the top level" || bad "brightness-pct 100"
+echo "on 2400" > "$T/idled.state"   # a lit screen: the level of tsx-idled counts
+pct=$(TSX_RUN_DIR="$T/run" TSX_IDLED_STATE="$T/idled.state" busybox sh "$SCRIPT" get backlight-pct)
+[ "$pct" = 77 ] && ok "get backlight-pct: the level 2400 of 1..4095 is 77 %" || bad "get backlight-pct: '$pct'"
+echo "blank" > "$T/idled.state"; echo 1025 > "$T/run/brightness"
+pct=$(TSX_RUN_DIR="$T/run" TSX_IDLED_STATE="$T/idled.state" busybox sh "$SCRIPT" get backlight-pct)
+[ "$pct" = 50 ] && ok "get backlight-pct while blank: the override that waits for the wake (1025 of 1..4095 is 50 %)" || bad "get backlight-pct while blank: '$pct'"
+rm -f "$T/run/brightness"
+printf 'max 23\nmin 1\n' > "$T/run/brightness.state"; echo "on 12" > "$T/idled.state"
+pct=$(TSX_RUN_DIR="$T/run" TSX_IDLED_STATE="$T/idled.state" busybox sh "$SCRIPT" get backlight-pct)
+[ "$pct" = 50 ] && ok "get backlight-pct without a level line: the level of the lit screen (12 of 1..23 is 50 %)" || bad "get backlight-pct from idled state: '$pct'"
+r0=$(grep -c 'rejected:' "$T/panelctl.log"); rm -f "$T/run/brightness"
+send "brightness-pct 0"; send "brightness-pct 101"; send "brightness-pct 5 extra"; send "brightness-pct -5"; send "brightness-pct *"
+[ ! -e "$T/run/brightness" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 5)) ] && ok "5 bad brightness-pct lines rejected" || bad "bad brightness-pct lines"
+printf 'level 17\nmax 31\n' > "$T/run/brightness.state"
+
+echo "== dim-timeout and dim-level: panel.conf through tsx-config =="
+: > "$T/cmds.log"
+send "dim-timeout 45"; send "dim-level 30"
+[ "$(cat "$T/cmds.log")" = "$(printf 'tsx-config set DIM_TIMEOUT 45\ntsx-config apply\ntsx-config set DIM_LEVEL 30\ntsx-config apply')" ] \
+	&& ok "dim-timeout 45 and dim-level 30 -> tsx-config set + apply" || bad "dim: $(cat "$T/cmds.log")"
+: > "$T/cmds.log"; r0=$(grep -c 'rejected:' "$T/panelctl.log")
+send "dim-timeout 86401"; send "dim-level 0"; send "dim-level 101"; send "dim-timeout 5 x"
+[ ! -s "$T/cmds.log" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 4)) ] && ok "4 bad dim lines rejected" || bad "bad dim lines: $(cat "$T/cmds.log")"
+
+echo "== the panel app owns the screen: blank, brightness-pct and lights go to control.d =="
+mkdir -p "$T/proc/4242" "$T/run/panel-app"
+printf 'pid 4242\nstarted 1\nfirst_frame 1\nha_connected 0\nha off\n' > "$T/run/panel-app.state"
+printf 'screen on\nbacklight 64\ndim-timeout 60\nblank-timeout 300\ndim-level 20\nlights off 80 255 128 0\n' > "$T/run/panel-app/screen.state"
+pa() { TSX_RUN_DIR="$T/run" TSX_PROC_DIR="$T/proc" TSX_IDLED_STATE="$T/idled.state" busybox sh "$SCRIPT" "$@"; }
+pa has panel-app && ok "has panel-app: the state file names a running process" || bad "has panel-app"
+pa has lights && ok "has lights: the panel app has lights" || bad "has lights"
+[ "$(pa get backlight-pct)" = 64 ] && ok "get backlight-pct reads the panel app" || bad "get backlight-pct (panel app): $(pa get backlight-pct)"
+[ "$(pa get dim-timeout)" = 60 ] && [ "$(pa get dim-level)" = 20 ] && [ "$(pa get blank-timeout)" = 300 ] && ok "get dim-timeout, dim-level and blank-timeout read the panel app" || bad "get timeouts (panel app)"
+[ "$(pa get lights)" = "off 80 255 128 0" ] && ok "get lights: on or off, the brightness and the color" || bad "get lights: $(pa get lights)"
+st=$(pa state)
+for want in "owner panel-app" "screen on" "backlight-pct 64" "blank-timeout 300" "dim-timeout 60" "dim-level 20" "lights off 80 255 128 0"; do
+	printf '%s\n' "$st" | grep -qxF "$want" && ok "state: $want" || bad "state misses '$want': $st"
+done
+kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null
+PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_PROC_DIR="$T/proc" TSX_IDLED_STATE="$T/idled.state" TSX_REBOOT_BIN="$T/bin/reboot" \
+	busybox sh "$SCRIPT" > "$T/panelctl.log" 2>&1 &
+PID=$!
+for _ in $(seq 1 20); do grep -q "listening on" "$T/panelctl.log" 2>/dev/null && break; sleep 0.1; done
+: > "$T/cmds.log"
+send "blank on"; send "brightness-pct 40"; send "lights set 50 10 20 30"; send "lights on"; send "blank off"
+got=$(cd "$T/run/panel-app/control.d" && for f in $(ls | sort); do cat "$f"; done)
+[ "$got" = "$(printf 'screen off\nbacklight 40\nlights 50 10 20 30\nlights on\nscreen on')" ] \
+	&& ok "five commands in control.d, in order" || bad "control.d: $got"
+[ ! -s "$T/cmds.log" ] && ok "with the panel app, no tsx-blank runs" || bad "a CLI ran: $(cat "$T/cmds.log")"
+ls -A "$T/run/panel-app/control.d" | grep -q '^\.tmp' && bad "a temporary file stays in control.d" || ok "no temporary file stays in control.d"
+rm -f "$T/run/panel-app/control.d"/*; r0=$(grep -c 'rejected:' "$T/panelctl.log")
+send "lights set 0 1 2 3"; send "lights set 50 256 0 0"; send "lights set 50 1 2"; send "lights dim"; send "lights on x"
+[ -z "$(ls -A "$T/run/panel-app/control.d")" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 5)) ] && ok "5 bad lights lines rejected" || bad "bad lights lines"
+rm -rf "$T/proc/4242"
+pa has panel-app && bad "has panel-app with no process" || ok "has panel-app is false when the process is gone"
+send "lights on"
+[ -z "$(ls -A "$T/run/panel-app/control.d")" ] && ok "lights without a running panel app is refused" || bad "lights without the panel app went to control.d"
+send "blank on"
+grep -qxF 'tsx-blank on' "$T/cmds.log" && ok "without the panel app, blank runs tsx-blank again" || bad "blank without the panel app: $(cat "$T/cmds.log")"
+echo "on 17" > "$T/idled.state"; printf 'level 17\nmax 31\n' > "$T/run/brightness.state"
+[ "$(pa state | sed -n 1p)" = "owner kiosk" ] && ok "state: owner kiosk while tsx-idled writes its state" || bad "state owner: $(pa state)"
+pa state | grep -q '^lights' && bad "state lists lights with no panel app" || ok "state lists no lights with no panel app"
+
 echo "== volume without TSX_VOLUME_CMD: the Master control of the sound card =="
 mkdir -p "$T/asound/FakeCard" "$T/bin3"
 printf '#!/bin/sh\necho "Simple mixer control Master,0"\necho "  Front Left: Playback 40 [63%%] [on]"\n' > "$T/bin3/amixer"; chmod +x "$T/bin3/amixer"

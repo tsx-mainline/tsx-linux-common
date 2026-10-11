@@ -95,9 +95,12 @@ async def main(args) -> int:
         assert text_state is not None and text_state.state == "https://ha.example.org/lovelace/0", text_state
         print("OK: kiosk URL text set")
 
-        client.number_command(by_id["backlight"].key, 5.0)
+        bl = by_id["backlight"]
+        assert (bl.min_value, bl.max_value, bl.unit_of_measurement) == (1, 100, "%"), bl
+        print("OK: the backlight number is in percent, 1 to 100")
+        client.number_command(bl.key, 50.0)
         await asyncio.sleep(0.5)
-        print("OK: backlight number sent (5.0, test-esphome.sh checks the brightness file)")
+        print("OK: backlight number sent (50 %, test-esphome.sh checks the brightness file)")
 
         orient = by_id.get("orientation")
         assert orient is not None, "no orientation select"

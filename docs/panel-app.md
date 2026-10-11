@@ -352,6 +352,65 @@ The app has these Home Assistant entities for the screen. Home Assistant can cha
 | Blank timeout | number, s | `BLANK_TIMEOUT`. |
 | Dim timeout | number, s | `DIM_TIMEOUT`. |
 | Dim level | number, 1 to 100 % | `DIM_LEVEL`. |
+| Layout hash | text sensor | The SHA-256 of the layout file in use (see "Layout from Home Assistant"). |
+
+The names and the units are the same as on the kiosk panels. See "Panel settings" in [esphome.md](esphome.md).
+
+## Control from the panel
+
+The setup page and other services of the panel change the screen and the lights of the app through `tsx-panelctl`, as on a kiosk panel. `tsx-panelctl has panel-app` is true while the app runs (`/run/tsx/panel-app.state` names a process that exists). Then the daemon of `tsx-panelctl` hands these commands to the app:
+
+| `tsx-panelctl send` | Line for the app |
+|---|---|
+| `blank on`, `blank off` | `screen off`, `screen on` |
+| `brightness-pct P` | `backlight P` (1 to 100) |
+| `lights on`, `lights off` | `lights on`, `lights off` |
+| `lights set B R G BL` | `lights B R G BL` (brightness 1 to 100, color 0 to 255) |
+
+The daemon writes one file for each command into `/run/tsx/panel-app/control.d`: a temporary file whose name starts with a dot, then a rename. Only root can write the folder. The app reads the folder twice a second. It runs the lines in the order of the file names, removes each file and refuses every other line (log line `control: refused`). The code is `control.h` and `control.cpp` of `tsx_cards`.
+
+The app writes its values to `/run/tsx/panel-app/screen.state` (mode 644) when a value changes:
+
+```
+screen on
+backlight 64
+dim-timeout 60
+blank-timeout 300
+dim-level 20
+lights off 80 255 128 0
+```
+
+`screen` is `on`, `dim` or `off`. The `lights` line is there only with `panel_lights`: on or off, the brightness and the color of the first light. `tsx-panelctl get backlight-pct`, `get lights`, `get dim-timeout` and `tsx-panelctl state` read this file. The times go to `panel.conf` as before (`tsx-panelctl send dim-timeout`, `dim-level` and `blank-timeout` run `tsx-config set` and `apply`).
+
+## Layout from Home Assistant
+
+The app has two Home Assistant actions. Home Assistant names them `esphome.<device>_set_layout` and `esphome.<device>_get_layout`.
+
+| Action | Data | Answer |
+|---|---|---|
+| `set_layout` | `layout`: the JSON text of a layout file | Success or the first error |
+| `get_layout` | none | `layout` (the parsed layout), `hash`, `source` (the file in use), `status` (the result of the last `set_layout`) |
+
+`set_layout` does these steps:
+
+1. The app checks the text with its own rules (`parse_layout`, at most 65536 bytes). An error goes back at once as the error of the action.
+2. The app writes the text to `/run/tsx/panel-app/layout.ha` (mode 600).
+3. The app runs `tsx-layout-check --install` on it, as a child process. The tool checks the text again with the same rules and the icon list. It installs the file atomically as the first layout file (`/var/lib/tsx/panel-layout.json`).
+4. The app reads the new file and makes the pages again (see "Reload").
+
+The result of step 3 is the `status` of `get_layout`: `saved` or `error: TEXT`. While one `set_layout` runs, a second one gets an error. The file of the user stays after a reboot, as a save of the layout editor does. Example of a call from a Home Assistant script (the device name is `hall-panel`):
+
+```yaml
+action: esphome.hall_panel_set_layout
+data:
+  layout: >-
+    {"version": 1, "pages": [{"name": "Home",
+     "cards": [{"type": "light", "entity_id": "light.kitchen"}]}]}
+```
+
+The "Layout hash" sensor shows the SHA-256 of the layout file in use. `sha256sum /var/lib/tsx/panel-layout.json` on the panel gives the same text. An automation can compare it after a `set_layout`.
+
+Use `set_layout` only from a Home Assistant that the panel trusts: set the API encryption key (see "Identity and API key").
 
 ## CPU speed
 

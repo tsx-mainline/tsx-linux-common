@@ -4,7 +4,7 @@
 # tsx-mqtt, the voice satellite). Those programs reach the buttons, the light
 # sensor, the LED bar, the volume and the display power only through this
 # program. This is the seam between the base and the Home Assistant layer
-# (see the "Profiles" docs of the board repository). It has four faces:
+# (see the "Profiles" docs of the board repository). It has five faces:
 #
 #   tsx-panelctl                      the daemon: it reads whitelisted commands
 #                                     from a FIFO (below)
@@ -15,7 +15,14 @@
 #                                     (R G B, 0 to 100), ledbar-fx (the effect
 #                                     of the LED bar, or none), keypad-led,
 #                                     last-key, presence, distance (mm),
-#                                     usb-power, poe-class.
+#                                     usb-power, poe-class, backlight-pct
+#                                     (the backlight level in percent, 1 to
+#                                     100, see "Backlight in percent"),
+#                                     blank-timeout, dim-timeout and
+#                                     dim-level (seconds, percent), lights
+#                                     (the lights of the panel app: on or
+#                                     off, the brightness 1 to 100 and R G B
+#                                     0 to 255).
 #                                     It prints nothing and fails when the panel
 #                                     has no value (no sound card, no sensor).
 #   tsx-panelctl has NAME             exit 0 when the panel has that hardware:
@@ -32,9 +39,20 @@
 #                                     /etc/tsx/buttons-board.conf or in
 #                                     /etc/tsx/buttons.conf), keyleds (the keys
 #                                     have LEDs: "leds yes" in buttons.state),
-#                                     als, sound, presence, usbpower, poe or
-#                                     nfc. It needs no root (see "LED bar
-#                                     firmware" below).
+#                                     als, sound, presence, usbpower, poe,
+#                                     nfc, panel-app (the panel app owns the
+#                                     screen, see "Panel app" below) or
+#                                     lights (the panel app has lights of
+#                                     the panel). It needs no root (see "LED
+#                                     bar firmware" below).
+#   tsx-panelctl state                print the controls that the panel has,
+#                                     one "NAME VALUE" line each (the setup
+#                                     page reads it): owner (kiosk,
+#                                     panel-app or none), screen,
+#                                     backlight-pct, blank-timeout, and
+#                                     where the panel has the part:
+#                                     dim-timeout, dim-level, als-auto,
+#                                     volume, ledbar, keypad-led, lights.
 #   tsx-panelctl events               print a line when a value changes, until it
 #                                     is stopped: "button NAME short|long|hold",
 #                                     "lux N", "als-auto on|off", "screen ...",
@@ -42,6 +60,24 @@
 #                                     ...", "distance N", "usb-power ...",
 #                                     "poe-class N". It first prints the
 #                                     present values (not a button).
+#
+# Backlight in percent: the Home Assistant number "Backlight" and the setup
+# page give the level in percent of the slider (1 to 100), on every family.
+# The percent maps to the level of tsx-idled with the scale of tsx-level.h
+# (a square for a range wider than 64 steps): level = min + (max - min) *
+# p * p, p = percent / 100. "brightness-pct P" sets that level as the
+# absolute override, like "brightness N". "get backlight-pct" maps the level
+# of brightness.state back.
+#
+# Panel app: a panel with the panel app (docs/panel-app.md) has no
+# tsx-idled. The app owns the screen and the backlight. "has panel-app" is
+# true while the app runs: $TSX_RUN_DIR/panel-app.state names a process that
+# exists. Then the daemon sends "blank", "brightness-pct" and "lights" to the
+# app: one file per command in $TSX_RUN_DIR/panel-app/control.d (a temporary
+# file and a rename). The app reads the folder, runs the commands in the
+# order of the file names and removes the files. The app writes its values
+# to $TSX_RUN_DIR/panel-app/screen.state ("key value" lines, world-readable),
+# and get reads them from there.
 #
 # LED bar attached: tsx-ledbard (root) writes /run/tsx/ledbar.usb. It holds
 # one word: "app" (the bar runs its application) or "bootloader" (the bar is
@@ -118,7 +154,10 @@
 # between two reads of `events`), TSX_EVENTS_MAX (stop `events` after that many
 # lines), TSX_PANELCTL_ONESHOT=1 (handle exactly one line, then exit. Tests only),
 # TSX_LEDBAR_FW (the firmware file of the LED bar, $TSX_RUN_DIR/ledbar.fw),
-# TSX_LEDBAR_USB (the attached file of the LED bar, $TSX_RUN_DIR/ledbar.usb).
+# TSX_LEDBAR_USB (the attached file of the LED bar, $TSX_RUN_DIR/ledbar.usb),
+# TSX_KIOSK_CONF (/etc/kiosk.conf), TSX_PANEL_APP_STATE
+# ($TSX_RUN_DIR/panel-app.state), TSX_PANEL_APP_RUN ($TSX_RUN_DIR/panel-app),
+# TSX_PROC_DIR (/proc).
 set -u -f
 R=${TSX_RUN_DIR:-/run/tsx}
 FIFO=${TSX_PANELCTL:-$R/panelctl}
@@ -149,6 +188,13 @@ BUTTONS_BOARD_CONF=${TSX_BUTTONS_BOARD_CONF:-/etc/tsx/buttons-board.conf}
 ALS_CONF=${TSX_ALS_CONF:-/etc/tsx/als.conf}
 ASOUND=${TSX_ASOUND_DIR:-/proc/asound}
 BL_DIR=${TSX_BACKLIGHT_DIR:-/sys/class/backlight}
+KIOSK_CONF=${TSX_KIOSK_CONF:-/etc/kiosk.conf}
+PA_STATE=${TSX_PANEL_APP_STATE:-$R/panel-app.state}
+PA_RUN=${TSX_PANEL_APP_RUN:-$R/panel-app}
+PROC=${TSX_PROC_DIR:-/proc}
+PA_SEQ=0
+PA_START=$(date +%s 2>/dev/null)
+case "$PA_START" in ''|*[!0-9]*) PA_START=0;; esac
 
 log() { echo "$(date '+%F %T') tsx-panelctl: $*"; }
 
@@ -187,6 +233,49 @@ bl_min() {
 	m=$(sed -n 's/^min //p' "$R/brightness.state" 2>/dev/null | head -n 1)
 	is_uint "$m" && [ "$m" -gt 0 ] && { echo "$m"; return; }
 	echo 1
+}
+
+# pct_to_level P: the backlight level of the slider percent P (1 to 100), with
+# the scale of tsx-level.h (see "Backlight in percent" at the top)
+pct_to_level() {
+	awk -v p="$1" -v lo="$(bl_min)" -v hi="$(bl_max)" 'BEGIN {
+		if (hi <= lo) { print hi; exit }
+		f = p / 100
+		if (f <= 0) { print lo; exit }
+		if (f >= 1) { print hi; exit }
+		if (hi - lo > 64) f = f * f
+		printf "%d\n", lo + int(f * (hi - lo) + 0.5) }'
+}
+# level_to_pct LEVEL: the slider percent (1 to 100) of a backlight level
+level_to_pct() {
+	awk -v l="$1" -v lo="$(bl_min)" -v hi="$(bl_max)" 'BEGIN {
+		if (hi <= lo || l >= hi) { print 100; exit }
+		if (l <= lo) { print 1; exit }
+		f = (l - lo) / (hi - lo)
+		if (hi - lo > 64) f = sqrt(f)
+		p = int(f * 100 + 0.5); if (p < 1) p = 1
+		print p }'
+}
+
+# panel_app_up: the panel app runs (its state file names a process that exists)
+panel_app_up() {
+	pa_pid=$(sed -n 's/^pid //p' "$PA_STATE" 2>/dev/null | head -n 1)
+	case "$pa_pid" in ''|*[!0-9]*) return 1;; esac
+	[ "${#pa_pid}" -le 9 ] && [ -d "$PROC/$pa_pid" ]
+}
+
+# pa_send LINE: one command for the panel app (see "Panel app" at the top)
+pa_send() {
+	mkdir -p "$PA_RUN/control.d" || return 1
+	PA_SEQ=$((PA_SEQ + 1))
+	pa_name=$(printf '%010d.%06d' "$PA_START" "$PA_SEQ")
+	pa_tmp="$PA_RUN/control.d/.tmp.$$"
+	printf '%s\n' "$1" > "$pa_tmp" && mv -f "$pa_tmp" "$PA_RUN/control.d/$pa_name"
+}
+
+# kiosk_conf_get KEY: the last value of KEY in kiosk.conf, without quotes
+kiosk_conf_get() {
+	sed -n "s/^$1=//p" "$KIOSK_CONF" 2>/dev/null | tail -n 1 | sed "s/[[:space:]]*#.*//; s/^[\"']//; s/[\"']\$//"
 }
 
 reject() { log "rejected: $(safe "$*")"; }
@@ -264,6 +353,27 @@ get_value() {
 	distance) v=$(field "$R/presence.state" distance);;
 	usb-power) v=$(field "$R/usb-power.state" power);;
 	poe-class) v=$(field "$R/poe.state" class);;
+	backlight-pct)
+		if panel_app_up; then v=$(field "$PA_RUN/screen.state" backlight)
+		else
+			# While the screen is blank, a new override (brightness,
+			# brightness-pct) waits for the wake: report it. Else the level of
+			# tsx-idled, else the level of the lit screen.
+			l=
+			case "$(head -n 1 "$IDLED_STATE" 2>/dev/null)" in blank*) l=$(head -n 1 "$R/brightness" 2>/dev/null);; esac
+			is_uint "$l" || l=$(field "$R/brightness.state" level)
+			is_uint "$l" || { l=$(head -n 1 "$IDLED_STATE" 2>/dev/null); case "$l" in "on "*) l=${l#on };; *) l=;; esac; }
+			is_uint "$l" && v=$(level_to_pct "$l")
+		fi;;
+	blank-timeout)
+		if panel_app_up; then v=$(field "$PA_RUN/screen.state" blank-timeout); fi
+		[ -n "$v" ] || v=$(head -n 1 "$R/blank-timeout" 2>/dev/null)
+		[ -n "$v" ] || v=$(kiosk_conf_get BLANK_TIMEOUT)
+		is_uint "$v" || v=300;;
+	dim-timeout|dim-level)
+		panel_app_up && v=$(field "$PA_RUN/screen.state" "$1");;
+	lights)
+		panel_app_up && v=$(field "$PA_RUN/screen.state" lights);;
 	*) echo "tsx-panelctl: unknown value '$1'" >&2; return 2;;
 	esac
 	[ -n "$v" ] || return 1
@@ -302,6 +412,8 @@ has_hw() {
 	usbpower) [ -r "$R/usb-power.state" ];;
 	poe) [ -r "$R/poe.state" ];;
 	nfc) [ -r "$R/nfc.state" ] || [ -d "$NFCSYS/nfc0" ];;
+	panel-app) panel_app_up;;
+	lights) panel_app_up && [ -n "$(field "$PA_RUN/screen.state" lights)" ];;
 	*) echo "tsx-panelctl: unknown hardware '$1'" >&2; return 2;;
 	esac
 }
@@ -317,6 +429,24 @@ send_line() {
 	[ "${#line}" -le 200 ] || { echo "tsx-panelctl: command too long" >&2; return 2; }
 	[ -p "$FIFO" ] || { echo "tsx-panelctl: no daemon ($FIFO)" >&2; return 1; }
 	timeout 3 sh -c 'printf "%s\n" "$1" > "$2"' sh "$line" "$FIFO" || { echo "tsx-panelctl: the daemon does not answer" >&2; return 1; }
+}
+
+# cmd_state: the controls that the panel has, one "NAME VALUE" line each
+cmd_state() {
+	if panel_app_up; then echo "owner panel-app"
+	elif [ -r "$IDLED_STATE" ]; then echo "owner kiosk"
+	else echo "owner none"; fi
+	s=$(head -n 1 "$IDLED_STATE" 2>/dev/null)
+	case "$s" in blank*) echo "screen off";; on*) echo "screen on";; esac
+	for n in backlight-pct blank-timeout dim-timeout dim-level; do
+		v=$(get_value "$n" 2>/dev/null) && echo "$n $v"
+	done
+	if has_hw als; then v=$(get_value als-auto 2>/dev/null) && echo "als-auto $v"; fi
+	if has_hw sound; then v=$(get_value volume 2>/dev/null) && echo "volume $v"; fi
+	if has_hw ledbar; then v=$(get_value ledbar 2>/dev/null) || v="0 0 0"; echo "ledbar $v"; fi
+	if has_hw keyleds; then v=$(get_value keypad-led 2>/dev/null) || v=0; echo "keypad-led $v"; fi
+	v=$(get_value lights 2>/dev/null) && echo "lights $v"
+	return 0
 }
 
 cmd_events() {
@@ -350,8 +480,9 @@ send) shift; send_line "$@"; exit $?;;
 get) [ $# = 2 ] || { echo "usage: tsx-panelctl get NAME" >&2; exit 2; }; get_value "$2"; exit $?;;
 has) [ $# = 2 ] || { echo "usage: tsx-panelctl has NAME" >&2; exit 2; }; has_hw "$2"; exit $?;;
 events) cmd_events; exit $?;;
+state) [ $# = 1 ] || { echo "usage: tsx-panelctl state" >&2; exit 2; }; cmd_state; exit $?;;
 '') ;;
-*) sed -n '2,41p' "$0" >&2; exit 2;;
+*) sed -n '2,62p' "$0" >&2; exit 2;;
 esac
 
 mkdir -p "$R"
@@ -401,9 +532,37 @@ handle() {
 			log "keypad led-blank $a2"; "$CONFIG" set KEY_LED_BLANK "$a2" && "$CONFIG" apply
 		else reject "keypad $a1 $a2 $a3 $a4 $rest"; fi;;
 	blank)
+		# blank on = the screen goes off. With the panel app, the app owns the screen.
 		if { [ "$a1" = on ] || [ "$a1" = off ]; } && [ -z "$a2$a3$a4$rest" ]; then
-			log "blank $a1"; "$BLANK" "$a1"
+			if panel_app_up; then
+				log "blank $a1 (panel app)"; s=on; [ "$a1" = on ] && s=off; pa_send "screen $s"
+			else log "blank $a1"; "$BLANK" "$a1"; fi
 		else reject "blank $a1 $a2 $a3 $a4 $rest"; fi;;
+	brightness-pct)
+		# The backlight in percent of the slider (see "Backlight in percent").
+		if in_range "$a1" 1 100 && [ -z "$a2$a3$a4$rest" ]; then
+			if panel_app_up; then log "brightness-pct $a1 (panel app)"; pa_send "backlight $a1"
+			else l=$(pct_to_level "$a1"); log "brightness-pct $a1 (level $l)"; echo "$l" > "$R/brightness"; fi
+		else reject "brightness-pct $a1 $a2 $a3 $a4 $rest"; fi;;
+	lights)
+		# The lights of the panel app: on, off, or "set BRIGHTNESS R G B"
+		# (1 to 100, 0 to 255 each).
+		if ! panel_app_up; then reject "lights $a1 $a2 $a3 $a4 $rest (no panel app)"
+		elif { [ "$a1" = on ] || [ "$a1" = off ]; } && [ -z "$a2$a3$a4$rest" ]; then
+			log "lights $a1"; pa_send "lights $a1"
+		elif [ "$a1" = set ] && in_range "$a2" 1 100 && in_range "$a3" 0 255 && in_range "$a4" 0 255 && in_range "$rest" 0 255; then
+			log "lights set $a2 $a3 $a4 $rest"; pa_send "lights $a2 $a3 $a4 $rest"
+		else reject "lights $a1 $a2 $a3 $a4 $rest"; fi;;
+	dim-timeout)
+		# Seconds before the screen of the panel app dims (0 = never).
+		# panel.conf stores it (the config.d plugin of the panel app).
+		if in_range "$a1" 0 86400 && [ -z "$a2$a3$a4$rest" ]; then
+			log "dim-timeout $a1"; "$CONFIG" set DIM_TIMEOUT "$a1" && "$CONFIG" apply
+		else reject "dim-timeout $a1 $a2 $a3 $a4 $rest"; fi;;
+	dim-level)
+		if in_range "$a1" 1 100 && [ -z "$a2$a3$a4$rest" ]; then
+			log "dim-level $a1"; "$CONFIG" set DIM_LEVEL "$a1" && "$CONFIG" apply
+		else reject "dim-level $a1 $a2 $a3 $a4 $rest"; fi;;
 	als)
 		if [ "$a1" = auto ] && { [ "$a2" = on ] || [ "$a2" = off ]; } && [ -z "$a3$a4$rest" ]; then
 			log "als auto $a2"; "$ALS" auto "$a2"

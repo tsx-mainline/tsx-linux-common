@@ -69,6 +69,8 @@ echo "want 50 60 70" > "$F/run/tsx/ledbar.state"
 echo app > "$F/run/tsx/ledbar.usb"   # tsx-ledbard: a bar with its application is attached
 printf 'leds yes\nled 128 unknown\nlast power short\n' > "$F/run/tsx/buttons.state"
 echo "on 17" > "$F/run/tsx-idled.state"
+# tsx-idled: the level, the top and the floor of the backlight
+printf 'level 17\nmax 23\nmin 1\n' > "$F/run/tsx/brightness.state"
 # the own status of tsx-autoupdate (the shape of write_ha_json of tsx-autoupdate)
 cat > "$F/run/tsx/update-ha-state.json" <<'EOF'
 {"installed_version":"abc123","latest_version":"abc123+1pending","title":"TSX test-panel packages","release_summary":"pkg1 (1.0 -> 1.1)","in_progress":false}
@@ -205,7 +207,8 @@ full_check() {
 	cat "$F/cmds.log" 2>/dev/null || echo "(none)"
 	grep -q '^tsx-ledbar set 100 0 0$' "$F/cmds.log" 2>/dev/null && echo "OK: ledbar command reached the backend" || { echo "FAIL: ledbar command missing/wrong"; rc=1; }
 	grep -q '^tsx-config set KIOSK_URL https://ha.example.org/lovelace/0$' "$F/cmds.log" 2>/dev/null && echo "OK: kiosk URL persisted through tsx-config" || { echo "FAIL: tsx-config set KIOSK_URL missing"; rc=1; }
-	[ "$(cat "$F/run/tsx/brightness" 2>/dev/null)" = 5 ] && echo "OK: backlight written as an integer (5)" || { echo "FAIL: brightness file is '$(cat "$F/run/tsx/brightness" 2>/dev/null)', want 5"; rc=1; }
+	# 50 % of the levels 1 to 23 (a range of 22 steps is linear): 1 + 11 = 12
+	[ "$(cat "$F/run/tsx/brightness" 2>/dev/null)" = 12 ] && echo "OK: backlight 50 % written as the level 12" || { echo "FAIL: brightness file is '$(cat "$F/run/tsx/brightness" 2>/dev/null)', want 12"; rc=1; }
 	grep -q '^tsx-config set BLANK_TIMEOUT 600$' "$F/cmds.log" 2>/dev/null && grep -q '^tsx-config apply$' "$F/cmds.log" \
 		&& echo "OK: blank timeout persisted through tsx-config (set + apply)" || { echo "FAIL: tsx-config set BLANK_TIMEOUT 600 missing"; rc=1; }
 	grep -q '^tsx-config set BOOT_VERBOSE 1$' "$F/cmds.log" 2>/dev/null \

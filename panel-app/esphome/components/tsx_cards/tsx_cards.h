@@ -201,6 +201,20 @@ class TsxCards : public Component {
   /// Read the layout file now and rebuild the pages when it changed.
   void check_layout(bool force = false);
 
+  // ---- the layout from Home Assistant (control.cpp) ----
+  /// The action set_layout: check the JSON text with the rules of the app,
+  /// then install it with tsx-layout-check --install (a child process). The
+  /// app reads the new file when the child is done. False with
+  /// layout_set_error() when the text is refused at once.
+  bool set_layout_json(const std::string &text);
+  std::string layout_set_error() const { return this->layout_set_error_; }
+  /// The text of the layout file in use, its SHA-256 (64 hex digits) and its path.
+  const std::string &layout_text() const { return this->layout_text_; }
+  std::string layout_hash() const { return this->layout_hash_; }
+  std::string layout_source() const { return this->layout_path_; }
+  /// The result of the last set_layout: "", "saving", "saved" or "error: TEXT".
+  std::string layout_status() const { return this->layout_status_; }
+
   // For the LVGL event callbacks.
   void on_card_tap(CardView *v);
   void on_card_hold(CardView *v);
@@ -264,6 +278,12 @@ class TsxCards : public Component {
   void cpu_apply_(CpuMode m);
   void config_set_(const char *key, const std::string &value);
   void reap_children_();
+  // control.cpp: the commands of tsx-panelctl and screen.state (control.h)
+  void control_loop_();
+  void apply_control_(const std::string &line);
+  void write_screen_state_();
+  std::string layout_target_() const;
+  void layout_loop_();
   // overlay.cpp
   void overlay_loop_();
   void overlay_refresh_();
@@ -287,7 +307,15 @@ class TsxCards : public Component {
   bool have_layout_{false};
   std::string layout_path_;
   std::string layout_text_;
+  std::string layout_hash_;
   std::string layout_error_;
+  // set_layout (control.cpp)
+  int layout_pid_{-1};
+  std::string layout_set_error_;
+  std::string layout_status_;
+  // the control folder and screen.state (control.cpp)
+  uint32_t last_control_{0};
+  std::string screen_state_text_;
 
   // LVGL objects.
   lv_obj_t *root_{nullptr};

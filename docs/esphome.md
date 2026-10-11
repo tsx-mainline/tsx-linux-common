@@ -38,6 +38,29 @@ A panel without a microphone (`MIC=no` in `/run/tsx/hw.conf`) announces no voice
 
 If Home Assistant set up the config entry while the panel announced no voice feature, the entry has no voice selects. Reload the ESPHome config entry once. Later changes of `VOICE` need no reload.
 
+## Panel settings
+
+The kiosk panels (this device) and the panel app ([panel-app.md](panel-app.md)) give Home Assistant the same settings, with the same names and units, where the panel has the part:
+
+| Entity | Type | Kiosk panel | Panel app | Stored in |
+|---|---|---|---|---|
+| Screen | switch | yes | yes | Live state |
+| Backlight | number, 1 to 100 % | yes | yes | Live state (the panel app keeps it in its preferences) |
+| Auto brightness | switch | With a light sensor | No panel app board has a light sensor | `AUTO_BRIGHTNESS` |
+| Volume | number, 0 to 100 % | With a sound card | No panel app board has a sound card | The sound card |
+| Blank timeout | number, s | yes | yes | `BLANK_TIMEOUT` |
+| Dim timeout, Dim level | number | No dim stage in `tsx-idled` | yes | `DIM_TIMEOUT`, `DIM_LEVEL` |
+| Kiosk URL | text | yes | No | `KIOSK_URL` |
+| Reload page | button | yes | No | |
+| Wake word, wake word sensitivity | select, number | The voice satellite, with `VOICE=on` | No voice service | The preferences of the satellite |
+| LED bar, Key LEDs | light | With the part | | Live state |
+| The lights of `panel_lights` (for example the light bars of a board) | light | | With `panel_lights` | Live state |
+| `set_layout`, `get_layout`, Layout hash | actions, text sensor | | yes | `/var/lib/tsx/panel-layout.json` |
+
+The Backlight number is the percent of the brightness slider on every family, with the scale of the overlay (`tsx-level.h`): a square for a backlight with more than 64 steps. `tsx-panelctl` maps it to the level of `tsx-idled` (`brightness-pct`, `get backlight-pct`). Before 0.3.4 the number of a kiosk panel had the raw backlight steps.
+
+A setting that Home Assistant changes goes through `tsx-config set` and `tsx-config apply`, so it stays after a reboot. The live states act at once, as the overlay does. The secrets and the settings of the system (the SSH key, the root password, the update source, the reinstall) are not entities. They stay on the setup page.
+
 ## Entity keys
 
 Each entity has a fixed key. The key is the 32-bit FNV-1a hash of a fixed text:

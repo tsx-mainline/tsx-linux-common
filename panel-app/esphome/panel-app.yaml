@@ -30,6 +30,33 @@ api:
     # with no plaintext fallback. tsx_runtime replaces it at start with the
     # key of the panel (/run/tsx/esphome.key).
     key: "dHN4LXBhbmVsLWFwcCBydW4tdGltZSBrZXkgc2xvdCE="
+  # The layout as Home Assistant actions (docs/panel-app.md, "Layout from
+  # Home Assistant"): esphome.<device>_set_layout and esphome.<device>_get_layout.
+  actions:
+    # layout: the JSON text of a layout file. The app checks it with its own
+    # rules and answers at once. Then tsx-layout-check checks it again and
+    # installs it atomically, and the app shows the new layout.
+    - action: set_layout
+      supports_response: status
+      variables:
+        layout: string
+      then:
+        - api.respond:
+            success: !lambda return id(panel_cards).set_layout_json(layout);
+            error_message: !lambda return id(panel_cards).layout_set_error();
+    # The layout in use: the parsed layout, its SHA-256, its file and the
+    # result of the last set_layout.
+    - action: get_layout
+      supports_response: only
+      then:
+        - api.respond:
+            data: !lambda |-
+              JsonDocument doc;
+              if (deserializeJson(doc, id(panel_cards).layout_text()) == DeserializationError::Ok)
+                root["layout"].set(doc.as<JsonVariantConst>());
+              root["hash"] = id(panel_cards).layout_hash();
+              root["source"] = id(panel_cards).layout_source();
+              root["status"] = id(panel_cards).layout_status();
 
 tsx_runtime:
   key_file: /run/tsx/esphome.key
@@ -143,3 +170,14 @@ number:
     lambda: return id(panel_cards).dim_level();
     set_action:
       - lambda: id(panel_cards).set_dim_level(x);
+
+text_sensor:
+  # The SHA-256 of the layout file in use (sha256sum of the file gives the
+  # same text). An automation can compare it after set_layout.
+  - platform: template
+    name: Layout hash
+    id: panel_layout_hash
+    icon: mdi:view-dashboard-edit-outline
+    entity_category: diagnostic
+    update_interval: 10s
+    lambda: return id(panel_cards).layout_hash();

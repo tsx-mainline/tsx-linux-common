@@ -1,5 +1,6 @@
 // tsx_cards.cpp: the run-time card grid. See tsx_cards.h and docs/panel-app.md.
 #include "tsx_cards.h"
+#include "control.h"
 
 #include <cerrno>
 #include <cmath>
@@ -307,6 +308,8 @@ void TsxCards::loop() {
       fn();
   }
   this->screen_loop_();
+  this->control_loop_();
+  this->layout_loop_();
   this->overlay_loop_();
   this->popup_loop_();
   for (auto &it : this->keys_) {
@@ -565,6 +568,7 @@ void TsxCards::check_layout(bool force) {
     return;
   this->layout_path_ = path;
   this->layout_text_ = text;
+  this->layout_hash_ = sha256_hex(text);
 
   Layout next;
   std::string error;

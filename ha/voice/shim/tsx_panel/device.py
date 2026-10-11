@@ -170,14 +170,12 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
     )
     entities.append(screen)
 
-    def get_backlight():
-        _, level = backend.get_screen()
-        return level if level is not None else 0
-
+    # the backlight in percent of the slider, 1 to 100, as on the panel app
+    # and the setup page (tsx-panelctl "Backlight in percent")
     backlight = NumberEntity(
         server, key_for("backlight"), "Backlight", "backlight",
-        get_state=get_backlight, set_state=backend.set_backlight,
-        min_value=1, max_value=backend.get_backlight_max(), step=1, icon="mdi:brightness-6",
+        get_state=backend.get_backlight_pct, set_state=backend.set_backlight_pct,
+        min_value=1, max_value=100, step=1, unit="%", icon="mdi:brightness-6",
     )
     entities.append(backlight)
     # seconds without input before the screen goes dark, 0 = never. Persisted

@@ -510,13 +510,73 @@ class PanelBackend:
     def set_screen(self, on: bool) -> None:
         self._ctl("blank", "off" if on else "on")
 
-    def set_backlight(self, level: float) -> None:
-        # the ESPHome number arrives as a float (5.0): tsx-idled and
-        # tsx-panelctl's is_uint check both want a plain integer
-        level = max(1, min(self.get_backlight_max(), int(round(level))))
-        on, _ = self.get_screen()
-        if on:
-            self._ctl("brightness", str(level))
+    def get_backlight_min(self) -> int:
+        """The floor of a lit level ("min M" in brightness.state from
+        tsx-idled), else 1."""
+        val = _field(self.run_dir / "brightness.state", "min")
+        try:
+            return max(1, int(val.split()[0])) if val else 1
+        except (ValueError, IndexError):
+            return 1
+
+    @staticmethod
+    def pct_to_level(pct: float, low: int, high: int) -> int:
+        """The backlight level of the slider percent, with the scale of
+        tsx-level.h and tsx-panelctl ("Backlight in percent"): a square for a
+        range wider than 64 steps."""
+        if high <= low:
+            return high
+        f = pct / 100.0
+        if f <= 0:
+            return low
+        if f >= 1:
+            return high
+        if high - low > 64:
+            f = f * f
+        return low + int(f * (high - low) + 0.5)
+
+    @staticmethod
+    def level_to_pct(level: int, low: int, high: int) -> int:
+        """The slider percent (1 to 100) of a backlight level."""
+        if high <= low or level >= high:
+            return 100
+        if level <= low:
+            return 1
+        f = (level - low) / (high - low)
+        if high - low > 64:
+            f = f ** 0.5
+        return max(1, int(f * 100 + 0.5))
+
+    def get_backlight_pct(self) -> int:
+        """The backlight in percent of the slider (1 to 100), also while
+        the screen is blank: the level of tsx-idled (brightness.state), else
+        the level of the lit screen. 0 when no level is known."""
+        level = None
+        on, lit_level = self.get_screen()
+        if not on:
+            # a new level waits in the override file for the wake
+            raw = _read_first_line(self.run_dir / "brightness")
+            try:
+                level = int(raw.split()[0]) if raw else None
+            except (ValueError, IndexError):
+                level = None
+        if level is None:
+            raw = _field(self.run_dir / "brightness.state", "level")
+            try:
+                level = int(raw.split()[0]) if raw else None
+            except (ValueError, IndexError):
+                level = None
+        if level is None:
+            level = lit_level
+        if level is None:
+            return 0
+        return self.level_to_pct(level, self.get_backlight_min(), self.get_backlight_max())
+
+    def set_backlight_pct(self, pct: float) -> None:
+        """The backlight in percent. tsx-panelctl maps it to the level
+        (brightness-pct), or hands it to the panel app."""
+        pct = max(1, min(100, int(round(pct))))
+        self._ctl("brightness-pct", str(pct))
 
     # ---- ambient light / auto-brightness -------------------------------------
     def als_present(self) -> bool:
