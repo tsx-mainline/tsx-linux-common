@@ -1,0 +1,162 @@
+#!/bin/sh
+# tsx-data-backup: back up the panel data from the rescue system, or put a
+# backup back.
+#
+#   tsx-data-backup FILE|-               write a gzip tar of the panel data
+#   tsx-data-backup --restore [--clean] FILE|-
+#   tsx-data-restore [--clean] FILE|-    the same as --restore
+#
+# "-" is stdout (backup) or stdin (restore). Example from a PC:
+#   ssh root@<rescue-ip> tsx-data-backup - > panel-data.tar.gz
+#   ssh root@<rescue-ip> tsx-data-restore - < panel-data.tar.gz
+#
+# The panel data:
+#   - on a panel with a data partition (LABEL=tsxdata): all of it. The
+#     running system mounts it at /data: panel.conf in tsx/, and the
+#     directories that tsx-data moved there (var/lib/tsx, var/log, root,
+#     home and others).
+#   - on a panel with no data partition: /data and the directories that
+#     tsx-data would move (DIRS below) of the root file system
+#     (LABEL=tsxroot).
+# The archive has the layout of the data partition in both cases (data/tsx
+# of the root file system is tsx/ in the archive). So a backup of one kind
+# restores into the other kind. The archive leaves out lost+found.
+#
+# The script mounts the file system itself (read only for a backup) and
+# unmounts it at the end. It refuses a file system that is mounted already
+# (the normal system runs, or a shell mounted it). The restore unpacks over
+# the files that are there and deletes nothing, unless --clean is given:
+# then it first deletes the panel data (on the root file system, only the
+# DIRS and /data).
+#
+# Env (tests): TSX_DATA_LABEL (tsxdata), TSX_ROOTFS_LABEL (tsxroot),
+# TSX_DATA_FINDFS (findfs), TSX_DATA_MOUNT (mount), TSX_DATA_UMOUNT (umount),
+# TSX_DATA_MOUNTS (/proc/mounts), TSX_DATA_RUN (/run).
+set -eu
+DATA_LABEL=${TSX_DATA_LABEL:-tsxdata}
+ROOT_LABEL=${TSX_ROOTFS_LABEL:-tsxroot}
+FINDFS=${TSX_DATA_FINDFS:-findfs}
+MOUNT=${TSX_DATA_MOUNT:-mount}
+UMOUNT=${TSX_DATA_UMOUNT:-umount}
+MOUNTS=${TSX_DATA_MOUNTS:-/proc/mounts}
+RUN=${TSX_DATA_RUN:-/run}
+DIRS="var/lib/kiosk var/log var/lib/tsx var/lib/sendspin var/lib/tsx-voice root home"
+NAME=tsx-data-backup
+say() { echo "$NAME: $*" >&2; }
+die() { say "ERROR: $*"; exit 1; }
+
+mode=backup clean=0
+case $(basename "$0") in tsx-data-restore) mode=restore NAME=tsx-data-restore;; esac
+while [ $# -gt 0 ]; do
+	case $1 in
+	--restore) mode=restore NAME=tsx-data-restore;;
+	--clean) clean=1;;
+	-h|--help) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+	-) break;;
+	-*) die "unknown option $1 (see --help)";;
+	*) break;;
+	esac
+	shift
+done
+[ $# -eq 1 ] || die "give a FILE or - (see --help)"
+SRC=$1
+[ "$mode" = restore ] || [ "$clean" = 0 ] || die "--clean is for --restore only"
+
+MNT=$RUN/tsx-data-fs
+STAGE=$RUN/tsx-data-stage
+BINDS=
+cleanup() {
+	for b in $BINDS; do $UMOUNT "$b" 2>/dev/null || true; done
+	$UMOUNT "$MNT" 2>/dev/null || true
+	rm -rf "$STAGE" "$RUN/tsx-data-in.tar.gz"
+}
+trap cleanup EXIT
+
+dev=$($FINDFS "LABEL=$DATA_LABEL" 2>/dev/null) || dev=
+kind=data
+if [ -z "$dev" ]; then
+	dev=$($FINDFS "LABEL=$ROOT_LABEL" 2>/dev/null) || dev=
+	kind=rootfs
+fi
+[ -n "$dev" ] || die "no file system with the label $DATA_LABEL or $ROOT_LABEL"
+awk -v d="$dev" '$1 == d { f = 1 } END { exit !f }' "$MOUNTS" 2>/dev/null &&
+	die "$dev is mounted. Run this in the rescue system, with the file system not mounted."
+mkdir -p "$MNT" "$STAGE"
+if [ "$mode" = backup ]; then opts=ro; else opts=rw; fi
+$MOUNT -t ext4 -o "$opts" "$dev" "$MNT" || die "cannot mount $dev"
+say "$mode: $dev (LABEL=$([ $kind = data ] && echo "$DATA_LABEL" || echo "$ROOT_LABEL"))"
+
+# bind SRC NAME: show SRC at STAGE/NAME
+bind() {
+	mkdir -p "$STAGE/$2"
+	$MOUNT --bind "$1" "$STAGE/$2" || die "cannot bind $1"
+	BINDS="$STAGE/$2 $BINDS"
+}
+
+if [ "$mode" = backup ]; then
+	if [ "$kind" = data ]; then
+		TOP=$MNT
+	else
+		TOP=$STAGE
+		for e in "$MNT"/data/* "$MNT"/data/.[!.]*; do
+			[ -e "$e" ] || continue
+			n=${e##*/}
+			[ "$n" != lost+found ] || continue
+			if [ -d "$e" ]; then bind "$e" "$n"; else cp -a "$e" "$STAGE/$n"; fi
+		done
+		for d in $DIRS; do [ -d "$MNT/$d" ] && bind "$MNT/$d" "$d"; done
+	fi
+	set --
+	for e in "$TOP"/* "$TOP"/.[!.]*; do
+		[ -e "$e" ] || continue
+		[ "${e##*/}" != lost+found ] || continue
+		set -- "$@" "./${e##*/}"
+	done
+	[ $# -gt 0 ] || die "no panel data on $dev"
+	if [ "$SRC" = - ]; then
+		tar -czf - -C "$TOP" "$@"
+	else
+		tar -czf "$SRC" -C "$TOP" "$@"
+		say "written: $SRC ($(wc -c < "$SRC") bytes)"
+	fi
+	exit 0
+fi
+
+# ---- restore -------------------------------------------------------------
+IN=$SRC
+if [ "$SRC" = - ]; then
+	IN=$RUN/tsx-data-in.tar.gz
+	cat > "$IN"
+fi
+[ -r "$IN" ] || die "cannot read $IN"
+TOPS=$(tar -tzf "$IN" | sed -e 's|^\./||' -e 's|/.*||' | grep -v '^$' | sort -u) || die "$SRC is not a gzip tar"
+[ -n "$TOPS" ] || die "$SRC is empty"
+if [ "$kind" = data ]; then
+	TOP=$MNT
+	if [ "$clean" = 1 ]; then
+		for e in "$MNT"/* "$MNT"/.[!.]*; do
+			[ -e "$e" ] || continue
+			[ "${e##*/}" != lost+found ] && rm -rf "$e"
+		done
+	fi
+else
+	TOP=$STAGE
+	if [ "$clean" = 1 ]; then
+		for d in $DIRS; do [ -d "$MNT/$d" ] && find "$MNT/$d" -mindepth 1 -maxdepth 1 -exec rm -rf {} +; done
+		for e in "$MNT"/data/* "$MNT"/data/.[!.]*; do
+			[ -e "$e" ] || continue
+			[ "${e##*/}" != lost+found ] && rm -rf "$e"
+		done
+	fi
+	# var, root and home go to the root file system. Every other top name
+	# (tsx and others) goes to /data.
+	for t in $TOPS; do
+		case $t in
+		var|root|home) mkdir -p "$MNT/$t"; bind "$MNT/$t" "$t";;
+		*) mkdir -p "$MNT/data/$t"; bind "$MNT/data/$t" "$t";;
+		esac
+	done
+fi
+tar -xzf "$IN" -C "$TOP" || die "tar failed: the restore is not complete"
+sync
+say "restored $(echo "$TOPS" | tr '\n' ' ')to $dev"

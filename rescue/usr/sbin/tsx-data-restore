@@ -1,0 +1,4 @@
+#!/bin/sh
+# tsx-data-restore [--clean] FILE|-: put a backup of tsx-data-backup back
+# (see tsx-data-backup --help).
+exec "$(dirname "$0")/tsx-data-backup" --restore "$@"
