@@ -66,11 +66,13 @@ echo "== the app state and the health check after an update reboot =="
 mkdir -p "$T/bin" "$T/run" "$T/state" "$T/initd"
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/rc-service"; chmod +x "$T/bin/rc-service"
 : > "$T/initd/tsx-panel-app"
+# The service is in the default runlevel, so the health check covers the app.
+mkdir -p "$T/runlevels/default"; ln -s "$T/initd/tsx-panel-app" "$T/runlevels/default/tsx-panel-app"
 printf 'ENABLED=1\nWINDOW=03:00-05:00\nREBOOT=auto\nHEALTH_TIMEOUT=0\n' > "$T/au.conf"
 health() {  # health MARKER-HA
 	printf 'panel_app_ha %s\n' "$1" > "$T/state/reboot-marker"
 	PATH="$T/bin:$PATH" TSX_AUTOUPDATE_CONF="$T/au.conf" TSX_RUN_DIR="$T/run" TSX_STATE_DIR="$T/state" \
-		TSX_LOG="$T/au.log" TSX_INITD="$T/initd" TSX_BUILD_ID_FILE="$T/none" sh "$AU" healthcheck >/dev/null 2>&1
+		TSX_LOG="$T/au.log" TSX_INITD="$T/initd" TSX_RUNLEVELS="$T/runlevels" TSX_BUILD_ID_FILE="$T/none" sh "$AU" healthcheck >/dev/null 2>&1
 	jq -r .health "$T/run/update.json"
 }
 sleep 300 & APP=$!

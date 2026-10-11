@@ -36,11 +36,13 @@
 # The health check after an update reboot:
 #   - kiosk panel (/etc/init.d/kiosk): the kiosk service runs and the page
 #     (KIOSK_URL) answers.
-#   - panel app (/etc/init.d/tsx-panel-app): the service runs, the process of
+#   - panel app (/etc/init.d/tsx-panel-app, and the service is in a
+#     runlevel, rc-update add): the service runs, the process of
 #     /run/tsx/panel-app.state is alive and drew its first frame. If the app
 #     had a Home Assistant connection before the reboot, it must connect
 #     again. The check waits for this at most HEALTH_TIMEOUT seconds
-#     (default 180, autoupdate.conf can set it).
+#     (default 180, autoupdate.conf can set it). A panel that has the
+#     package but does not start the service (a kiosk panel) skips this check.
 #   - neither: OK.
 #
 # Status: $TSX_RUN_DIR/update.json (+ update-ha-state.json for tsx-mqtt),
@@ -51,7 +53,7 @@
 # Env overrides (for host tests only. See tests/test-autoupdate*.sh):
 #   TSX_AUTOUPDATE_CONF TSX_RUN_DIR TSX_STATE_DIR TSX_LOG TSX_IDLED_STATE
 #   TSX_KIOSK_CONF TSX_BUILD_ID_FILE TSX_INITD TSX_BACKLIGHT_CLASS
-#   TSX_PANEL_APP_STATE TSX_HEALTH_POLL
+#   TSX_PANEL_APP_STATE TSX_HEALTH_POLL TSX_RUNLEVELS
 #
 # __in_window, __needs_reboot, __is_idle and __write_status are internal. They call the
 # matching shell function directly. The host tests use them to check that
@@ -70,6 +72,7 @@ BUILD_ID_FILE=${TSX_BUILD_ID_FILE:-/etc/tsx/build-id}
 BACKLIGHT_CLASS=${TSX_BACKLIGHT_CLASS:-/sys/class/backlight}
 APP_STATE=${TSX_PANEL_APP_STATE:-$RUN/panel-app.state}
 INITD=${TSX_INITD:-/etc/init.d}
+RUNLEVELS=${TSX_RUNLEVELS:-/etc/runlevels}
 
 STATUS_FIELDS="installed_hash pending_count pending_list reboot_pending in_progress last_check last_install last_result health repo_warning repo_blocked"
 
@@ -376,6 +379,15 @@ app_problem() {
 	fi
 }
 
+# in_runlevel SERVICE: the service is in a runlevel (rc-update add), so the
+# boot starts it.
+in_runlevel() {
+	for _l in "$RUNLEVELS"/*/"$1"; do
+		[ -e "$_l" ] || [ -L "$_l" ] && return 0
+	done
+	return 1
+}
+
 # app_health NEED_HA: wait until the panel app is fine, at most HEALTH_TIMEOUT
 # seconds. It sets app_msg when the app is not fine at the end.
 app_health() {
@@ -416,8 +428,9 @@ cmd_healthcheck() {
 		code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "$url" 2>/dev/null)
 		case $code in 2??|3??) ;; *) ok=0; msg="${msg:+$msg; }page not reachable (http ${code:-?})";; esac
 	fi
-	# A panel with the panel app (a family with no kiosk).
-	if [ -e "$INITD/tsx-panel-app" ]; then
+	# A panel with the panel app (a family with no kiosk). A panel that has
+	# the package but does not start the service is not checked.
+	if [ -e "$INITD/tsx-panel-app" ] && in_runlevel tsx-panel-app; then
 		if app_health "$need_ha"; then
 			log "panel app: running, first frame drawn$([ "$need_ha" = 1 ] && echo ", Home Assistant connected")"
 		else

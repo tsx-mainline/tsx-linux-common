@@ -46,7 +46,7 @@ Before an update reboot, `tsx-autoupdate` writes `/var/lib/tsx/autoupdate/reboot
 | Panel | The check |
 |---|---|
 | Kiosk (`/etc/init.d/kiosk` exists) | The `kiosk` service runs and the page of `KIOSK_URL` answers with an HTTP status 2xx or 3xx. |
-| Panel app (`/etc/init.d/tsx-panel-app` exists) | The `tsx-panel-app` service runs. The process in `/run/tsx/panel-app.state` runs and drew its first frame. If the app had Home Assistant before the reboot, it connected again. The check waits for this at most `HEALTH_TIMEOUT` seconds. |
+| Panel app (`/etc/init.d/tsx-panel-app` exists and the service is in a runlevel) | The `tsx-panel-app` service runs. The process in `/run/tsx/panel-app.state` runs and drew its first frame. If the app had Home Assistant before the reboot, it connected again. The check waits for this at most `HEALTH_TIMEOUT` seconds. |
 | Neither | No check. The result is OK. |
 
 The result is `OK` or `FAILED: REASON`. The status shows `checking` while the check runs. A panel with no update reboot shows no result.

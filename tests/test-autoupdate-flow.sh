@@ -56,7 +56,7 @@ run() {  # run SUBCOMMAND  (env NOWDATE/NOWHHMM/APK_UPGRADE_RC/etc already expor
 	TSX_AUTOUPDATE_CONF="$T/autoupdate.conf" TSX_RUN_DIR="$T/run" TSX_STATE_DIR="$T/state" \
 	TSX_LOG="$T/tsx-autoupdate.log" TSX_IDLED_STATE="$T/idled" TSX_KIOSK_CONF="$T/kiosk.conf" \
 	TSX_BUILD_ID_FILE="$T/buildid" TSX_INITD="$T/initd" TSX_BACKLIGHT_CLASS="$T/bl" TSX_HEALTH_POLL=1 \
-	sh "$BIN" "$@"
+	TSX_RUNLEVELS="$T/runlevels" sh "$BIN" "$@"
 }
 jf() { jq -r "$2" "$1"; }   # jf FILE .jqfilter
 chk() { [ "$1" = "$2" ] || { echo "FAIL: $3: got '$1', want '$2'"; fail=1; }; }
@@ -270,6 +270,7 @@ rm -f "$T/state/reboot-marker" "$T/run/panel-app.state"
 
 # ---- 18: health check of a panel with the panel app and no kiosk ---------------
 rm -f "$T/initd/kiosk"; : > "$T/initd/tsx-panel-app"
+mkdir -p "$T/runlevels/default"; ln -sf "$T/initd/tsx-panel-app" "$T/runlevels/default/tsx-panel-app"
 sleep 300 & APP=$!
 DEAD=$(sh -c 'echo $$')
 app_state() {  # app_state PID FIRST_FRAME HA_CONNECTED HA
@@ -321,6 +322,20 @@ case $h in "FAILED: page not reachable"*) :;; *) echo "FAIL: 18: kiosk page fail
 app_state "$APP" 0 0 off
 h=$(hc on 0 CURL_CODE=200)
 chk "$h" "FAILED: panel app drew no frame (after 0 s)" "18: kiosk fine, app without a frame"
+# ---- 19: the package is there, but the service is in no runlevel (a kiosk
+# panel with tsx-panel-app installed): the app is not checked, no wait.
+rm -f "$T/runlevels/default/tsx-panel-app"; reset_calls
+app_state "$APP" 0 0 off
+t0=$(date +%s)
+h=$(hc on 20 CURL_CODE=200)
+t1=$(date +%s)
+chk "$h" OK "19: the panel app service is in no runlevel: not checked"
+[ $((t1 - t0)) -lt 10 ] || { echo "FAIL: 19: the check waited for an app that the boot does not start ($((t1 - t0)) s)"; fail=1; }
+grep -q '^CALL rc-service tsx-panel-app' "$T/calls" && { echo "FAIL: 19: the panel app service was checked"; fail=1; }
+# In another runlevel (boot): checked again.
+mkdir -p "$T/runlevels/boot"; ln -sf "$T/initd/tsx-panel-app" "$T/runlevels/boot/tsx-panel-app"
+chk "$(hc on 0 CURL_CODE=200)" "FAILED: panel app drew no frame (after 0 s)" "19: the service in the boot runlevel is checked"
+rm -f "$T/runlevels/boot/tsx-panel-app"
 kill "$APP" 2>/dev/null; wait "$APP" 2>/dev/null
 rm -f "$T/initd/tsx-panel-app" "$T/run/panel-app.state"
 printf 'ENABLED=1\nWINDOW=03:00-05:00\nREBOOT=auto\n' > "$T/autoupdate.conf"
