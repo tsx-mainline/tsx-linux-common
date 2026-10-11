@@ -9,7 +9,8 @@ The repo has one directory for each package. A package directory holds the files
 | base | tsx-base | `tsx-config`, `tsx-hostname`, `tsx-setup`, `tsx-data`, `tsx-panelctl`, `tsx-board`, `tsx-rootpw`, the clock files (chrony, udhcpc hooks, `tsx-savetime`), the console banner, sysctl, sshd, profile, `serial.sh`, and `tsx_brightness.py` ([adaptive brightness](adaptive-brightness.md)) |
 | kiosk | tsx-kiosk | `kiosk-session` (with the `kiosk.d` hook loader), `tsx-orientation`, `tsx-osk`, `tsx-kiosk-url`, `tsx-kiosk-page`, `tsx-kiosk-reveal`, `tsx-display-power`, `tsx-blank`, `kiosk.conf`, the Chromium policy, `tsx-idled` and `tsx-overlay` (C, with the header `tsx-level.h`) |
 | setup | tsx-setup | `tsx-setupd`, `tsx-setup-helper`, their init scripts, `setup.conf`. See [Setup page without a kiosk](#setup-page-without-a-kiosk) |
-| ha | tsx-ha | `tsx-mqtt`, `tsx-bt`, the voice scripts, the ESPHome shim (`tsx_panel`, `tsx_lva`), the setup page plugin, `install-lva.sh` |
+| ha | tsx-ha | `tsx-mqtt`, `tsx-bt`, the voice scripts, the ESPHome shim (`tsx_panel`, `tsx_lva`), the setup page plugin, `install-lva.sh`. It depends on tsx-sendspin |
+| sendspin | tsx-sendspin | The service `tsx-sendspin`, `sendspin.conf`, its logrotate file and the `tsx-config` plugin `sendspin.sh` (the key `SENDSPIN`). See [Sendspin](sendspin.md) |
 | buttons | tsx-buttons | `tsx-buttons` (C), `tsx-keypad`, `buttons.conf` (a template with no keys). See [Front keys](buttons.md) |
 | autoupdate | tsx-autoupdate | `tsx-autoupdate`, its init script, its conf, its logrotate file |
 | ledbar | tsx-ledbar | `tsx-ledbar` (C), `tsx-ledbard`, its init script and `ledbar.conf`. See [LED bar](ledbar.md) |
@@ -37,7 +38,7 @@ The repo has one directory for each package. A package directory holds the files
 | tsx-esphome | tsx-ha | Standalone Home Assistant ESPHome device for the panel |
 | tsx-voice | tsx-ha | Assist voice satellite (ESPHome API) |
 | tsx-bt | tsx-ha | Bluetooth controller, BLE scanner and BLE links for the Home Assistant Bluetooth proxy |
-| tsx-sendspin | tsx-ha | Synchronized-audio player, configured in `/etc/tsx/sendspin.conf` |
+| tsx-sendspin | tsx-sendspin | Synchronized-audio player (user `tsx-sendspin`), configured in `/etc/tsx/sendspin.conf` |
 | tsx-buttons | tsx-buttons | Front keys and key LEDs. The keys come from `/etc/tsx/buttons-board.conf`, the actions from `/etc/tsx/buttons.conf` |
 | tsx-autoupdate | tsx-autoupdate | Schedules automatic Alpine package updates |
 | tsx-ledbar | tsx-ledbar | Checks the LED bar, recovers it from bootloader mode and sends its color, effect and LED map |

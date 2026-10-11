@@ -15,6 +15,7 @@ The software that every TSX panel family shares: the base services, the rescue s
 | [docs/kiosk-hooks.md](docs/kiosk-hooks.md) | The `kiosk.d` folder, with which a board changes the renderer choice and the browser flags. |
 | [docs/ledbar.md](docs/ledbar.md) | The USB RGB LED bar: the tools, the settings, the bootloader recovery, the effects, the 16 LEDs and the LED map. |
 | [docs/panel-app.md](docs/panel-app.md) | The native Home Assistant card screen (ESPHome and LVGL) and its JSON layout format. Experimental. |
+| [docs/sendspin.md](docs/sendspin.md) | The Sendspin player for Music Assistant: the key `SENDSPIN`, the audio path and the volume. |
 | [docs/wake-words.md](docs/wake-words.md) | The built-in wake words of the voice satellite, and how to add a custom wake word model. |
 
 ## Repository layout
@@ -24,6 +25,7 @@ The software that every TSX panel family shares: the base services, the rescue s
 | `base/` | tsx-base |
 | `kiosk/` | tsx-kiosk |
 | `setup/` | tsx-setup |
+| `sendspin/` | tsx-sendspin |
 | `ha/` | tsx-ha |
 | `buttons/` | tsx-buttons |
 | `autoupdate/` | tsx-autoupdate |
