@@ -329,6 +329,7 @@ The app controls the backlight of the panel (the first folder in `/sys/class/bac
 - With `input_id`, the first report of a touch wakes the screen at once, in the loop of `tsx_evdev`. LVGL does not have to read the touch first. So a very short tap also wakes the screen.
 - The wake has a fixed order. First the CPU goes to full speed (see "CPU speed"). Then the app runs `on_screen` with `on` true: the display puts the full picture on the output and waits for the flip. Then the backlight comes on. So the glass shows no old, black or white frame with the backlight on.
 - A five-finger tap or a key opens the settings overlay only while the screen is on.
+- The app writes the screen state to `/run/tsx-idled.state`, in the format of `tsx-idled`: `on LEVEL` while the screen is on or dim, `blank` while it is off. `tsx-autoupdate` installs only while the screen is off. The app also writes `/run/tsx/panel-app.state` (the process, the first frame and the Home Assistant connection) for the health check after an update reboot. See [autoupdate.md](autoupdate.md).
 
 The times and the dim level come from these places. A later place wins:
 

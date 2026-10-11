@@ -221,6 +221,9 @@ void TsxCards::loop() {
       this->mark_("Home Assistant connected");
     else
       ESP_LOGI(TAG, "Home Assistant disconnected");
+    if (c && this->ha_connected_at_ == 0)
+      this->ha_connected_at_ = (long) ::time(nullptr);
+    this->write_app_state_();
     this->update_bar_();
   }
 #ifdef USE_API_HOMEASSISTANT_STATES
@@ -499,6 +502,8 @@ void TsxCards::on_render(bool ready) {
   if (!this->first_frame_done_) {
     this->first_frame_done_ = true;
     this->mark_("first frame");
+    this->first_frame_at_ = (long) ::time(nullptr);
+    this->write_app_state_();
   }
   if (this->reload_t0_ != 0) {
     ESP_LOGI(PERF, "layout reload: %.1f ms from the file read to the new frame", (mono_us() - this->reload_t0_) / 1000.0);

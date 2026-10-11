@@ -3,6 +3,7 @@
 This repo holds the software that all TSX panel families share. Each family keeps its board files in its own repo.
 
 - [Adaptive brightness](adaptive-brightness.md): how the automatic brightness learns, its settings and its limits.
+- [Automatic update](autoupdate.md): the window, the idle screen, the reboot rule and the health check after an update reboot.
 - [Front keys](buttons.md): the board layer and the user file of the keys, what a key press does, the key LEDs and `tsx-kiosk-page`.
 - [ESPHome device](esphome.md): the two services of the Home Assistant device, the fixed entity keys and the plugins of a board.
 - [Kiosk hooks](kiosk-hooks.md): the `kiosk.d` folder, with which a board changes the renderer choice and the browser flags.

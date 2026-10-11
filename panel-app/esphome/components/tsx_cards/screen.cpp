@@ -24,7 +24,12 @@
 //   output (on_screen: the display puts the full frame on the output and
 //   waits for the flip), and only then the backlight. So the glass never
 //   shows an old, a black or a white frame with the backlight on.
+// - The app writes the screen state in the file and the format of tsx-idled
+//   (runstate.h), and its own state (the first frame, the Home Assistant
+//   connection). tsx-autoupdate reads both: it installs only while the
+//   screen is off, and it checks the app after an update reboot.
 #include "tsx_cards.h"
+#include "runstate.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -32,13 +37,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <dirent.h>
 #include <spawn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
-#include <ctime>
 
 #include "esphome/core/application.h"
 #include "esphome/core/hal.h"
@@ -127,6 +131,12 @@ void TsxCards::screen_setup_() {
     this->run_dir_ = rd;
   const char *pd = getenv("ESPHOME_PREFDIR");
   this->pref_dir_ = pd != nullptr && pd[0] != '\0' ? pd : "/var/lib/tsx/panel-app";
+  const char *is = getenv("TSX_IDLED_STATE");
+  if (is != nullptr && is[0] != '\0')
+    this->idle_state_file_ = is;
+  this->started_at_ = (long) ::time(nullptr);
+  this->state_files_ready_ = true;
+  this->write_app_state_();
   const char *bd = getenv("TSX_BACKLIGHT_DIR");
   if (bd != nullptr && bd[0] != '\0')
     this->backlight_dir_ = bd;
@@ -159,6 +169,7 @@ void TsxCards::screen_setup_() {
     this->bl_max_ = v;
   if (this->bl_max_ <= 0) {
     ESP_LOGW(TAG, "no backlight in /sys/class/backlight: the screen has no dim and no off");
+    this->write_idle_state_(-1);
   } else {
     int pct;
     int cur = 0;
@@ -236,6 +247,39 @@ void TsxCards::write_backlight_(int raw) {
     return;
   if (!write_text(this->backlight_dir_ + "/brightness", std::to_string(raw) + "\n"))
     ESP_LOGW(TAG, "backlight %d: %s", raw, strerror(errno));
+  this->write_idle_state_(raw);
+}
+
+bool TsxCards::write_run_file_(const std::string &path, const std::string &text) {
+  if (!this->state_files_ready_)
+    return false;
+  size_t slash = path.rfind('/');
+  if (slash != std::string::npos && slash > 0)
+    mkdir(path.substr(0, slash).c_str(), 0755);
+  if (write_file_atomic(path, text))
+    return true;
+  if (!this->state_write_warned_) {
+    this->state_write_warned_ = true;
+    ESP_LOGW(TAG, "cannot write %s: %s", path.c_str(), strerror(errno));
+  }
+  return false;
+}
+
+// The screen state for tsx-autoupdate (and the other readers of the
+// tsx-idled file): "on <level>" while the screen is on or dim, "blank"
+// while it is off. raw below 0: no backlight.
+void TsxCards::write_idle_state_(int raw) {
+  std::string text = idle_state_text(this->screen_ != SCREEN_OFF, raw);
+  if (text == this->idle_state_text_)
+    return;
+  if (this->write_run_file_(this->idle_state_file_, text))
+    this->idle_state_text_ = text;
+}
+
+void TsxCards::write_app_state_() {
+  this->write_run_file_(this->run_dir_ + "/panel-app.state",
+                        app_state_text((long) getpid(), this->started_at_, this->first_frame_at_,
+                                       this->ha_connected_at_, this->connected_));
 }
 
 void TsxCards::read_screen_files_(bool force) {

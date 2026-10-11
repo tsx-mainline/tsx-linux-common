@@ -1,10 +1,13 @@
 #!/bin/sh
-# tsx-autoupdate: automatic Alpine package updates for the panel kiosk.
+# tsx-autoupdate: automatic Alpine package updates for the panel.
 #
 # Daily: run `apk update` and compute the pending upgrades. It installs only
 # inside the night window (/etc/tsx/autoupdate.conf WINDOW) and only while the
-# screen is idle (the state file of tsx-idled). It reboots only if the upgrade
-# changed the kernel, musl, openrc or busybox or the init system, or a tsx-*
+# screen is idle. The screen state comes from /run/tsx-idled.state: tsx-idled
+# writes it on a kiosk panel, the panel app writes it on a panel with no
+# kiosk ("blank" = the screen is off). With no state file, the screen is idle
+# when every backlight is at 0. It reboots only if the upgrade changed or
+# added the kernel, musl, openrc or busybox or the init system, or a tsx-*
 # package (the services and shared code of the panel), and only inside the
 # window.
 #
@@ -30,6 +33,16 @@
 #                              init.d script calls it. It does nothing unless
 #                              an automatic update rebooted the panel)
 #
+# The health check after an update reboot:
+#   - kiosk panel (/etc/init.d/kiosk): the kiosk service runs and the page
+#     (KIOSK_URL) answers.
+#   - panel app (/etc/init.d/tsx-panel-app): the service runs, the process of
+#     /run/tsx/panel-app.state is alive and drew its first frame. If the app
+#     had a Home Assistant connection before the reboot, it must connect
+#     again. The check waits for this at most HEALTH_TIMEOUT seconds
+#     (default 180, autoupdate.conf can set it).
+#   - neither: OK.
+#
 # Status: $TSX_RUN_DIR/update.json (+ update-ha-state.json for tsx-mqtt),
 # refreshed at every run. A persistent copy lives under $TSX_STATE_DIR
 # (default /var/lib/tsx/autoupdate, moved onto /data by tsx-data). So
@@ -37,9 +50,10 @@
 #
 # Env overrides (for host tests only. See tests/test-autoupdate*.sh):
 #   TSX_AUTOUPDATE_CONF TSX_RUN_DIR TSX_STATE_DIR TSX_LOG TSX_IDLED_STATE
-#   TSX_KIOSK_CONF TSX_BUILD_ID_FILE TSX_INITD
+#   TSX_KIOSK_CONF TSX_BUILD_ID_FILE TSX_INITD TSX_BACKLIGHT_CLASS
+#   TSX_PANEL_APP_STATE TSX_HEALTH_POLL
 #
-# __in_window, __needs_reboot and __write_status are internal. They call the
+# __in_window, __needs_reboot, __is_idle and __write_status are internal. They call the
 # matching shell function directly. The host tests use them to check that
 # logic without a real apk, date or reboot.
 set -u
@@ -53,6 +67,9 @@ LOG=${TSX_LOG:-/var/log/tsx-autoupdate.log}
 IDLED_STATE=${TSX_IDLED_STATE:-/run/tsx-idled.state}
 KIOSK_CONF=${TSX_KIOSK_CONF:-/etc/kiosk.conf}
 BUILD_ID_FILE=${TSX_BUILD_ID_FILE:-/etc/tsx/build-id}
+BACKLIGHT_CLASS=${TSX_BACKLIGHT_CLASS:-/sys/class/backlight}
+APP_STATE=${TSX_PANEL_APP_STATE:-$RUN/panel-app.state}
+INITD=${TSX_INITD:-/etc/init.d}
 
 STATUS_FIELDS="installed_hash pending_count pending_list reboot_pending in_progress last_check last_install last_result health repo_warning repo_blocked"
 
@@ -61,7 +78,7 @@ now_iso() { date '+%Y-%m-%dT%H:%M:%S'; }
 nowhhmm() { date '+%H:%M'; }
 
 load_conf() {
-	ENABLED=1 WINDOW=03:00-05:00 REBOOT=auto
+	ENABLED=1 WINDOW=03:00-05:00 REBOOT=auto HEALTH_TIMEOUT=180
 	[ -r "$CONF" ] && . "$CONF"
 }
 
@@ -95,7 +112,8 @@ in_window() {  # in_window HH:MM start-end  (window may cross midnight)
 # services depend on each other, and a restart of the kiosk or the ESPHome
 # device in the middle of the night has more ways to fail. tsx-keys (a public
 # key) and tsx-ledbar-fw (a tool for a person) have no running code. The
-# kernel package of another family needs no reboot here.
+# kernel package of another family needs no reboot here. The list holds the
+# upgraded packages and the new ones (a new dependency of a tsx-* package).
 needs_reboot() {  # needs_reboot "pkg1 pkg2 ..." -> exit 0 if any needs a reboot
 	for n in $1; do
 		case $n in
@@ -223,10 +241,31 @@ installed_hash() {
 	if [ -n "$bid" ]; then printf '%s+%s\n' "$bid" "$h"; else printf '%s\n' "$h"; fi
 }
 
+# The screen is idle when the screen service wrote "blank" (tsx-idled or the
+# panel app). With no state file (an older panel app), the screen is idle
+# when every backlight is at 0. No state file and no backlight: not idle.
 is_idle() {
-	[ -r "$IDLED_STATE" ] || return 1
-	read -r s _ < "$IDLED_STATE" 2>/dev/null
-	[ "$s" = blank ]
+	if [ -r "$IDLED_STATE" ]; then
+		s=; read -r s _ < "$IDLED_STATE" 2>/dev/null
+		[ "$s" = blank ]
+		return
+	fi
+	found=0
+	for b in "$BACKLIGHT_CLASS"/*/brightness; do
+		[ -r "$b" ] || continue
+		v=; read -r v < "$b" 2>/dev/null
+		[ "$v" = 0 ] || return 1
+		found=1
+	done
+	[ "$found" = 1 ]
+}
+
+# The packages of an `apk upgrade --simulate`: "name old new" on each line.
+# A new package (a new dependency) has the old version "none".
+pending_packages() {
+	printf '%s\n' "$1" | sed -nE \
+		-e 's/.* (Upgrading|Downgrading|Replacing) ([^ ]+) \(([^ ]+) -> ([^)]+)\).*/\2 \3 \4/p' \
+		-e 's/.* Installing ([^ ]+) \(([^)]+)\).*/\1 none \2/p'
 }
 
 # ---- the daily check + install ---------------------------------------------
@@ -239,7 +278,7 @@ do_check() {
 	classify_repos "$upd"
 	[ -n "$REPO_WARNING" ] && log "WARNING: $REPO_WARNING"
 	sim=$(apk upgrade --simulate $APK_FORCE 2>>"$LOG")
-	pkglist=$(printf '%s\n' "$sim" | sed -n 's/.*Upgrading \([^ ]*\) (\([^ ]*\) -> \([^)]*\)).*/\1 \2 \3/p')
+	pkglist=$(pending_packages "$sim")
 	names=$(printf '%s\n' "$pkglist" | sed -n 's/^\([^ ]*\).*/\1/p')
 	pcount=0; [ -n "$pkglist" ] && pcount=$(printf '%s\n' "$pkglist" | grep -c .)
 	rb=0; needs_reboot "$names" && rb=1
@@ -280,7 +319,10 @@ do_install() {
 	write_update_json; write_ha_json
 	if [ "$rb" = 1 ] && [ "${REBOOT:-auto}" != never ] && in_window "$(nowhhmm)" "${WINDOW:-03:00-05:00}"; then
 		log "rebooting for a kernel, musl, openrc, busybox or tsx package update"
-		mkdir -p "$STATE" 2>/dev/null; : > "$STATE/reboot-marker"
+		# The marker tells the health check after the boot that this update
+		# rebooted the panel, and if the panel app had Home Assistant.
+		mkdir -p "$STATE" 2>/dev/null
+		printf 'panel_app_ha %s\n' "$(get_field "$APP_STATE" ha)" > "$STATE/reboot-marker"
 		sync
 		reboot
 	elif [ "$rb" = 1 ]; then
@@ -320,14 +362,47 @@ cmd_status() {
 	return 0
 }
 
+# app_problem NEED_HA: what is wrong with the panel app, or nothing.
+app_problem() {
+	if command -v rc-service >/dev/null 2>&1 && ! rc-service tsx-panel-app status >/dev/null 2>&1; then
+		echo "panel app service not running"; return
+	fi
+	pid=$(get_field "$APP_STATE" pid)
+	case $pid in ''|*[!0-9]*) echo "panel app wrote no state"; return;; esac
+	kill -0 "$pid" 2>/dev/null || { echo "panel app process $pid not running"; return; }
+	case $(get_field "$APP_STATE" first_frame) in ''|0) echo "panel app drew no frame"; return;; esac
+	if [ "$1" = 1 ]; then
+		case $(get_field "$APP_STATE" ha_connected) in ''|0) echo "panel app not connected to Home Assistant"; return;; esac
+	fi
+}
+
+# app_health NEED_HA: wait until the panel app is fine, at most HEALTH_TIMEOUT
+# seconds. It sets app_msg when the app is not fine at the end.
+app_health() {
+	app_msg= waited=0 poll=${TSX_HEALTH_POLL:-5}
+	while :; do
+		why=$(app_problem "$1")
+		[ -n "$why" ] || return 0
+		if [ "$waited" -ge "${HEALTH_TIMEOUT:-180}" ]; then
+			app_msg="$why (after ${waited} s)"
+			return 1
+		fi
+		sleep "$poll"
+		waited=$((waited + poll))
+	done
+}
+
 cmd_healthcheck() {
 	[ -e "$STATE/reboot-marker" ] || return 0
+	need_ha=0; [ "$(get_field "$STATE/reboot-marker" panel_app_ha)" = on ] && need_ha=1
 	rm -f "$STATE/reboot-marker"
 	ok=1 msg=
+	set_fields "$STATE/fields" health=checking
+	write_update_json; write_ha_json
 	# The kiosk is not in every image profile (see the "Profiles" docs of the
 	# board repository). The
 	# console profile has no kiosk service and no page to reach.
-	has_kiosk=0; [ -e "${TSX_INITD:-/etc/init.d}/kiosk" ] && has_kiosk=1
+	has_kiosk=0; [ -e "$INITD/kiosk" ] && has_kiosk=1
 	if [ "$has_kiosk" = 1 ] && command -v rc-service >/dev/null 2>&1; then
 		rc-service kiosk status >/dev/null 2>&1 || { ok=0; msg="kiosk service not running"; }
 	fi
@@ -341,6 +416,14 @@ cmd_healthcheck() {
 		code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "$url" 2>/dev/null)
 		case $code in 2??|3??) ;; *) ok=0; msg="${msg:+$msg; }page not reachable (http ${code:-?})";; esac
 	fi
+	# A panel with the panel app (a family with no kiosk).
+	if [ -e "$INITD/tsx-panel-app" ]; then
+		if app_health "$need_ha"; then
+			log "panel app: running, first frame drawn$([ "$need_ha" = 1 ] && echo ", Home Assistant connected")"
+		else
+			ok=0; msg="${msg:+$msg; }$app_msg"
+		fi
+	fi
 	health=OK; [ "$ok" = 1 ] || health="FAILED: $msg"
 	set_fields "$STATE/fields" health="$health"
 	write_update_json; write_ha_json
@@ -351,6 +434,7 @@ main() {
 	case "${1:-}" in
 	__in_window) shift; in_window "$@";;
 	__needs_reboot) shift; needs_reboot "$@";;
+	__is_idle) is_idle;;
 	__write_status) write_update_json; write_ha_json;;
 	now) load_conf; do_check; do_install;;
 	check) load_conf; do_check;;

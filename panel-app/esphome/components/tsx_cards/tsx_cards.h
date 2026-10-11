@@ -250,6 +250,11 @@ class TsxCards : public Component {
   int pct_to_raw_(float pct) const;
   void read_screen_files_(bool force);
   void on_input_(int kind);
+  // The state files for the other services (runstate.h): the screen state
+  // in the format of tsx-idled and the app state.
+  void write_idle_state_(int raw);
+  void write_app_state_();
+  bool write_run_file_(const std::string &path, const std::string &text);
   // cpu.cpp: the CPU frequency boost (see docs/panel-app.md, "CPU speed").
   void cpu_setup_();
   void cpu_loop_();
@@ -359,6 +364,12 @@ class TsxCards : public Component {
   uint32_t last_screen_files_{0};
   uint32_t off_loop_interval_{0}, on_loop_interval_{0};
   uint64_t wake_event_us_{0};  // the input event of a wake (0: not from an input)
+  // The state files (runstate.h).
+  std::string idle_state_file_{"/run/tsx-idled.state"};
+  std::string idle_state_text_;
+  long started_at_{0}, first_frame_at_{0}, ha_connected_at_{0};
+  bool state_files_ready_{false};
+  bool state_write_warned_{false};
 
   // The CPU frequency boost (cpu.cpp).
   struct CpuPolicy {

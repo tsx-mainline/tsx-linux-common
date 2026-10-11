@@ -8,6 +8,7 @@ The software that every TSX panel family shares: the base services, the rescue s
 |---|---|
 | [docs/index.md](docs/index.md) | The list of pages. |
 | [docs/layout.md](docs/layout.md) | The directories, the packages, the services, the board interface and the tests. Read it to build a package or to port the software to a new board. |
+| [docs/autoupdate.md](docs/autoupdate.md) | The automatic update: the window, the idle screen, the reboot rule and the health check after an update reboot. |
 | [docs/adaptive-brightness.md](docs/adaptive-brightness.md) | The learning brightness curve, its settings and its limits. |
 | [docs/buttons.md](docs/buttons.md) | The board layer and the user file of the front keys, what a key press does and the key LEDs. |
 | [docs/esphome.md](docs/esphome.md) | The two services of the Home Assistant device, the fixed entity keys and the plugins of a board. |

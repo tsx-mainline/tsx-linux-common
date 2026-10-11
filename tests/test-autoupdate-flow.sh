@@ -4,6 +4,8 @@
 #  - a fake apk with canned output for "update", "upgrade --simulate" and
 #    "info -v". It logs every call.
 #  - a fake date with a fixed "now" and real day-math (-d passthrough)
+# A fake backlight class folder ($T/bl) and a fake panel app state file
+# ($T/run/panel-app.state) stand in for the screen and the panel app.
 # The test touches nothing on the host. rc-service, curl and reboot are all
 # stubs under $T/bin. The made-up board of tests/boards/fake gives the family
 # and the repository category.
@@ -53,7 +55,7 @@ run() {  # run SUBCOMMAND  (env NOWDATE/NOWHHMM/APK_UPGRADE_RC/etc already expor
 	PATH="$T/bin:$PATH" \
 	TSX_AUTOUPDATE_CONF="$T/autoupdate.conf" TSX_RUN_DIR="$T/run" TSX_STATE_DIR="$T/state" \
 	TSX_LOG="$T/tsx-autoupdate.log" TSX_IDLED_STATE="$T/idled" TSX_KIOSK_CONF="$T/kiosk.conf" \
-	TSX_BUILD_ID_FILE="$T/buildid" TSX_INITD="$T/initd" \
+	TSX_BUILD_ID_FILE="$T/buildid" TSX_INITD="$T/initd" TSX_BACKLIGHT_CLASS="$T/bl" TSX_HEALTH_POLL=1 \
 	sh "$BIN" "$@"
 }
 jf() { jq -r "$2" "$1"; }   # jf FILE .jqfilter
@@ -211,8 +213,120 @@ printf '(1/1) Upgrading tsx-other-kernel-lts (6.18.54_git20260928-r1 -> 6.18.55_
 NOWDATE=2026-01-11 NOWHHMM=12:01 run check >/dev/null
 chk "$(jf "$T/run/update.json" .reboot_pending)" false "13: the kernel package of another family does not"
 
+# ---- 15: a new package (a new dependency) counts as pending; a new tsx-* package needs a reboot
+printf '(1/2) Installing tsx-newsvc (0.3.2-r0)\n(2/2) Upgrading libfoo (1.1-r0 -> 1.2-r0)\n' > "$T/sim.txt"
+reset_calls
+NOWDATE=2026-01-12 NOWHHMM=12:00 run check >/dev/null
+chk "$(jf "$T/run/update.json" .pending_count)" 2 "15: the new package is pending"
+chk "$(jf "$T/run/update.json" '.pending[0]')" "tsx-newsvc (none -> 0.3.2-r0)" "15: the new package in the list"
+chk "$(jf "$T/run/update.json" .reboot_pending)" true "15: a new tsx-* package needs a reboot"
+printf '(1/1) Installing libbar (2.0-r0)\n' > "$T/sim.txt"
+NOWDATE=2026-01-12 NOWHHMM=12:01 run check >/dev/null
+chk "$(jf "$T/run/update.json" .pending_count)/$(jf "$T/run/update.json" .reboot_pending)" 1/false "15: a new library needs no reboot"
+printf '(1/1) Installing tsx-fake-kernel-lts (6.18.55_git20261005-r0)\n' > "$T/sim.txt"
+NOWDATE=2026-01-12 NOWHHMM=12:02 run check >/dev/null
+chk "$(jf "$T/run/update.json" .reboot_pending)" true "15: a new kernel package of the board needs a reboot"
+printf '(1/1) Downgrading tsx-base (0.3.1-r0 -> 0.3.0-r0)\n' > "$T/sim.txt"
+NOWDATE=2026-01-12 NOWHHMM=12:03 run check >/dev/null
+chk "$(jf "$T/run/update.json" .pending_count)/$(jf "$T/run/update.json" .reboot_pending)" 1/true "15: a downgrade of a tsx-* package counts and needs a reboot"
+
+# ---- 16: no screen state file (an older panel app): the backlight decides ------
+printf '(1/1) Upgrading libfoo (1.2-r0 -> 1.3-r0)\n' > "$T/sim.txt"
+mv "$T/idled" "$T/idled.saved"
+mkdir -p "$T/bl/lcd"; echo 40 > "$T/bl/lcd/brightness"
+reset_calls
+NOWDATE=2026-01-13 NOWHHMM=04:00 run >/dev/null
+grep -q '^APK upgrade$' "$T/apk.calls" && { echo "FAIL: 16: installed with no state file and the backlight on"; fail=1; }
+grep -q 'not installing now (in_window=1 idle=0)' "$T/tsx-autoupdate.log" || { echo "FAIL: 16: no idle=0 log line"; fail=1; }
+echo 0 > "$T/bl/lcd/brightness"; reset_calls
+NOWDATE=2026-01-13 NOWHHMM=04:15 run >/dev/null
+grep -q '^APK upgrade$' "$T/apk.calls" || { echo "FAIL: 16: no install with no state file and the backlight at 0"; fail=1; }
+mkdir -p "$T/bl/second"; echo 3 > "$T/bl/second/brightness"; reset_calls
+NOWDATE=2026-01-13 NOWHHMM=04:30 run >/dev/null
+grep -q '^APK upgrade$' "$T/apk.calls" && { echo "FAIL: 16: installed while a second backlight is on"; fail=1; }
+rm -rf "$T/bl"; reset_calls
+NOWDATE=2026-01-13 NOWHHMM=04:45 run >/dev/null
+grep -q '^APK upgrade$' "$T/apk.calls" && { echo "FAIL: 16: installed with no state file and no backlight"; fail=1; }
+# A state file wins over the backlight: "on" with a dark backlight is not idle.
+mkdir -p "$T/bl/lcd"; echo 0 > "$T/bl/lcd/brightness"; echo "on 12" > "$T/idled"; reset_calls
+NOWDATE=2026-01-13 NOWHHMM=04:50 run >/dev/null
+grep -q '^APK upgrade$' "$T/apk.calls" && { echo "FAIL: 16: the backlight won over the state file"; fail=1; }
+mv "$T/idled.saved" "$T/idled"; rm -rf "$T/bl"
+
+# ---- 17: the reboot marker keeps the Home Assistant state of the panel app ------
+mkdir -p "$T/run"
+printf 'pid 1\nstarted 100\nfirst_frame 101\nha_connected 110\nha on\n' > "$T/run/panel-app.state"
+printf '(1/1) Upgrading tsx-fake-board (0.3.1-r0 -> 0.3.2-r0)\n' > "$T/sim.txt"
+rm -f "$T/state/reboot-marker"; reset_calls
+NOWDATE=2026-01-14 NOWHHMM=04:00 run >/dev/null
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 17: no reboot for the board package"; fail=1; }
+chk "$(cat "$T/state/reboot-marker" 2>/dev/null)" "panel_app_ha on" "17: marker with the Home Assistant state"
+printf 'pid 1\nstarted 100\nfirst_frame 101\nha_connected 0\nha off\n' > "$T/run/panel-app.state"
+rm -f "$T/state/reboot-marker"; reset_calls
+NOWDATE=2026-01-14 NOWHHMM=04:15 run >/dev/null
+chk "$(cat "$T/state/reboot-marker" 2>/dev/null)" "panel_app_ha off" "17: marker of a panel app with no Home Assistant"
+rm -f "$T/state/reboot-marker" "$T/run/panel-app.state"
+: > "$T/sim.txt"
+
+# ---- 18: health check of a panel with the panel app and no kiosk ---------------
+rm -f "$T/initd/kiosk"; : > "$T/initd/tsx-panel-app"
+sleep 300 & APP=$!
+DEAD=$(sh -c 'echo $$')
+app_state() {  # app_state PID FIRST_FRAME HA_CONNECTED HA
+	printf 'pid %s\nstarted 1000\nfirst_frame %s\nha_connected %s\nha %s\n' "$1" "$2" "$3" "$4" > "$T/run/panel-app.state"
+}
+hc() {  # hc MARKER-HA TIMEOUT [env...]: one health check after an update reboot
+	printf 'panel_app_ha %s\n' "$1" > "$T/state/reboot-marker"
+	printf 'ENABLED=1\nWINDOW=03:00-05:00\nREBOOT=auto\nHEALTH_TIMEOUT=%s\n' "$2" > "$T/autoupdate.conf"
+	shift 2
+	( for kv in "$@"; do export "$kv"; done
+	  NOWDATE=2026-01-15 NOWHHMM=04:00 run healthcheck ) >/dev/null 2>&1
+	jf "$T/run/update.json" .health
+}
+reset_calls
+app_state "$APP" 1001 1012 on
+chk "$(hc on 0)" OK "18: app runs, first frame, Home Assistant again: OK"
+grep -q '^CALL rc-service tsx-panel-app status' "$T/calls" || { echo "FAIL: 18: the service of the panel app not checked"; fail=1; }
+grep -q '^CALL curl' "$T/calls" && { echo "FAIL: 18: reached for a kiosk page with no kiosk"; fail=1; }
+grep -q 'panel app: running, first frame drawn, Home Assistant connected' "$T/tsx-autoupdate.log" || { echo "FAIL: 18: no log line of the app check"; fail=1; }
+app_state "$APP" 0 0 off
+chk "$(hc on 0)" "FAILED: panel app drew no frame (after 0 s)" "18: no first frame"
+app_state "$APP" 1001 0 off
+chk "$(hc on 0)" "FAILED: panel app not connected to Home Assistant (after 0 s)" "18: Home Assistant before the update, none after"
+chk "$(hc off 0)" OK "18: no Home Assistant before the update: not needed after"
+app_state "$DEAD" 1001 1012 on
+chk "$(hc on 0)" "FAILED: panel app process $DEAD not running (after 0 s)" "18: the process of the state file is gone"
+rm -f "$T/run/panel-app.state"
+chk "$(hc off 0)" "FAILED: panel app wrote no state (after 0 s)" "18: no state file"
+app_state "$APP" 1001 1012 on
+chk "$(hc on 0 RC_SERVICE_RC=1)" "FAILED: panel app service not running (after 0 s)" "18: the service is stopped"
+[ -e "$T/state/reboot-marker" ] && { echo "FAIL: 18: reboot-marker not cleared"; fail=1; }
+# The check waits for the app: the first frame comes 2 s after the start of the check.
+app_state "$APP" 0 0 off
+( sleep 2; app_state "$APP" 1003 1012 on ) &
+t0=$(date +%s)
+chk "$(hc on 20)" OK "18: the check waits for the first frame and Home Assistant"
+t1=$(date +%s)
+[ $((t1 - t0)) -lt 15 ] || { echo "FAIL: 18: the check did not end when the app was fine ($((t1 - t0)) s)"; fail=1; }
+# An empty marker (an older tsx-autoupdate rebooted the panel): no Home Assistant needed.
+app_state "$APP" 1001 0 off
+: > "$T/state/reboot-marker"
+printf 'ENABLED=1\nWINDOW=03:00-05:00\nREBOOT=auto\nHEALTH_TIMEOUT=0\n' > "$T/autoupdate.conf"
+NOWDATE=2026-01-15 NOWHHMM=04:00 run healthcheck >/dev/null 2>&1
+chk "$(jf "$T/run/update.json" .health)" OK "18: an empty marker needs no Home Assistant"
+# A kiosk and the panel app: both are checked.
+: > "$T/initd/kiosk"; app_state "$APP" 1001 1012 on
+h=$(hc on 0 CURL_CODE=000)
+case $h in "FAILED: page not reachable"*) :;; *) echo "FAIL: 18: kiosk page failure lost with the panel app: '$h'"; fail=1;; esac
+app_state "$APP" 0 0 off
+h=$(hc on 0 CURL_CODE=200)
+chk "$h" "FAILED: panel app drew no frame (after 0 s)" "18: kiosk fine, app without a frame"
+kill "$APP" 2>/dev/null; wait "$APP" 2>/dev/null
+rm -f "$T/initd/tsx-panel-app" "$T/run/panel-app.state"
+printf 'ENABLED=1\nWINDOW=03:00-05:00\nREBOOT=auto\n' > "$T/autoupdate.conf"
+
 # ---- 14: no Chromium call at all ------------------------------------------------
 grep -qi chromium "$T/apk.calls" "$T/calls" "$T/tsx-autoupdate.log" && { echo "FAIL: 14: a Chromium call or log line"; fail=1; }
 
-[ $fail = 0 ] && echo "PASS tsx-autoupdate flow (check/install/window/idle/status/healthcheck/repositories/kernel)"
+[ $fail = 0 ] && echo "PASS tsx-autoupdate flow (check/install/window/idle/status/healthcheck/repositories/kernel/new packages/panel app)"
 exit $fail
