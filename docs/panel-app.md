@@ -548,9 +548,9 @@ Later starts use the saved values. So a new host name does not make a new device
 
 ## Setup banner
 
-When the network window of the setup page is open, `tsx-setupd` writes `/run/tsx-setup/screen.json` with the pairing code, the port and the addresses of the panel. The app checks the file every 2 s. While the file is less than 30 s old, the app shows a bar at the top of the screen: `Setup: http://ADDRESS:PORT/setup    Code: CODE`. The bar takes no touch: a tap goes to the card below it. The log tells only that the bar is on or off. It never has the code.
+While the pairing code of the setup page works, `tsx-setupd` writes `/run/tsx-setup/screen.json` with the pairing code, the port and the addresses of the panel. The app checks the file every 2 s. While the file is less than 30 s old, the app shows a bar at the top of the screen: `Setup: http://ADDRESS:PORT/setup    Code: CODE`. The bar takes no touch: a tap goes to the card below it. The log tells only that the bar is on or off. It never has the code.
 
-The key action `"setup"` runs `tsx-config setup`. That command opens the window for about 15 minutes (see the setup page in [Layout](layout.md)). The environment variable `TSX_PANEL_APP_SETUP_CMD` replaces the command for a test.
+The key action `"setup"` runs `tsx-config setup`. That command opens the window for about 15 minutes (see [setup.md](setup.md)). An administrator of Home Assistant needs no code: see "Log in with Home Assistant" in [setup.md](setup.md). The environment variable `TSX_PANEL_APP_SETUP_CMD` replaces the command for a test.
 
 ## Entity list
 

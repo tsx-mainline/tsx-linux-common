@@ -192,11 +192,13 @@ function load(server) {
   };
   const fetch = (path, opts) => {
     const body = opts && opts.body ? JSON.parse(opts.body) : undefined;
-    calls.push({ path, method: (opts && opts.method) || "GET", body });
+    calls.push({ path, method: (opts && opts.method) || "GET", body, headers: (opts && opts.headers) || {} });
     let r = { status: 404, body: {} };
     if (path === "/setup/api/state") r = { status: 200, body: server.state };
     else if (path === "/setup/api/status") r = { status: 200, body: server.status };
     else if (path === "/setup/api/submit") r = server.submit || { status: 400, body: { errors: {} } };
+    else if (path === "/setup/api/panel" && server.panel && (opts || {}).method === "POST") r = server.panelPost || { status: 200, body: { ok: true } };
+    else if (path === "/setup/api/panel" && server.panel) r = { status: 200, body: server.panel };
     const copy = JSON.parse(JSON.stringify(r.body));
     return Promise.resolve({ status: r.status, json: () => Promise.resolve(copy) });
   };
@@ -228,7 +230,7 @@ function stateWith(fields, extra) {
 }
 const STORED = {
   KIOSK_URL: "https://ha.example.org", PANEL_NAME: "panel-b", TZ_NAME: "America/Denver", VOICE: "off",
-  WAKE_WORD: "okay_nabu", BT_PROXY: "on", BLANK_TIMEOUT: "300", KERNEL_FLAVOR: "stable",
+  WAKE_WORD: "okay_nabu", BT_PROXY: "on", MQTT_USER: "u300", KERNEL_FLAVOR: "stable",
   HA_LOGIN_METHOD: "token", HA_TOKEN: null, HA_TOKEN__set: true, MQTT_HOST: "mq.example",
 };
 
@@ -241,7 +243,7 @@ const STORED = {
   ok($("f-voice").checked === false, "VOICE=off: the voice checkbox is not checked");
   ok($("wake-wrap").style.display === "none", "VOICE=off: the wake word is hidden");
   ok($("f-url").value === "https://ha.example.org" && $("f-name").value === "panel-b", "the URL and the panel name show");
-  ok($("f-blank").value === "300", "the blank timeout shows (300)");
+  ok($("f-mqtt-user").value === "u300", "the MQTT user shows (u300)");
   ok($("f-orient").value === "landscape", "no ORIENTATION: landscape shows");
   ok($("f-kernel").value === "stable" && $("f-tz").value === "America/Denver", "the kernel flavor and the time zone show");
   ok($("f-btproxy").value === "on", "BT_PROXY shows");
@@ -251,38 +253,38 @@ const STORED = {
   console.log("== save: only the changed fields and the revision ==");
   p.submit(); await flush();
   ok(same(p.lastSubmit(), { revision: "rev-1", fields: {} }), "no change: the page sends no field, only the revision: " + JSON.stringify(p.lastSubmit()));
-  $("f-blank").value = "600";
+  $("f-mqtt-user").value = "u600";
   p.submit(); await flush();
-  ok(same(p.lastSubmit().fields, { BLANK_TIMEOUT: "600" }), "one changed field: only BLANK_TIMEOUT is sent: " + JSON.stringify(p.lastSubmit().fields));
+  ok(same(p.lastSubmit().fields, { MQTT_USER: "u600" }), "one changed field: only MQTT_USER is sent: " + JSON.stringify(p.lastSubmit().fields));
   $("f-voice").checked = true; $("f-voice").fire("change");
   p.submit(); await flush();
-  ok(same(p.lastSubmit().fields, { BLANK_TIMEOUT: "600", VOICE: "on" }), "the voice switch turned on: VOICE=on is sent too: " + JSON.stringify(p.lastSubmit().fields));
+  ok(same(p.lastSubmit().fields, { MQTT_USER: "u600", VOICE: "on" }), "the voice switch turned on: VOICE=on is sent too: " + JSON.stringify(p.lastSubmit().fields));
   ok($("wake-wrap").style.display === "block", "the wake word shows when the switch is on");
   $("f-voice").checked = false; $("f-voice").fire("change");
   p.submit(); await flush();
-  ok(same(p.lastSubmit().fields, { BLANK_TIMEOUT: "600" }), "the switch back to its stored state: VOICE is not sent");
-  $("f-blank").value = "300";
+  ok(same(p.lastSubmit().fields, { MQTT_USER: "u600" }), "the switch back to its stored state: VOICE is not sent");
+  $("f-mqtt-user").value = "u300";
   p.submit(); await flush();
   ok(same(p.lastSubmit().fields, {}), "a field changed back to the stored value is not sent");
 
   console.log("== the 20 s refresh: only the status, no field changes ==");
-  $("f-blank").value = "450";                       // an edit that the user did not save
-  p.server.state = stateWith(Object.assign({}, STORED, { BLANK_TIMEOUT: "999", VOICE: "on", PANEL_NAME: "other" }), { revision: "rev-1" });
+  $("f-mqtt-user").value = "u450";                       // an edit that the user did not save
+  p.server.state = stateWith(Object.assign({}, STORED, { MQTT_USER: "u999", VOICE: "on", PANEL_NAME: "other" }), { revision: "rev-1" });
   p.server.status = { need_pairing: false, revision: "rev-1", pairing_code: "222222", pairing_code_remaining: 700 };
   const before = p.calls.length;
   p.tick(); await flush();
   const paths = p.calls.slice(before).map(c => c.path);
   ok(same(paths, ["/setup/api/status"]), "the refresh asks only /setup/api/status: " + JSON.stringify(paths));
-  ok($("f-blank").value === "450", "the unsaved edit of the blank timeout stays (450)");
+  ok($("f-mqtt-user").value === "u450", "the unsaved edit of the MQTT user stays (450)");
   ok($("f-voice").checked === false && $("f-name").value === "panel-b", "the other fields keep their values");
   ok($("code-value").textContent === "222222", "the refresh shows the new pairing code");
   ok($("stale").style.display !== "block", "same revision: no reload notice");
   p.server.status = { need_pairing: false, revision: "rev-2", pairing_code: "222222", pairing_code_remaining: 680 };
   p.tick(); await flush();
   ok($("stale").style.display === "block", "a new revision in the refresh shows the reload notice");
-  ok($("f-blank").value === "450" && $("f-voice").checked === false, "the fields still keep their values");
+  ok($("f-mqtt-user").value === "u450" && $("f-voice").checked === false, "the fields still keep their values");
   p.submit(); await flush();
-  ok(same(p.lastSubmit(), { revision: "rev-1", fields: { BLANK_TIMEOUT: "450" } }), "a save still sends the revision of the load (the server refuses it)");
+  ok(same(p.lastSubmit(), { revision: "rev-1", fields: { MQTT_USER: "u450" } }), "a save still sends the revision of the load (the server refuses it)");
 
   console.log("== a 409 reply shows the reload notice and the reload button works ==");
   p.server.submit = { status: 409, body: { stale: true, errors: { _revision: "The settings changed. Reload the page." } } };
@@ -343,21 +345,21 @@ const STORED = {
   ok(p.$("gate").style.display === "block" && p.$("form").style.display !== "block", "need_pairing: the gate shows");
   p.server.state = stateWith(STORED, { loopback: false });
   p.tick(); await flush();
-  ok(p.$("form").style.display === "block" && p.$("f-blank").value === "300", "after the pairing the refresh loads the fields");
-  p.$("f-blank").value = "42";
+  ok(p.$("form").style.display === "block" && p.$("f-mqtt-user").value === "u300", "after the pairing the refresh loads the fields");
+  p.$("f-mqtt-user").value = "u42";
   let k = p.calls.length; p.tick(); await flush();
-  ok(same(p.calls.slice(k).map(c => c.path), ["/setup/api/status"]) && p.$("f-blank").value === "42", "then the refresh asks only the status and keeps the edit");
+  ok(same(p.calls.slice(k).map(c => c.path), ["/setup/api/status"]) && p.$("f-mqtt-user").value === "u42", "then the refresh asks only the status and keeps the edit");
 
-  console.log("== a panel with no kiosk: no page URL, no blank timeout, the first save sends the time zone ==");
+  console.log("== a panel with no kiosk: no page URL, the first save sends the time zone ==");
   const bz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const zones = ["UTC", "America/Denver", "America/New_York", bz];
   p = load({ state: stateWith({}, { kiosk: false, configured: false, revision: "rev-nk", tz_list: zones }), status: {} });
   await flush();
-  ok(p.$("url-card").style.display === "none" && p.$("blank-wrap").style.display === "none", "the page URL card and the blank timeout are hidden");
-  ok(p.$("f-url").disabled && p.$("f-blank").disabled, "their fields are disabled, so a save does not send them");
+  ok(p.$("url-card").style.display === "none", "the page URL card is hidden");
+  ok(p.$("f-url").disabled, "its field is disabled, so a save does not send it");
   ok(p.$("login-wrap").style.display === "none" && p.$("f-token").disabled, "the login method of the browser is hidden and disabled (plugin of tsx-ha)");
   ok(p.$("f-tz").value === bz, "the time zone shows the zone of this browser: " + p.$("f-tz").value);
-  p.$("f-url").value = "https://example.org"; p.$("f-blank").value = "99";
+  p.$("f-url").value = "https://example.org";
   p.submit(); await flush();
   ok(same(p.lastSubmit(), { revision: "rev-nk", fields: { TZ_NAME: bz } }), "an unconfigured save sends TZ_NAME although it did not change: " + JSON.stringify(p.lastSubmit()));
   p = load({ state: stateWith({ TZ_NAME: "America/Denver" }, { kiosk: false, configured: true, tz_list: zones }), status: {} });
@@ -371,6 +373,67 @@ const STORED = {
   p = load({ state: stateWith(STORED, { kiosk: true }), status: {} });
   await flush();
   ok(p.$("url-card").style.display === "block" && !p.$("f-url").disabled && p.$("login-wrap").style.display === "block", "with a kiosk the URL card and the login method show");
+
+
+  console.log("== CSRF: every POST sends the token of the state, a GET sends none ==");
+  p = load({ state: stateWith(STORED, { csrf: "tok-123" }), status: {} });
+  await flush();
+  p.submit(); await flush();
+  const sub = p.calls.filter(c => c.path === "/setup/api/submit").pop();
+  ok(sub && sub.headers["X-TSX-CSRF"] === "tok-123" && sub.headers["Content-Type"] === "application/json", "the save sends X-TSX-CSRF and JSON");
+  ok(p.calls.filter(c => c.method === "GET").every(c => !c.headers["X-TSX-CSRF"]), "no GET sends the token");
+
+  console.log("== the gate: the login with Home Assistant, the pairing code, or neither ==");
+  p = load({ state: { need_pairing: true, need_login: true, login: true, pairing: false, ha_host: "ha.example.org" }, status: {} });
+  await flush();
+  ok(p.$("gate").style.display === "block" && p.$("login-box").style.display === "block", "login: the login button shows");
+  ok(p.$("pair-box").style.display === "none" && p.$("ha-host").textContent === "ha.example.org", "no pairing window: no code field; the host of Home Assistant shows");
+  ok(p.$("login-btn").attrs.href === "/setup/login", "the login button opens /setup/login");
+  p = load({ state: { need_pairing: true, need_login: true, login: false, pairing: true, ha_host: "" }, status: {} });
+  await flush();
+  ok(p.$("login-box").style.display === "none" && p.$("pair-box").style.display === "block", "no Home Assistant URL: only the pairing code");
+  p = load({ state: { need_pairing: true, need_login: true, login: false, pairing: false }, status: {} });
+  await flush();
+  ok(p.$("gate-none").style.display === "block", "neither: the page tells to open Setup on the panel");
+
+  console.log("== the session bar ==");
+  p = load({ state: stateWith(STORED, { loopback: false, session: { kind: "ha", user: "Admin" } }), status: {} });
+  await flush();
+  ok(p.$("session-bar").style.display === "block" && p.$("session-who").textContent === "Logged in as Admin (Home Assistant)", "the user of the session shows");
+  p.$("logout-btn").fire("click"); await flush();
+  ok(p.calls.some(c => c.path === "/setup/api/logout" && c.method === "POST") && p.reloads() === 1, "log out: POST /setup/api/logout, then a reload");
+
+  console.log("== the Panel section: only the controls of the panel, and each change ==");
+  const PANEL = { owner: "kiosk", controls: { screen: { on: true }, backlight: { value: 40 }, blank_timeout: { value: 300 },
+    volume: { value: 55 }, ledbar: { on: true, brightness: 50, color: "#ff8000" } } };
+  p = load({ state: stateWith(STORED, { revision: "rev-1" }), status: {}, panel: PANEL });
+  await flush();
+  ok(p.$("panel-wrap").style.display === "block", "the Panel section shows");
+  ok(p.$("ctl-backlight").style.display === "block" && p.$("p-backlight").value == 40 && p.$("p-backlight-v").textContent == "40", "the brightness shows (40 %)");
+  ok(p.$("ctl-volume").style.display === "block" && p.$("ctl-blank_timeout").style.display === "block", "the volume and the screen-off time show");
+  ok(p.$("ctl-dim_timeout").style.display === "none" && p.$("ctl-lights").style.display === "none" && p.$("ctl-key_leds").style.display === "none", "the controls that the panel lacks are hidden");
+  ok(p.$("p-ledbar-on").checked && p.$("p-ledbar-color").value === "#ff8000", "the LED bar shows on, with its color");
+  const posts = () => p.calls.filter(c => c.path === "/setup/api/panel" && c.method === "POST").map(c => c.body);
+  p.$("p-backlight").value = "70"; p.$("p-backlight").fire("change"); await flush();
+  ok(same(posts().pop(), { control: "backlight", value: 70 }), "the brightness slider sends backlight 70");
+  p.$("p-screen-off").fire("click"); await flush();
+  ok(same(posts().pop(), { control: "screen", value: false }), "Off sends screen false");
+  p.$("p-ledbar-on").checked = false; p.$("p-ledbar-on").fire("change"); await flush();
+  ok(same(posts().pop(), { control: "ledbar", value: { on: false, brightness: 50, color: "#ff8000" } }), "the LED bar switch sends off");
+  p.server.panelPost = { status: 200, body: { ok: true, revision_before: "rev-1", revision: "rev-3" } };
+  p.$("p-blank_timeout").value = "120"; p.$("p-blank_timeout-set").fire("click"); await flush();
+  ok(same(posts().pop(), { control: "blank_timeout", value: 120 }), "Set sends blank_timeout 120");
+  p.server.status = { need_pairing: false, revision: "rev-3" };
+  p.tick(); await flush();
+  ok(p.$("stale").style.display !== "block", "a time saved here moves the revision of the page: no reload notice");
+  p.submit(); await flush();
+  ok(p.lastSubmit().revision === "rev-3", "the next save sends the new revision");
+  p.server.panelPost = { status: 502, body: { error: "the panel did not take the command" } };
+  p.$("p-volume").value = "10"; p.$("p-volume").fire("change"); await flush();
+  ok(p.$("panel-status").textContent === "the panel did not take the command", "an error of the panel shows");
+  p = load({ state: stateWith(STORED), status: {}, panel: { owner: "none", controls: {} } });
+  await flush();
+  ok(p.$("panel-wrap").style.display !== "block", "a panel with no control: no Panel section");
 
   console.log("== " + N + " ok, " + F + " failed ==");
   process.exit(F ? 1 : 0);

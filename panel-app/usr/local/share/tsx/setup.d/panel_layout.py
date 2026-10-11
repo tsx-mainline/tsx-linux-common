@@ -12,6 +12,9 @@ adds three things to the setup page:
     button that makes a new key in the browser. The state API reports only
     that the key is set. The page never gets the stored key. This plugin owns
     the key only when no other plugin of the folder names it.
+  * The field "Home Assistant URL for the login" (the panel.conf key HA_URL
+    of "Log in with Home Assistant", docs/setup.md), with the same rule: the
+    plugin of tsx-ha has the field when it is installed.
   * The API of the editor (all paths need the same authorization as the setup
     page: loopback, or a paired LAN session while the LAN window is open):
 
@@ -116,7 +119,9 @@ def _other_plugin_names(key):
 
 
 _OWN_KEY = not _other_plugin_names("HA_API_KEY")
-SIMPLE_KEYS = ["HA_API_KEY"] if _OWN_KEY else []
+_OWN_URL = not _other_plugin_names("HA_URL")
+SIMPLE_KEYS = (["HA_API_KEY"] if _OWN_KEY else []) + (["HA_URL"] if _OWN_URL else [])
+CLEARABLE_BLANK = {"HA_URL"} if _OWN_URL else set()
 STATE_KEYS = SIMPLE_KEYS
 
 _LINK = """
@@ -141,7 +146,14 @@ _KEY = """
       Open the ESPHome device of this panel and enter this key as the encryption key. Leave the field blank to keep the present key.</div>
     </div>
 """
-HTML = {"details": _LINK + (_KEY if _OWN_KEY else "")}
+_URL = """
+    <div class="card">
+      <label for="f-haurl">Home Assistant URL for the login on this page</label>
+      <input id="f-haurl" name="HA_URL" type="url" placeholder="https://homeassistant.local:8123">
+      <div class="hint">An administrator of this Home Assistant can open this page from the network with no pairing code (Log in with Home Assistant). Only the scheme, the host and the port count.</div>
+    </div>
+"""
+HTML = {"details": _LINK + (_KEY if _OWN_KEY else "") + (_URL if _OWN_URL else "")}
 JS = {}
 if _OWN_KEY:
     JS = {
@@ -162,6 +174,10 @@ if _OWN_KEY:
   });
 """,
     }
+if _OWN_URL:
+    JS["apply"] = JS.get("apply", "") + """
+    $("f-haurl").value = fields.HA_URL || "";
+"""
 
 
 # ---- the layout checker (tsx-layout-check, a Python file with no .py suffix) ----

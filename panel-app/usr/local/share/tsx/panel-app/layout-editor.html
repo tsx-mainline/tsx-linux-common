@@ -89,7 +89,7 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
   </div>
 
   <div id="gate" class="card">
-    <p>Enter the pairing code that the screen of the panel shows.</p>
+    <p>Log in on the <a href="/setup" style="color:inherit">setup page</a> with Home Assistant first, or enter the pairing code that the screen of the panel shows.</p>
     <label for="pair-code">Pairing code</label>
     <input id="pair-code" type="text" inputmode="numeric" maxlength="6" autocomplete="off">
     <div class="row" style="margin-top:14px"><button id="pair-go">Continue</button></div>
@@ -198,11 +198,21 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     rawEdited: false, revertArmed: false
   };
 
+  // The CSRF token of the session: the cookie tsxcsrf (tsx-setupd sets it
+  // with each answer to an authorized client). Every POST sends it.
+  function csrfToken(){
+    try {
+      var m = String(document.cookie || "").match(/(?:^|; )tsxcsrf=([^;]*)/);
+      return m ? decodeURIComponent(m[1]) : "";
+    } catch (e) { return ""; }
+  }
   function api(method, path, body){
+    var h = {};
+    if (method !== "GET") { h["Content-Type"] = "application/json"; h["X-TSX-CSRF"] = csrfToken(); }
     return fetch(path, {
       method: method,
-      headers: body ? {"Content-Type":"application/json"} : {},
-      body: body ? JSON.stringify(body) : undefined,
+      headers: h,
+      body: method !== "GET" ? JSON.stringify(body || {}) : undefined,
       credentials: "same-origin"
     }).then(function(r){ return r.json().then(function(j){ return {status:r.status, body:j}; }); });
   }

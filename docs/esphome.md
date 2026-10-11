@@ -59,7 +59,7 @@ The kiosk panels (this device) and the panel app ([panel-app.md](panel-app.md)) 
 
 The Backlight number is the percent of the brightness slider on every family, with the scale of the overlay (`tsx-level.h`): a square for a backlight with more than 64 steps. `tsx-panelctl` maps it to the level of `tsx-idled` (`brightness-pct`, `get backlight-pct`). Before 0.3.4 the number of a kiosk panel had the raw backlight steps.
 
-A setting that Home Assistant changes goes through `tsx-config set` and `tsx-config apply`, so it stays after a reboot. The live states act at once, as the overlay does. The secrets and the settings of the system (the SSH key, the root password, the update source, the reinstall) are not entities. They stay on the setup page.
+A setting that Home Assistant changes goes through `tsx-config set` and `tsx-config apply`, so it stays after a reboot. The live states act at once, as the overlay does. The secrets and the settings of the system (the SSH key, the root password, the update source, the reinstall) are not entities. They stay on the setup page, behind its login ([setup.md](setup.md)).
 
 ## Entity keys
 

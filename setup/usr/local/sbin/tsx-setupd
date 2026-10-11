@@ -4,22 +4,50 @@ of the board repository).
 
 It always runs in the default runlevel, as the UNPRIVILEGED "tsx-setup"
 system user, not as root. tsx-mqtt and tsx-esphome differ: this daemon
-parses HTTP from the LAN before any pairing has happened, so it gets no
-privilege at all. It serves a small, dark, touch-friendly page:
+parses HTTP from the LAN before any login has happened, so it gets no
+privilege at all. It serves a small, dark, touch-friendly page (docs/setup.md
+of tsx-linux-common):
 
   * On the panel itself, over loopback (http://127.0.0.1:PORT/setup).
     kiosk-session loads this page instead of Home Assistant when no
     KIOSK_URL is configured, or for one ~15 minute window after
     `tsx-config setup` or the overlay "Setup" entry. Loopback never needs a
-    pairing code.
-  * From a laptop or phone on the LAN (http://<panel-ip>:PORT/setup). This
-    works only while the panel is unconfigured or during that same ~15
-    minute window (lan_allowed() below). It also needs the pairing code that
-    the screen of the panel shows. The daemon sends the code to no LAN
-    client any other way. A correct code pairs that browser (a session
-    cookie) for the rest of the window. Outside that window, the process
-    does not even listen on a LAN-reachable address (ServerManager below
-    rebinds to loopback only). It does not just refuse at the HTTP layer.
+    login.
+  * From a laptop or phone on the LAN (http://<panel-ip>:PORT/setup), with
+    one of two logins:
+      - "Log in with Home Assistant" (login_available() below): when the
+        panel knows the URL of its Home Assistant (panel.conf HA_URL, else
+        the origin of KIOSK_URL), the page is always on. A visitor logs in
+        at that Home Assistant (its OAuth / IndieAuth flow, client_id = the
+        origin of this page). tsx-setupd exchanges the code for tokens, asks
+        the websocket API of Home Assistant if the user is an
+        administrator, revokes the refresh token at once and keeps no token.
+        Only an administrator gets a session. setup_ha_login.py (in
+        ../lib/tsx) has the Home Assistant side.
+      - The pairing code (pairing_open() below): while the panel is
+        unconfigured or during that same ~15 minute window. It needs the
+        code that the screen of the panel shows. The daemon sends the code
+        to no LAN client any other way. A correct code gives a session for
+        the rest of the window.
+    When neither is possible, the process does not even listen on a
+    LAN-reachable address (ServerManager below rebinds to loopback only).
+    It does not just refuse at the HTTP layer.
+
+Sessions (the Sessions class): the cookie "tsxsetup" (HttpOnly,
+SameSite=Strict, Path=/setup) holds a random token. The server keeps the
+list of sessions in memory, with an expiry (TSX_SETUP_SESSION seconds after
+the login, TSX_SETUP_IDLE seconds after the last request, the end of the
+window for a pairing session). A logout or a revoke removes the session from
+the list at once. A restart of tsx-setupd ends all sessions.
+
+CSRF: every POST must have the Content-Type application/json, an Origin
+header (when the browser sends one) of this host, and the header
+X-TSX-CSRF with the CSRF token of the session (loopback: the token of this
+process). The state API and the cookie "tsxcsrf" (not HttpOnly, so the page
+script can read it) give the token to the page. /setup/api/pair is the one
+POST without a session: it has the Content-Type and Origin checks and its
+rate limit. The login start and the return from Home Assistant have their
+own rate limits per address.
 
 The page has the fields of the base system: the page URL, the panel name,
 the time zone, the display, the root login and the updates. Other packages add
@@ -76,7 +104,7 @@ the mode is "on" when /etc/kiosk.conf exists. With the mode "off":
   * The screen of the panel is not a browser. So the pairing code goes to
     the native app in the file screen.json (see write_screen below).
 
-screen.json: while lan_allowed() is true, this process writes the file
+screen.json: while pairing_open() is true, this process writes the file
 STATE_DIR/screen.json (mode 600, one JSON object, atomic: a temporary file
 and a rename) and writes it again at least every 5 s (every REFRESH_S). It
 removes the file when the LAN window closes and when the process ends:
@@ -90,13 +118,29 @@ integer seconds of /proc/uptime at the write. A native app shows the text
 only while the file exists and its uptime is less than 30 s old. Loopback
 clients get the code from the state API too, as in the kiosk mode.
 
+A save (handle_submit) restarts the kiosk only when the setup page is on the
+screen (a loopback request or the open window) or when the save changed a
+key that the kiosk reads at its start (KIOSK_URL, HA_LOGIN_METHOD,
+HA_TOKEN). A remote administrator who changes MQTT does not reload the
+screen of the panel.
+
+The Panel section of the page has live controls (/setup/api/panel): the
+screen, the backlight, the volume, the screen-off and dim times, and the
+LED bar, the key LEDs or the lights of the panel app. It uses the backends
+of the overlay and of the Home Assistant entities: tsx-panelctl (through the
+helper commands "panel-state" and "panel") for the live values, and
+tsx-config (set and apply) for the times. A control shows only when the
+panel has the part (`tsx-panelctl state`).
+
 Env overrides for host tests (tests/test-setup.sh): TSX_SETUP_PORT,
 TSX_SETUP_CONF, TSX_HW_CONF, TSX_RUN_DIR, TSX_CONFIG_BIN, TSX_SETUP_HELPER_REQ,
 TSX_SETUP_HELPER_RESP, TSX_ZONEINFO_DIR, TSX_SETUP_NO_ZEROCONF=1,
 TSX_SETUP_PLUGIN_DIR (default /usr/local/share/tsx/setup.d), TSX_KIOSK_CONF,
 TSX_SETUP_KIOSK (replaces the setup.conf key), TSX_SETUP_STATE_DIR (default
-/run/tsx-setup).
+/run/tsx-setup), TSX_SETUP_SESSION and TSX_SETUP_IDLE (replace the setup.conf
+keys; tests/test-setup-login.sh).
 """
+import hmac
 import importlib.util
 import json
 import os
@@ -111,6 +155,11 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# The Home Assistant side of the login: ../lib/tsx/setup_ha_login.py next to
+# the real file of this script (the same layout in the repository).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib", "tsx"))
+import setup_ha_login  # noqa: E402
 
 TSX_CONFIG_BIN = os.environ.get("TSX_CONFIG_BIN", "tsx-config")
 ZONEINFO_DIR = os.environ.get("TSX_ZONEINFO_DIR", "/usr/share/zoneinfo")
@@ -151,6 +200,20 @@ try:
     WINDOW = int(_conf.get("TSX_SETUP_WINDOW") or "900")
 except ValueError:
     WINDOW = 900
+HA_LOGIN = (_conf.get("TSX_SETUP_HA_LOGIN") or "on").strip().lower() != "off"
+
+
+def _conf_seconds(key, default, low, high):
+    """A time of setup.conf (the environment wins: host tests)."""
+    try:
+        v = int(os.environ.get(key) or _conf.get(key) or default)
+    except ValueError:
+        v = default
+    return max(low, min(high, v))
+
+
+SESSION_S = _conf_seconds("TSX_SETUP_SESSION", 28800, 5, 7 * 86400)
+IDLE_S = _conf_seconds("TSX_SETUP_IDLE", 3600, 5, 7 * 86400)
 KIOSK_MODE = (os.environ.get("TSX_SETUP_KIOSK") or _conf.get("TSX_SETUP_KIOSK") or "auto").strip().lower()
 if KIOSK_MODE not in ("auto", "on", "off"):
     KIOSK_MODE = "auto"
@@ -346,7 +409,7 @@ def tcfg_apply():
 # anyway. So the cache only delays the close of the LAN listener of a
 # freshly-configured panel by a few seconds. It does not delay the load of HA.
 _CONFIGURED_CACHE_S = 4.0
-_configured_cache = {"at": float("-inf"), "val": False, "rev": None}
+_configured_cache = {"at": float("-inf"), "val": False, "rev": None, "ha": None}
 _configured_cache_lock = threading.Lock()
 
 
@@ -361,6 +424,19 @@ def has_url(shown):
     return bool(v and v.strip())
 
 
+def ha_url_from(shown):
+    """The URL of the Home Assistant of this panel, for the login: HA_URL of
+    panel.conf, else the origin of the page URL of the kiosk (KIOSK_URL of
+    panel.conf, else of /etc/kiosk.conf). None when the panel has neither.
+    Only the origin counts ("https://ha.example.org:8123")."""
+    for v in (shown.get("HA_URL"), shown.get("KIOSK_URL"),
+              load_conf(KIOSK_CONF_PATH).get("KIOSK_URL") if kiosk_enabled() else None):
+        url = setup_ha_login.normalize_ha_url(v) if v and v.strip() else None
+        if url:
+            return url
+    return None
+
+
 def is_configured_from(shown):
     """Is the panel configured? shown is the output of tcfg_show. With a
     kiosk, it needs a page URL. With no kiosk, panel.conf needs at least one
@@ -370,7 +446,9 @@ def is_configured_from(shown):
     return any(re.fullmatch(r"[A-Z][A-Z0-9_]*", k) for k in shown)
 
 
-def is_configured():
+def _refresh_configured():
+    """Read panel.conf again when its revision changed (at most every
+    _CONFIGURED_CACHE_S): is the panel configured, and the Home Assistant URL."""
     # tsx-config show takes seconds on a slow panel. So the check reads the
     # values again only when the revision of panel.conf (one sha256 in the
     # helper) has changed since the last read.
@@ -379,10 +457,21 @@ def is_configured():
         if now - _configured_cache["at"] > _CONFIGURED_CACHE_S:
             rev = tcfg_rev()
             if rev is None or rev != _configured_cache.get("rev"):
-                _configured_cache["val"] = is_configured_from(tcfg_show())
+                shown = tcfg_show()
+                _configured_cache["val"] = is_configured_from(shown)
+                _configured_cache["ha"] = ha_url_from(shown)
                 _configured_cache["rev"] = rev
             _configured_cache["at"] = now
-        return _configured_cache["val"]
+        return _configured_cache["val"], _configured_cache["ha"]
+
+
+def is_configured():
+    return _refresh_configured()[0]
+
+
+def ha_url():
+    """The Home Assistant URL for the login (ha_url_from), or None."""
+    return _refresh_configured()[1]
 
 
 def _invalidate_configured_cache():
@@ -427,8 +516,21 @@ def clear_setup_open():
     helper_call("clear-setup-open")
 
 
-def lan_allowed():
+def pairing_open():
+    """The pairing code works: the LAN is allowed, and the panel is not
+    configured or the setup window is open."""
     return LAN_ON and (not is_configured() or setup_open_fresh())
+
+
+def login_available():
+    """"Log in with Home Assistant" works: the LAN is allowed, the login is on
+    (TSX_SETUP_HA_LOGIN) and the panel knows the URL of its Home Assistant."""
+    return LAN_ON and HA_LOGIN and ha_url() is not None
+
+
+def lan_allowed():
+    """The LAN can reach the page: with the pairing code or with the login."""
+    return pairing_open() or login_available()
 
 
 def restart_kiosk():
@@ -478,7 +580,6 @@ class Pairing:
         self.lock = threading.Lock()
         self.code = None
         self.code_at = 0.0
-        self.sessions = {}   # token -> expires_at (time.monotonic())
         self.attempts = {}   # ip -> [count, first_attempt_at]
 
     def current_code(self):
@@ -500,26 +601,132 @@ class Pairing:
             rec[1] = now
             return rec[0] <= 10   # 10 tries per window per source address
 
-    def check_and_pair(self, code):
+    def check(self, code):
+        """True for the current code while it is valid."""
         with self.lock:
             now = time.monotonic()
             if self.code is None or now - self.code_at > WINDOW:
-                return None
-            if not code or code != self.code:
-                return None
-            token = secrets.token_urlsafe(24)
-            self.sessions = {t: e for t, e in self.sessions.items() if e > now}
-            self.sessions[token] = now + WINDOW
-            return token
+                return False
+            return bool(code) and hmac.compare_digest(str(code), self.code)
 
-    def session_valid(self, token):
-        if not token:
-            return False
+
+# ---- sessions: the server-side list (a logout or a revoke ends one at once) ----
+
+class Sessions:
+    """The sessions of the LAN clients. kind "ha": a login with Home
+    Assistant (an administrator), valid SESSION_S seconds after the login and
+    IDLE_S seconds after the last request. kind "pair": the pairing code,
+    valid for WINDOW seconds and only while pairing_open(). Each session has
+    a public id (for the list and a revoke) and its own CSRF token."""
+    MAX = 32
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.items = {}   # token -> record
+
+    def new(self, kind, ip, user="", user_id=""):
+        now = time.monotonic()
+        token = secrets.token_urlsafe(32)
+        rec = {"id": secrets.token_hex(8), "kind": kind, "user": user, "user_id": user_id, "ip": ip,
+               "created": now, "last": now, "expires": now + (SESSION_S if kind == "ha" else WINDOW),
+               "csrf": secrets.token_urlsafe(24)}
         with self.lock:
-            exp = self.sessions.get(token)
-            return exp is not None and exp > time.monotonic()
+            self._prune(now)
+            while len(self.items) >= self.MAX:
+                oldest = min(self.items, key=lambda t: self.items[t]["last"])
+                del self.items[oldest]
+            self.items[token] = rec
+        return token, rec
+
+    def _prune(self, now):
+        for t in [t for t, r in self.items.items() if not self._alive(r, now)]:
+            del self.items[t]
+
+    @staticmethod
+    def _alive(rec, now):
+        if now > rec["expires"]:
+            return False
+        return rec["kind"] != "ha" or now - rec["last"] <= IDLE_S
+
+    def get(self, token, touch=True):
+        """The record of a valid session, or None."""
+        if not token:
+            return None
+        with self.lock:
+            rec = self.items.get(token)
+            now = time.monotonic()
+            if rec is None:
+                return None
+            if not self._alive(rec, now):
+                del self.items[token]
+                return None
+            if touch:
+                rec["last"] = now
+            return dict(rec)
+
+    def drop(self, token):
+        with self.lock:
+            return self.items.pop(token, None) is not None
+
+    def drop_id(self, sid):
+        with self.lock:
+            for t, r in list(self.items.items()):
+                if hmac.compare_digest(r["id"], str(sid)):
+                    del self.items[t]
+                    return True
+        return False
+
+    def drop_all(self):
+        with self.lock:
+            n = len(self.items)
+            self.items.clear()
+            return n
+
+    def listing(self, current_token=None):
+        now = time.monotonic()
+        with self.lock:
+            self._prune(now)
+            return [{"id": r["id"], "kind": r["kind"], "user": r["user"], "ip": r["ip"],
+                     "age": int(now - r["created"]), "idle": int(now - r["last"]),
+                     "expires_in": int(r["expires"] - now), "current": t == current_token}
+                    for t, r in sorted(self.items.items(), key=lambda it: it[1]["created"])]
 
 
+class RateLimit:
+    """At most `limit` events per `window` seconds for one key."""
+
+    def __init__(self, limit, window):
+        self.limit, self.window = limit, window
+        self.lock = threading.Lock()
+        self.events = {}
+
+    def allow(self, key):
+        with self.lock:
+            now = time.monotonic()
+            if len(self.events) > 1024:
+                self.events = {k: v for k, v in self.events.items() if v and now - v[-1] < self.window}
+            ev = [t for t in self.events.get(key, []) if now - t < self.window]
+            if len(ev) >= self.limit:
+                self.events[key] = ev
+                return False
+            ev.append(now)
+            self.events[key] = ev
+            return True
+
+
+SESSIONS = Sessions()
+# The login: the starts per address and for all, the returns from Home
+# Assistant per address.
+LOGIN_START_IP = RateLimit(20, 600)
+LOGIN_START_ALL = RateLimit(60, 600)
+LOGIN_RETURN_IP = RateLimit(30, 600)
+# The logins that wait for the return from Home Assistant: state -> record
+PENDING = {}
+PENDING_LOCK = threading.Lock()
+PENDING_MAX = 64
+PENDING_S = 600
+# The CSRF token of the loopback clients (the kiosk browser on the panel)
+LOOPBACK_CSRF = secrets.token_urlsafe(24)
 PAIRING = Pairing()
 
 # Fields that tsx-config itself owns. The page sends a field only when the
@@ -569,7 +776,16 @@ class _Ctx:
 
     @staticmethod
     def lan_allowed():
+        """The LAN can reach the page (the pairing window or the login)."""
         return lan_allowed()
+
+    @staticmethod
+    def pairing_open():
+        return pairing_open()
+
+    @staticmethod
+    def login_available():
+        return login_available()
 
 
 def load_plugins(path=None):
@@ -648,10 +864,19 @@ STALE_MESSAGE = ("The settings of the panel changed after this page loaded. Noth
                  "Reload the page, then make your changes again.")
 
 
-def handle_submit(fields, revision=None):
+# The keys that the kiosk reads only at its start: a save that changes one
+# restarts the kiosk, also from a remote session.
+KIOSK_START_KEYS = {"KIOSK_URL", "HA_LOGIN_METHOD", "HA_TOKEN"}
+
+
+def handle_submit(fields, revision=None, on_screen=True):
     """Save the fields that the page sent: only the fields that the user
     changed. revision is the revision of panel.conf that the page loaded.
-    Returns (HTTP status, JSON object).
+    on_screen: the setup page is on the screen of the panel (a loopback
+    request, a pairing session or the open window). Then the save closes the
+    window and restarts the kiosk, as before. A save of a remote session
+    (the login with Home Assistant) restarts the kiosk only when a key of
+    KIOSK_START_KEYS changed. Returns (HTTP status, JSON object).
 
     If the page sends a field and panel.conf changed after that revision,
     nothing is written (409). A value that is already stored is not written
@@ -766,13 +991,232 @@ def handle_submit(fields, revision=None):
     # Also a save with no change closes the window: the user is done, and
     # the kiosk loads the page again.
     _invalidate_configured_cache()
-    clear_setup_open()
-    if kiosk:
+    restarted = False
+    if on_screen:
+        clear_setup_open()
+    if kiosk and (on_screen or KIOSK_START_KEYS & set(changed)):
         restart_kiosk()
-    return 200, {"ok": True, "changed": changed, "applied": bool(changed)}
+        restarted = True
+    return 200, {"ok": True, "changed": changed, "applied": bool(changed), "kiosk_restarted": restarted}
+
+
+# ---- the Panel section: live controls (tsx-panelctl and tsx-config) -------
+
+def _int(v, low, high):
+    """An int (not a bool) from low to high, else None."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != int(v):
+        return None
+    v = int(v)
+    return v if low <= v <= high else None
+
+
+def _first_int(text):
+    try:
+        return int(str(text).split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+_COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+def _hex_color(r, g, b):
+    return "#%02x%02x%02x" % (max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
+
+
+def panel_state():
+    """The controls that this panel has, with their values ({"owner",
+    "controls"}), from `tsx-panelctl state` (helper "panel-state"). Returns
+    (object, None) or (None, error text)."""
+    ok, text = helper_call("panel-state", HELPER_TIMEOUT)
+    if not ok:
+        return None, text or "could not read the panel"
+    vals = {}
+    for line in text.replace("\x01", "\n").splitlines():
+        k, _, v = line.partition(" ")
+        if k:
+            vals[k] = v.strip()
+    c = {}
+    if vals.get("screen") in ("on", "off"):
+        c["screen"] = {"on": vals["screen"] == "on"}
+    n = _first_int(vals.get("backlight-pct"))
+    if n is not None and 1 <= n <= 100:
+        c["backlight"] = {"value": n}
+    n = _first_int(vals.get("blank-timeout"))
+    if n is not None:
+        c["blank_timeout"] = {"value": n}
+    n = _first_int(vals.get("dim-timeout"))
+    if n is not None:
+        c["dim_timeout"] = {"value": n}
+    n = _first_int(vals.get("dim-level"))
+    if n is not None:
+        c["dim_level"] = {"value": n}
+    n = _first_int(vals.get("volume"))
+    if n is not None:
+        c["volume"] = {"value": n}
+    if "ledbar" in vals:
+        rgb = [_first_int(x) or 0 for x in (vals["ledbar"].split() + ["0", "0", "0"])[:3]]
+        top = max(rgb)
+        c["ledbar"] = {"on": top > 0, "brightness": max(1, top),
+                       "color": _hex_color(*[round(x * 255 / top) if top else 255 for x in rgb])}
+    if "keypad-led" in vals:
+        n = _first_int(vals["keypad-led"]) or 0
+        c["key_leds"] = {"on": n > 0, "level": max(1, min(255, n))}
+    if "lights" in vals:
+        w = vals["lights"].split()
+        if len(w) == 5 and w[0] in ("on", "off"):
+            nums = [_first_int(x) or 0 for x in w[1:]]
+            c["lights"] = {"on": w[0] == "on", "brightness": max(1, min(100, nums[0])), "color": _hex_color(*nums[1:])}
+    return {"owner": vals.get("owner", "none"), "controls": c}, None
+
+
+def _panel_send(words):
+    ok, text = helper_call("panel " + words, HELPER_TIMEOUT)
+    return (200, {"ok": True}) if ok else (502, {"error": text or "the panel did not take the command"})
+
+
+def _panel_setting(key, val):
+    """A time of the screen: panel.conf through tsx-config (set and apply),
+    the same keys that the Home Assistant numbers write. The answer has the
+    revision of panel.conf before and after, so that the page can keep its
+    form."""
+    if not tcfg_validate(key, str(val)):
+        return 400, {"error": "this panel does not take %s=%s" % (key, val)}
+    before = tcfg_rev()
+    ok, err = tcfg_set(key, str(val))
+    if not ok:
+        return 400, {"error": err or "could not save %s" % key}
+    ok, err = tcfg_apply()
+    if not ok:
+        return 500, {"error": err or "tsx-config apply failed"}
+    _invalidate_configured_cache()
+    return 200, {"ok": True, "revision_before": before, "revision": tcfg_rev()}
+
+
+def panel_set(control, value):
+    """One change of a live control. Returns (HTTP status, JSON object)."""
+    if control == "screen" and isinstance(value, bool):
+        return _panel_send("blank off" if value else "blank on")
+    if control == "backlight" and _int(value, 1, 100) is not None:
+        return _panel_send("brightness-pct %d" % _int(value, 1, 100))
+    if control == "volume" and _int(value, 0, 100) is not None:
+        return _panel_send("volume %d" % _int(value, 0, 100))
+    if control == "blank_timeout" and _int(value, 0, 86400) is not None:
+        return _panel_setting("BLANK_TIMEOUT", _int(value, 0, 86400))
+    if control == "dim_timeout" and _int(value, 0, 86400) is not None:
+        return _panel_setting("DIM_TIMEOUT", _int(value, 0, 86400))
+    if control == "dim_level" and _int(value, 1, 100) is not None:
+        return _panel_setting("DIM_LEVEL", _int(value, 1, 100))
+    if control in ("ledbar", "lights") and isinstance(value, dict) and isinstance(value.get("on"), bool):
+        if not value["on"]:
+            return _panel_send("%s off" % control)
+        bri = _int(value.get("brightness", 100), 1, 100)
+        color = value.get("color", "#ffffff")
+        if bri is None or not isinstance(color, str) or not _COLOR_RE.fullmatch(color):
+            return 400, {"error": "the light needs a brightness from 1 to 100 and a color #rrggbb"}
+        r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+        if control == "lights":
+            return _panel_send("lights set %d %d %d %d" % (bri, r, g, b))
+        # the LED bar takes R G B from 0 to 100: the color at the brightness
+        return _panel_send("ledbar set %d %d %d" % tuple(round(x * bri / 255) for x in (r, g, b)))
+    if control == "key_leds" and isinstance(value, dict) and isinstance(value.get("on"), bool):
+        if not value["on"]:
+            return _panel_send("keypad led off")
+        level = _int(value.get("level", 255), 1, 255)
+        if level is None:
+            return 400, {"error": "the key LEDs need a level from 1 to 255"}
+        return _panel_send("keypad led %d" % level)
+    return 400, {"error": "unknown control or a value out of range"}
+
+
+# ---- "Log in with Home Assistant" -----------------------------------------
+
+_HOST_RE = re.compile(r"(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?")
+
+
+def _pending_put(state, rec):
+    with PENDING_LOCK:
+        now = time.monotonic()
+        for k in [k for k, r in PENDING.items() if now - r["created"] > PENDING_S]:
+            del PENDING[k]
+        while len(PENDING) >= PENDING_MAX:
+            del PENDING[min(PENDING, key=lambda k: PENDING[k]["created"])]
+        PENDING[state] = rec
+
+
+def _pending_take(state):
+    with PENDING_LOCK:
+        rec = PENDING.pop(state, None) if isinstance(state, str) else None
+    if rec is None or time.monotonic() - rec["created"] > PENDING_S:
+        return None
+    return rec
+
+
+def ha_login_finish(rec, code):
+    """The steps on the panel after the return from Home Assistant: the code
+    for tokens, the user, the revoke. Returns (user dict, None) or (None,
+    error text). No token stays in this process."""
+    ha = rec["ha"]
+    try:
+        tokens = setup_ha_login.exchange_code(ha, code, rec["client_id"])
+    except setup_ha_login.HaError as e:
+        return None, str(e)
+    try:
+        user = setup_ha_login.current_user(ha, tokens["access_token"])
+    except setup_ha_login.HaError as e:
+        user, err = None, str(e)
+    else:
+        err = None
+    finally:
+        revoked = setup_ha_login.revoke(ha, tokens.get("refresh_token"))
+        if tokens.get("refresh_token") and not revoked:
+            sys.stderr.write("tsx-setupd: login: Home Assistant did not take the revoke of the refresh token\n")
+        tokens.clear()
+    return user, err
+
+
+LOGIN_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+@@REFRESH@@<title>Panel setup</title>
+<style>
+  :root { --bg:#0b0e12; --fg:#e8ecf1; --muted:#8b96a3; --accent:#4fb2e8; }
+  body { background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif;
+         display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
+  .box { max-width:640px; padding:32px; text-align:center; }
+  h1 { font-size:1.4rem; }
+  p { color:var(--muted); line-height:1.5; }
+  a { color:var(--accent); }
+</style></head>
+<body><div class="box">
+  <h1>@@TITLE@@</h1>
+  <p>@@TEXT@@</p>
+  <p><a href="/setup">Open the setup page</a></p>
+</div>@@SCRIPT@@</body></html>
+"""
+
+
+def login_page(title, text, go=False):
+    """A small page for the steps of the login. go=True opens the setup page
+    at once: a navigation that starts on this page sends the session cookie
+    (SameSite=Strict), unlike the redirect chain that started at Home
+    Assistant."""
+    esc = lambda t: t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    out = LOGIN_PAGE.replace("@@TITLE@@", esc(title)).replace("@@TEXT@@", esc(text))
+    out = out.replace("@@REFRESH@@", '<meta http-equiv="refresh" content="0;url=/setup">\n' if go else "")
+    return out.replace("@@SCRIPT@@", '<script>location.replace("/setup");</script>' if go else "")
 
 
 # ---- HTTP -----------------------------------------------------------------
+
+def _cookie(name, value, path="/setup", max_age=None, http_only=True, same_site="Strict"):
+    parts = ["%s=%s" % (name, value), "Path=%s" % path, "SameSite=%s" % same_site]
+    if http_only:
+        parts.append("HttpOnly")
+    if max_age is not None:
+        parts.append("Max-Age=%d" % max_age)
+    return "; ".join(parts)
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "tsx-setupd"
@@ -782,45 +1226,92 @@ class Handler(BaseHTTPRequestHandler):
         ip = self.client_address[0]
         return ip in ("127.0.0.1", "::1") or ip.startswith("127.")
 
-    def _session_token(self):
+    def _cookie_value(self, name):
         cookie = self.headers.get("Cookie", "") or ""
         for part in cookie.split(";"):
             part = part.strip()
-            if part.startswith("tsxsetup="):
-                return part[len("tsxsetup="):]
+            if part.startswith(name + "="):
+                return part[len(name) + 1:]
         return None
+
+    def _session_token(self):
+        return self._cookie_value("tsxsetup")
+
+    def _session(self):
+        """The session record of a LAN client, or None. A pairing session
+        counts only while the pairing window is open."""
+        if not hasattr(self, "_sess_cache"):
+            rec = SESSIONS.get(self._session_token())
+            if rec is not None and rec["kind"] == "pair" and not pairing_open():
+                rec = None
+            if rec is not None and rec["kind"] == "ha" and not login_available():
+                rec = None
+            self._sess_cache = rec
+        return self._sess_cache
 
     def _authorized(self):
         if self._loopback():
             return True
         if not lan_allowed():
             return False
-        return PAIRING.session_valid(self._session_token())
+        return self._session() is not None
+
+    def _on_screen(self):
+        """The request comes from the setup page on the screen, or from a
+        pairing session: a save closes the window and restarts the kiosk."""
+        s = None if self._loopback() else self._session()
+        return self._loopback() or (s is not None and s["kind"] == "pair") or setup_open_fresh()
+
+    def _csrf_token(self):
+        """The CSRF token of this client (None without a session)."""
+        if self._loopback():
+            return LOOPBACK_CSRF
+        s = self._session() if lan_allowed() else None
+        return s["csrf"] if s else None
+
+    def _extra_cookies(self):
+        """The cookie tsxcsrf for an authorized client that does not have it yet."""
+        tok = self._csrf_token()
+        if tok and self._cookie_value("tsxcsrf") != tok:
+            return [_cookie("tsxcsrf", tok, http_only=False, max_age=SESSION_S)]
+        return []
+
+    def _send(self, code, ctype, body, cookies=()):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        for c in cookies:
+            self.send_header("Set-Cookie", c)
+        self.end_headers()
+        self.wfile.write(body)
 
     def _send_json(self, code, obj, set_cookie=None):
-        body = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        if set_cookie:
-            self.send_header("Set-Cookie", set_cookie)
-        self.end_headers()
-        self.wfile.write(body)
+        cookies = list(set_cookie) if isinstance(set_cookie, (list, tuple)) else ([set_cookie] if set_cookie else [])
+        self._send(code, "application/json", json.dumps(obj).encode(), cookies + self._extra_cookies())
 
-    def _send_html(self, code, html):
-        body = html.encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
+    def _send_html(self, code, html, cookies=()):
+        self._send(code, "text/html; charset=utf-8", html.encode(), list(cookies) + self._extra_cookies())
+
+    def _redirect(self, location, cookies=()):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        for c in cookies:
+            self.send_header("Set-Cookie", c)
         self.end_headers()
-        self.wfile.write(body)
 
     def log_message(self, fmt, *args):
-        # Never log the request body (POST payloads can carry secrets).
-        # Log only the request line itself, like the default logger.
-        sys.stderr.write("tsx-setupd: %s %s\n" % (self.address_string(), fmt % args))
+        # Never log the request body (POST payloads can carry secrets), and
+        # never the query of the return from Home Assistant (the code).
+        msg = fmt % args
+        msg = re.sub(r"(/setup/auth/callback)\?\S*", r"\1?...", msg)
+        sys.stderr.write("tsx-setupd: %s %s\n" % (self.address_string(), msg))
 
     def _read_json_body(self):
         try:
@@ -840,20 +1331,54 @@ class Handler(BaseHTTPRequestHandler):
             return None, 400
         return data, 200
 
+    def _post_checks(self, need_token):
+        """The CSRF checks of a POST. Returns None when the request may go
+        on, else (status, message)."""
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return 415, "the request must be JSON (Content-Type application/json)"
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host") or ""
+        if origin is not None and origin.lower() != ("http://" + host).lower():
+            return 403, "the request comes from another site"
+        site = self.headers.get("Sec-Fetch-Site")
+        if site is not None and site not in ("same-origin", "none"):
+            return 403, "the request comes from another site"
+        if need_token:
+            want = self._csrf_token()
+            got = self.headers.get("X-TSX-CSRF") or ""
+            if not want or not hmac.compare_digest(got, want):
+                return 403, "the CSRF token is missing or wrong. Reload the page."
+        return None
+
     # ---- routes ----
     def do_GET(self):
-        path = urllib.parse.urlsplit(self.path).path
+        self.__dict__.pop("_sess_cache", None)   # one session lookup per request
+        parts = urllib.parse.urlsplit(self.path)
+        path = parts.path
         if path in ("/setup", "/setup/"):
             if not self._loopback() and not lan_allowed():
                 self._send_html(403, PAGE_UNAVAILABLE)
                 return
             self._send_html(200, PAGE if kiosk_enabled() else PAGE_NO_KIOSK)
             return
+        if path == "/setup/login":
+            self._login_start()
+            return
+        if path == "/setup/auth/callback":
+            self._login_callback(urllib.parse.parse_qs(parts.query))
+            return
         if path == "/setup/api/state":
             self._api_state()
             return
         if path == "/setup/api/status":
             self._api_status()
+            return
+        if path == "/setup/api/panel":
+            self._api_panel_get()
+            return
+        if path == "/setup/api/sessions":
+            self._api_sessions()
             return
         for p in PLUGINS:
             fn = getattr(p, "GET_ROUTES", {}).get(path)
@@ -863,12 +1388,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
+        self.__dict__.pop("_sess_cache", None)
         path = urllib.parse.urlsplit(self.path).path
         routes = {}
         for p in PLUGINS:
             routes.update(getattr(p, "POST_ROUTES", {}))
-        if path not in ("/setup/api/pair", "/setup/api/submit", "/setup/api/brightness-learn-reset") and path not in routes:
+        own = ("/setup/api/pair", "/setup/api/submit", "/setup/api/brightness-learn-reset", "/setup/api/panel",
+               "/setup/api/logout", "/setup/api/sessions/revoke")
+        if path not in own and path not in routes:
             self.send_error(404)
+            return
+        # /setup/api/pair comes before a session: it has no CSRF token
+        bad = self._post_checks(need_token=path != "/setup/api/pair")
+        if bad is not None:
+            self._send_json(bad[0], {"error": bad[1]})
             return
         data, code = self._read_json_body()
         if data is None:
@@ -880,8 +1413,21 @@ class Handler(BaseHTTPRequestHandler):
             self._api_submit(data)
         elif path == "/setup/api/brightness-learn-reset":
             self._api_learn_reset()
+        elif path == "/setup/api/panel":
+            self._api_panel_post(data)
+        elif path == "/setup/api/logout":
+            self._api_logout()
+        elif path == "/setup/api/sessions/revoke":
+            self._api_sessions_revoke(data)
         else:
             routes[path](self, data)
+
+    def _gate_info(self):
+        """What a LAN client without a session can do."""
+        url = ha_url() if login_available() else None
+        return {"need_pairing": True, "need_login": True, "window_seconds": WINDOW,
+                "login": url is not None, "pairing": pairing_open(),
+                "ha_host": urllib.parse.urlsplit(url).netloc if url else ""}
 
     def _api_state(self):
         loop = self._loopback()
@@ -889,7 +1435,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(403, {"error": "setup is not reachable over the network right now"})
             return
         if not self._authorized():
-            self._send_json(200, {"need_pairing": True, "window_seconds": WINDOW})
+            self._send_json(200, self._gate_info())
             return
         shown, rev = tcfg_show_rev()
         kiosk = kiosk_enabled()
@@ -904,6 +1450,7 @@ class Handler(BaseHTTPRequestHandler):
                 fields[k + "__set"] = True
             else:
                 fields[k] = v
+        sess = None if loop else self._session()
         resp = {
             "need_pairing": False,
             "configured": is_configured_from(shown),
@@ -915,6 +1462,9 @@ class Handler(BaseHTTPRequestHandler):
             "fields": fields,
             "tz_list": zone_list(),
             "unavailable": hw_unavailable(),
+            "csrf": self._csrf_token(),
+            "session": {"kind": "local"} if loop else {"kind": sess["kind"], "user": sess["user"]},
+            "login": login_available(),
         }
         if loop:
             code, code_at = PAIRING.current_code()
@@ -944,20 +1494,150 @@ class Handler(BaseHTTPRequestHandler):
         if self._loopback():
             self._send_json(200, {"ok": True})
             return
-        if not lan_allowed():
-            self._send_json(403, {"error": "setup is not reachable over the network right now"})
+        if not pairing_open():
+            self._send_json(403, {"error": "the pairing code works only while the panel is not configured "
+                                           "or the setup window is open"})
             return
         ip = self.client_address[0]
         if not PAIRING.allow_attempt(ip):
             self._send_json(429, {"error": "too many attempts; wait a few minutes"})
             return
         code = str(data.get("code", "")).strip()
-        token = PAIRING.check_and_pair(code)
-        if not token:
+        if not PAIRING.check(code):
             self._send_json(403, {"error": "wrong or expired pairing code"})
             return
-        cookie = "tsxsetup=%s; Path=/setup; HttpOnly; SameSite=Strict; Max-Age=%d" % (token, WINDOW)
-        self._send_json(200, {"ok": True}, set_cookie=cookie)
+        token, rec = SESSIONS.new("pair", ip)
+        self._send_json(200, {"ok": True}, set_cookie=[
+            _cookie("tsxsetup", token, max_age=WINDOW),
+            _cookie("tsxcsrf", rec["csrf"], http_only=False, max_age=WINDOW)])
+
+    # ---- the login with Home Assistant ----
+    def _login_start(self):
+        if self._loopback():
+            self._redirect("/setup")
+            return
+        if not login_available():
+            self._send_html(403, login_page("The login with Home Assistant is not available",
+                                            "This panel does not know the URL of its Home Assistant, or the login "
+                                            "is turned off. Open Setup on the panel and use the pairing code."))
+            return
+        ip = self.client_address[0]
+        if not LOGIN_START_IP.allow(ip) or not LOGIN_START_ALL.allow("all"):
+            self._send_html(429, login_page("Too many logins", "Wait a few minutes, then try again."))
+            return
+        host = self.headers.get("Host") or ""
+        if not _HOST_RE.fullmatch(host):
+            self._send_html(400, login_page("Bad request", "The request has no valid Host header."))
+            return
+        ha = ha_url()
+        client_id = "http://%s/" % host
+        redirect_uri = client_id + "setup/auth/callback"
+        state = secrets.token_urlsafe(32)
+        _pending_put(state, {"ip": ip, "ha": ha, "client_id": client_id, "created": time.monotonic()})
+        query = urllib.parse.urlencode({"response_type": "code", "client_id": client_id,
+                                        "redirect_uri": redirect_uri, "state": state})
+        # Lax: the browser sends this cookie on the return from Home Assistant
+        # (a top-level navigation from another site). The session cookie is Strict.
+        self._redirect(ha + "/auth/authorize?" + query,
+                       [_cookie("tsxlogin", state, path="/setup/auth", max_age=PENDING_S, same_site="Lax")])
+
+    def _login_callback(self, q):
+        clear = [_cookie("tsxlogin", "", path="/setup/auth", max_age=0, same_site="Lax")]
+        if self._loopback():
+            self._redirect("/setup", clear)
+            return
+        ip = self.client_address[0]
+        if not LOGIN_RETURN_IP.allow(ip):
+            self._send_html(429, login_page("Too many logins", "Wait a few minutes, then try again."), clear)
+            return
+        if not login_available():
+            self._send_html(403, login_page("The login with Home Assistant is not available",
+                                            "Open Setup on the panel and use the pairing code."), clear)
+            return
+        state = (q.get("state") or [""])[0]
+        if "error" in q:
+            _pending_take(state)
+            self._send_html(403, login_page("The login was canceled", "Home Assistant did not log you in."), clear)
+            return
+        code = (q.get("code") or [""])[0]
+        cookie_state = self._cookie_value("tsxlogin") or ""
+        rec = _pending_take(state) if state and cookie_state and hmac.compare_digest(state, cookie_state) else None
+        if rec is None or rec["ip"] != ip or rec["ha"] != ha_url() or not code or len(code) > 512:
+            self._send_html(400, login_page("The login did not work",
+                                            "The login is old, or it started in another browser. Start it again."),
+                            clear)
+            return
+        user, err = ha_login_finish(rec, code)
+        if user is None:
+            sys.stderr.write("tsx-setupd: login from %s failed: %s\n" % (ip, err))
+            self._send_html(502, login_page("The login did not work", err or "Home Assistant did not answer."), clear)
+            return
+        if not user["is_admin"]:
+            sys.stderr.write("tsx-setupd: login from %s refused: %s is not an administrator\n" % (ip, user["name"]))
+            self._send_html(403, login_page("Only an administrator can open the setup page",
+                                            "The Home Assistant user %s is not an administrator." % user["name"]),
+                            clear)
+            return
+        token, srec = SESSIONS.new("ha", ip, user["name"], user["id"])
+        sys.stderr.write("tsx-setupd: login: %s (Home Assistant administrator) from %s\n" % (user["name"], ip))
+        self._send_html(200, login_page("Logged in", "You are logged in as %s." % user["name"], go=True), clear + [
+            _cookie("tsxsetup", token, max_age=SESSION_S),
+            _cookie("tsxcsrf", srec["csrf"], http_only=False, max_age=SESSION_S)])
+
+    def _api_logout(self):
+        token = self._session_token()
+        if not self._loopback() and token:
+            SESSIONS.drop(token)
+        self._send_json(200, {"ok": True}, set_cookie=[
+            _cookie("tsxsetup", "", max_age=0), _cookie("tsxcsrf", "", http_only=False, max_age=0)])
+
+    def _api_sessions(self):
+        if not self._authorized():
+            self._send_json(403, {"error": "not authorized"})
+            return
+        cur = None if self._loopback() else self._session_token()
+        self._send_json(200, {"sessions": SESSIONS.listing(cur)})
+
+    def _api_sessions_revoke(self, data):
+        if not self._authorized():
+            self._send_json(403, {"error": "not authorized"})
+            return
+        if data.get("all") is True:
+            n = SESSIONS.drop_all()
+            sys.stderr.write("tsx-setupd: all %d sessions revoked\n" % n)
+            self._send_json(200, {"ok": True, "revoked": n})
+            return
+        sid = data.get("id")
+        if not isinstance(sid, str) or not sid:
+            self._send_json(400, {"error": "the request needs a session id or all"})
+            return
+        if not SESSIONS.drop_id(sid):
+            self._send_json(404, {"error": "no such session"})
+            return
+        sys.stderr.write("tsx-setupd: session %s revoked\n" % sid)
+        self._send_json(200, {"ok": True, "revoked": 1})
+
+    # ---- the Panel section ----
+    def _api_panel_get(self):
+        if not self._authorized():
+            self._send_json(403, {"error": "not authorized"})
+            return
+        obj, err = panel_state()
+        if obj is None:
+            self._send_json(502, {"error": err})
+            return
+        self._send_json(200, obj)
+
+    def _api_panel_post(self, data):
+        if not self._authorized():
+            self._send_json(403, {"error": "not authorized"})
+            return
+        control = data.get("control")
+        if not isinstance(control, str):
+            self._send_json(400, {"error": "the request needs a control"})
+            return
+        code, obj = panel_set(control, data.get("value"))
+        self._send_json(code, obj)
 
     def _api_learn_reset(self):
         """Forget the brightness points that the panel learned."""
@@ -981,7 +1661,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"errors": {"_request": "the request has no fields. Reload the page."}})
             return
         fields = {k: v for k, v in fields.items() if isinstance(k, str)}
-        code, obj = handle_submit(fields, data.get("revision"))
+        code, obj = handle_submit(fields, data.get("revision"), on_screen=self._on_screen())
         self._send_json(code, obj)
 
 
@@ -1001,9 +1681,10 @@ PAGE_UNAVAILABLE = """<!doctype html>
 </style></head>
 <body><div class="box">
   <h1>Setup is not available over the network right now</h1>
-  <p>This panel is already configured. Open <b>Setup</b> on the panel itself
-  (the quick-settings overlay, or <code>tsx-config setup</code> over ssh) to
-  allow this for about 15 minutes.</p>
+  <p>This panel is already configured, and it has no Home Assistant URL for
+  the login with Home Assistant. Open <b>Setup</b> on the panel itself (the
+  quick-settings overlay, or <code>tsx-config setup</code> over ssh) to allow
+  the pairing code for about 15 minutes.</p>
 </div></body></html>
 """
 
@@ -1054,12 +1735,25 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
 #stale { border-color:var(--warn); }
 .toggle { display:flex; align-items:center; gap:12px; }
 .toggle input { width:44px; height:26px; }
+a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizing:border-box; min-height:52px;
+  line-height:32px; font-size:1.05rem; padding:10px 20px; border-radius:10px; background:var(--accent);
+  color:var(--accent-fg); font-weight:600; }
+#session-bar, #panel-wrap { display:none; }
+#session-bar .row { justify-content:space-between; }
+.ctl { margin:14px 0; }
+.ctl:first-child { margin-top:0; }
+.ctl label { margin:0 0 6px; }
+.ctl input[type=range] { width:100%; min-height:40px; }
+.ctl input[type=color] { width:64px; min-height:44px; border:1px solid var(--line); border-radius:10px; background:#0e1319; }
+.ctl .row input[type=number] { flex:1; min-width:120px; }
+.sess { padding:8px 0; border-top:1px solid var(--line); font-size:.9rem; }
 @media (max-height:640px) { .wrap { padding-top:10px; } h2 { margin-top:18px; padding-top:12px; } }
 </style></head>
 <body><div class="wrap">
   <h1>Set up this panel</h1>
-  <p class="sub">This page runs on the panel itself. It is only reachable from
-  the network for a short time, with a pairing code shown here.</p>
+  <p class="sub">This page runs on the panel itself. From the network, log in
+  with an administrator account of Home Assistant, or use the pairing code
+  that the screen shows while setup is open.</p>
 
   <div id="code-banner" class="code-banner">
     <div>Pairing code for a laptop or phone on the same network:</div>
@@ -1068,13 +1762,87 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
   </div>
 
   <div id="gate" class="card">
-    <p>Enter the pairing code shown on the panel's screen.</p>
-    <label for="pair-code">Pairing code</label>
-    <input id="pair-code" type="text" inputmode="numeric" maxlength="6" autocomplete="off">
-    <div class="row" style="margin-top:14px">
-      <button id="pair-go">Continue</button>
+    <div id="login-box" style="display:none">
+      <p>Log in with an administrator account of Home Assistant (<span id="ha-host"></span>).</p>
+      <a id="login-btn" class="btn" href="/setup/login">Log in with Home Assistant</a>
     </div>
-    <div id="pair-status" class="status"></div>
+    <div id="pair-box">
+      <p>Enter the pairing code shown on the panel's screen.</p>
+      <label for="pair-code">Pairing code</label>
+      <input id="pair-code" type="text" inputmode="numeric" maxlength="6" autocomplete="off">
+      <div class="row" style="margin-top:14px">
+        <button id="pair-go">Continue</button>
+      </div>
+      <div id="pair-status" class="status"></div>
+    </div>
+    <p id="gate-none" style="display:none">Open <b>Setup</b> on the panel itself to get a pairing code.</p>
+  </div>
+
+  <div id="session-bar" class="card">
+    <div class="row">
+      <span id="session-who"></span>
+      <button type="button" class="secondary" id="logout-btn">Log out</button>
+    </div>
+    <details id="sessions-wrap"><summary>Sessions of this panel</summary>
+      <div id="sessions-list"></div>
+      <div class="row" style="margin-top:10px">
+        <button type="button" class="secondary" id="logout-all">Log out all browsers</button>
+      </div>
+      <div class="status" id="sessions-status"></div>
+    </details>
+  </div>
+
+  <div id="panel-wrap">
+    <h2>Panel</h2>
+    <div class="card" id="panel-card">
+      <div class="ctl" id="ctl-screen" style="display:none">
+        <label>Screen</label>
+        <div class="row">
+          <button type="button" class="secondary" id="p-screen-on">On</button>
+          <button type="button" class="secondary" id="p-screen-off">Off</button>
+          <span id="p-screen-state" class="hint"></span>
+        </div>
+      </div>
+      <div class="ctl" id="ctl-backlight" style="display:none">
+        <label for="p-backlight">Brightness: <span id="p-backlight-v"></span> %</label>
+        <input type="range" id="p-backlight" min="1" max="100" step="1">
+      </div>
+      <div class="ctl" id="ctl-volume" style="display:none">
+        <label for="p-volume">Volume: <span id="p-volume-v"></span> %</label>
+        <input type="range" id="p-volume" min="0" max="100" step="1">
+      </div>
+      <div class="ctl" id="ctl-dim_timeout" style="display:none">
+        <label for="p-dim_timeout">Dim the screen after (seconds, 0 = never)</label>
+        <div class="row"><input type="number" id="p-dim_timeout" min="0" max="86400">
+          <button type="button" class="secondary" id="p-dim_timeout-set">Set</button></div>
+      </div>
+      <div class="ctl" id="ctl-dim_level" style="display:none">
+        <label for="p-dim_level">Dim level (percent of the brightness, 1 to 100)</label>
+        <div class="row"><input type="number" id="p-dim_level" min="1" max="100">
+          <button type="button" class="secondary" id="p-dim_level-set">Set</button></div>
+      </div>
+      <div class="ctl" id="ctl-blank_timeout" style="display:none">
+        <label for="p-blank_timeout">Turn the screen off after (seconds, 0 = never)</label>
+        <div class="row"><input type="number" id="p-blank_timeout" min="0" max="86400">
+          <button type="button" class="secondary" id="p-blank_timeout-set">Set</button></div>
+      </div>
+      <div class="ctl" id="ctl-ledbar" style="display:none">
+        <div class="toggle"><input type="checkbox" id="p-ledbar-on"><label for="p-ledbar-on" style="margin:0">LED bar</label></div>
+        <div class="row" style="margin-top:8px"><input type="color" id="p-ledbar-color" value="#ffffff">
+          <input type="range" id="p-ledbar-bri" min="1" max="100" step="1" style="flex:1"></div>
+      </div>
+      <div class="ctl" id="ctl-key_leds" style="display:none">
+        <div class="toggle"><input type="checkbox" id="p-key_leds-on"><label for="p-key_leds-on" style="margin:0">Key LEDs</label></div>
+        <input type="range" id="p-key_leds-level" min="1" max="255" step="1">
+      </div>
+      <div class="ctl" id="ctl-lights" style="display:none">
+        <div class="toggle"><input type="checkbox" id="p-lights-on"><label for="p-lights-on" style="margin:0">Panel lights</label></div>
+        <div class="row" style="margin-top:8px"><input type="color" id="p-lights-color" value="#ffffff">
+          <input type="range" id="p-lights-bri" min="1" max="100" step="1" style="flex:1"></div>
+      </div>
+      <div class="hint">These controls act at once, like the overlay of the panel and the Home Assistant entities. The times are saved in the settings of the panel.</div>
+      <div id="panel-status" class="status"></div>
+    </div>
   </div>
 
   <div id="stale" class="card">
@@ -1110,11 +1878,7 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
         <option value="landscape-flipped">Landscape, flipped (keys left)</option>
         <option value="portrait-flipped">Portrait, flipped (keys above)</option>
       </select>
-      <div class="hint">How the panel hangs on the wall. The screen turns as soon as you save.</div>
-      <div id="blank-wrap">
-      <label for="f-blank">Screen blank timeout (seconds, 0 = never)</label>
-      <input id="f-blank" name="BLANK_TIMEOUT" type="number" min="0" max="86400" placeholder="(default)">
-      </div>
+      <div class="hint">How the panel hangs on the wall. The screen turns as soon as you save. The screen times are in the Panel section above.</div>
     </div>
 
     <details id="sensors-wrap"><summary>Sensors</summary>
@@ -1177,8 +1941,9 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
   </form>
 
   <div id="done" class="card">
-    <p>@@DONE_TEXT@@</p>
+    <p id="done-text">@@DONE_TEXT@@</p>
     <p class="hint" id="done-note"></p>
+    <button type="button" class="secondary" id="done-back">Back to the settings</button>
   </div>
 </div>
 <script>
@@ -1190,11 +1955,21 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
   var initial = null;  // name -> value of each field after the load
   var saved = false;
 
+  var csrf = "";      // the CSRF token of this session (the state API, else the cookie tsxcsrf)
+  function csrfToken(){
+    if (csrf) return csrf;
+    try {
+      var m = String(document.cookie || "").match(/(?:^|; )tsxcsrf=([^;]*)/);
+      return m ? decodeURIComponent(m[1]) : "";
+    } catch (e) { return ""; }
+  }
   function api(method, path, body){
+    var h = {};
+    if (method !== "GET") { h["Content-Type"] = "application/json"; h["X-TSX-CSRF"] = csrfToken(); }
     return fetch(path, {
       method: method,
-      headers: body ? {"Content-Type":"application/json"} : {},
-      body: body ? JSON.stringify(body) : undefined,
+      headers: h,
+      body: method !== "GET" ? JSON.stringify(body || {}) : undefined,
       credentials: "same-origin"
     }).then(function(r){ return r.json().then(function(j){ return {status:r.status, body:j}; }); });
   }
@@ -1232,7 +2007,6 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     $("f-url").value = fields.KIOSK_URL || "";
     $("f-name").value = fields.PANEL_NAME || "";
     $("f-orient").value = fields.ORIENTATION || "landscape";
-    $("f-blank").value = fields.BLANK_TIMEOUT || "";
     $("f-pwake").value = fields.PRESENCE_WAKE || "";
     $("f-pdist").value = fields.PRESENCE_DISTANCE_MM || "";
     $("f-phold").value = fields.PRESENCE_HOLD_S || "";
@@ -1292,9 +2066,7 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
   // this browser, so that it makes panel.conf.
   function applyKiosk(on, s){
     $("url-card").style.display = on ? "block" : "none";
-    $("blank-wrap").style.display = on ? "block" : "none";
     $("f-url").disabled = !on;
-    $("f-blank").disabled = !on;
     if (!on && !s.configured && !$("f-tz").value) {
       var zone = "";
       try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) {}
@@ -1304,18 +2076,40 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     /*SLOT:kiosk*/
   }
 
+  // The gate of a LAN client without a session: the login with Home
+  // Assistant, the pairing code, or neither.
+  function showGate(s){
+    $("gate").style.display = "block";
+    $("form").style.display = "none";
+    $("login-box").style.display = s.login ? "block" : "none";
+    $("ha-host").textContent = s.ha_host || "";
+    $("pair-box").style.display = s.pairing === false ? "none" : "block";
+    $("gate-none").style.display = !s.login && s.pairing === false ? "block" : "none";
+  }
+
+  function showSession(s){
+    var sess = s.session || {};
+    if (sess.kind === "ha") $("session-who").textContent = "Logged in as " + (sess.user || "?") + " (Home Assistant)";
+    else if (sess.kind === "pair") $("session-who").textContent = "Paired with the code of the screen";
+    else $("session-who").textContent = "On the panel";
+    $("logout-btn").style.display = sess.kind === "ha" || sess.kind === "pair" ? "" : "none";
+    $("session-bar").style.display = "block";
+  }
+
   function loadState(){
     api("GET", "/setup/api/state").then(function(r){
       var s = r.body || {};
       if (s.need_pairing) {
-        $("gate").style.display = "block";
-        $("form").style.display = "none";
+        showGate(s);
         return;
       }
       if (loaded) return;
       state = s;
+      if (s.csrf) csrf = s.csrf;
       $("gate").style.display = "none";
       $("form").style.display = "block";
+      showSession(s);
+      loadPanel();
       if (s.loopback) {
         showCode(s.pairing_code, s.pairing_code_remaining);
       }
@@ -1371,6 +2165,111 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
 
   /*SLOT:init*/
 
+  // ---- the Panel section: live controls ----
+  var panel = null;      // the last answer of /setup/api/panel
+  var panelBusy = 0;     // a change is on its way: the refresh waits
+  function panelStatus(cls, text){ var el = $("panel-status"); el.className = "status " + cls; el.textContent = text; }
+  function showCtl(name, on){ var el = $("ctl-" + name); if (el) el.style.display = on ? "block" : "none"; }
+  function fillPanel(p){
+    var c = (p && p.controls) || {};
+    ["screen", "backlight", "volume", "dim_timeout", "dim_level", "blank_timeout", "ledbar", "key_leds", "lights"].forEach(function(n){ showCtl(n, !!c[n]); });
+    if (c.screen) $("p-screen-state").textContent = c.screen.on ? "The screen is on." : "The screen is off.";
+    if (c.backlight) { $("p-backlight").value = c.backlight.value; $("p-backlight-v").textContent = c.backlight.value; }
+    if (c.volume) { $("p-volume").value = c.volume.value; $("p-volume-v").textContent = c.volume.value; }
+    ["dim_timeout", "dim_level", "blank_timeout"].forEach(function(n){
+      var el = $("p-" + n);
+      if (c[n] && document.activeElement !== el) el.value = c[n].value;
+    });
+    ["ledbar", "lights"].forEach(function(n){
+      if (!c[n]) return;
+      $("p-" + n + "-on").checked = c[n].on;
+      $("p-" + n + "-bri").value = c[n].brightness;
+      $("p-" + n + "-color").value = c[n].color;
+    });
+    if (c.key_leds) { $("p-key_leds-on").checked = c.key_leds.on; $("p-key_leds-level").value = c.key_leds.level; }
+    $("panel-wrap").style.display = Object.keys(c).length ? "block" : "none";
+  }
+  function loadPanel(){
+    if (panelBusy) return;
+    api("GET", "/setup/api/panel").then(function(r){
+      if (r.status !== 200) return;
+      panel = r.body; fillPanel(panel);
+    }).catch(function(){});
+  }
+  function setPanel(control, value){
+    panelBusy++;
+    panelStatus("", "...");
+    return api("POST", "/setup/api/panel", {control: control, value: value}).then(function(r){
+      panelBusy--;
+      if (r.status !== 200) { panelStatus("bad", (r.body && r.body.error) || "Not done. Try again."); return; }
+      panelStatus("ok", "Done.");
+      // A time is a setting of panel.conf: keep the form if nothing else changed it.
+      if (r.body && r.body.revision && state && r.body.revision_before === state.revision) state.revision = r.body.revision;
+      setTimeout(loadPanel, 800);
+    }).catch(function(){ panelBusy--; panelStatus("bad", "network error; try again"); });
+  }
+  function lightValue(n){
+    return {on: $("p-" + n + "-on").checked, brightness: parseInt($("p-" + n + "-bri").value, 10) || 100,
+            color: $("p-" + n + "-color").value};
+  }
+  $("p-screen-on").addEventListener("click", function(){ setPanel("screen", true); });
+  $("p-screen-off").addEventListener("click", function(){ setPanel("screen", false); });
+  ["backlight", "volume"].forEach(function(n){
+    $("p-" + n).addEventListener("input", function(){ $("p-" + n + "-v").textContent = $("p-" + n).value; });
+    $("p-" + n).addEventListener("change", function(){ setPanel(n, parseInt($("p-" + n).value, 10)); });
+  });
+  ["dim_timeout", "dim_level", "blank_timeout"].forEach(function(n){
+    $("p-" + n + "-set").addEventListener("click", function(){
+      var v = parseInt($("p-" + n).value, 10);
+      if (isNaN(v)) { panelStatus("bad", "Enter a number."); return; }
+      setPanel(n, v);
+    });
+  });
+  ["ledbar", "lights"].forEach(function(n){
+    ["on", "bri", "color"].forEach(function(part){
+      $("p-" + n + "-" + part).addEventListener("change", function(){ setPanel(n, lightValue(n)); });
+    });
+  });
+  ["on", "level"].forEach(function(part){
+    $("p-key_leds-" + part).addEventListener("change", function(){
+      setPanel("key_leds", {on: $("p-key_leds-on").checked, level: parseInt($("p-key_leds-level").value, 10) || 255});
+    });
+  });
+  setInterval(function(){ if (loaded && !saved) loadPanel(); }, 5000);
+
+  // ---- the session: logout, the list, revoke ----
+  $("logout-btn").addEventListener("click", function(){
+    api("POST", "/setup/api/logout", {}).then(function(){ location.reload(); }).catch(function(){ location.reload(); });
+  });
+  function loadSessions(){
+    api("GET", "/setup/api/sessions").then(function(r){
+      var list = $("sessions-list");
+      list.innerHTML = "";
+      ((r.body && r.body.sessions) || []).forEach(function(x){
+        var d = document.createElement("div");
+        d.className = "sess";
+        var who = x.kind === "ha" ? x.user + " (Home Assistant)" : "the pairing code";
+        d.textContent = who + ", " + x.ip + ", " + Math.round(x.age / 60) + " min old" + (x.current ? " (this browser)" : "") + " ";
+        var b = document.createElement("button");
+        b.type = "button"; b.className = "secondary"; b.textContent = "Log out";
+        b.addEventListener("click", function(){
+          api("POST", "/setup/api/sessions/revoke", {id: x.id}).then(function(){ if (x.current) location.reload(); else loadSessions(); });
+        });
+        d.appendChild(b);
+        list.appendChild(d);
+      });
+    }).catch(function(){});
+  }
+  $("sessions-wrap").addEventListener("toggle", function(){ if ($("sessions-wrap").open) loadSessions(); });
+  $("logout-all").addEventListener("click", function(){
+    api("POST", "/setup/api/sessions/revoke", {all: true}).then(function(r){
+      $("sessions-status").className = "status ok";
+      $("sessions-status").textContent = "All sessions are ended: " + ((r.body && r.body.revoked) || 0) + ".";
+      if (state && state.session && state.session.kind !== "local") location.reload(); else loadSessions();
+    });
+  });
+  $("done-back").addEventListener("click", function(){ location.reload(); });
+
   $("form").addEventListener("submit", function(ev){
     ev.preventDefault();
     var btn = $("submit-btn");
@@ -1387,6 +2286,7 @@ details summary { cursor:pointer; color:var(--muted); padding:8px 0; }
         $("form").style.display = "none";
         $("stale").style.display = "none";
         $("done").style.display = "block";
+        if (r.body && r.body.kiosk_restarted === false) $("done-text").textContent = "Saved. The settings are in use now.";
         if (r.body && r.body.changed && !r.body.changed.length) $("done-note").textContent = "No setting changed.";
         return;
       }
@@ -1537,10 +2437,11 @@ def screen_remove():
 
 
 def screen_update():
-    """Called once a second. Write screen.json while the LAN window is open,
-    at least every REFRESH_S. Remove it when the window closes."""
+    """Called once a second. Write screen.json while the pairing code works
+    (pairing_open), at least every REFRESH_S. Remove it when the window
+    closes. The login with Home Assistant needs no code on the screen."""
     try:
-        if not lan_allowed():
+        if not pairing_open():
             if _screen["on"]:
                 screen_remove()
             return
@@ -1557,14 +2458,15 @@ def screen_update():
         _screen["err"] = True
 
 
-# ---- listening address: loopback-only unless a LAN window is open --------
+# ---- listening address: loopback-only unless the LAN can log in --------
 #
 # The HTTP handler already refuses a non-loopback request once !lan_allowed()
 # (a defensive second layer). But the process should not even ACCEPT a LAN
-# connection outside that window. With no listening socket on a
-# LAN-reachable address, the network has nothing to probe, fingerprint or
-# exploit while the panel is configured and no one has opened Setup on the
-# glass. ServerManager rebinds between "0.0.0.0" (LAN allowed, this also
+# connection when no LAN login is possible: no pairing window and no login
+# with Home Assistant (no Home Assistant URL, or TSX_SETUP_HA_LOGIN=off).
+# With no listening socket on a LAN-reachable address, the network has
+# nothing to probe, fingerprint or exploit then. With the login with Home
+# Assistant, the page is always on: every request needs a session. ServerManager rebinds between "0.0.0.0" (LAN allowed, this also
 # serves loopback) and "127.0.0.1" (LAN not allowed) as lan_allowed()
 # changes. It polls POLL_S seconds apart. A submit or an external change of
 # setup-open takes effect on the next poll, at most POLL_S seconds later.
@@ -1607,8 +2509,9 @@ class ServerManager:
             self.server = ThreadingHTTPServer((want, PORT), Handler)
             self.host = want
             threading.Thread(target=self.server.serve_forever, daemon=True, name="tsx-setupd-http").start()
-            sys.stderr.write("tsx-setupd: listening on %s:%d (lan=%s window=%ds)\n"
-                              % (want, PORT, "on" if LAN_ON else "off", WINDOW))
+            sys.stderr.write("tsx-setupd: listening on %s:%d (lan=%s window=%ds ha-login=%s)\n"
+                              % (want, PORT, "on" if LAN_ON else "off", WINDOW,
+                                 "on" if HA_LOGIN and ha_url() else ("no URL" if HA_LOGIN else "off")))
 
     def watch_forever(self):
         was_open = setup_open_fresh()

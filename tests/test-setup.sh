@@ -134,9 +134,13 @@ touch "$T/zoneinfo/UTC" "$T/zoneinfo/America/New_York" "$T/zoneinfo/America/Denv
 cat > "$T/shadow" <<'EOF'
 root:$oldhash$oldoldoldoldoldoldoldoldoldoldold:19000:0:99999:7:::
 EOF
+# The login with Home Assistant is off here: this test covers the pairing
+# code and the loopback-only listener of a configured panel.
+# tests/test-setup-login.sh covers the login.
 cat > "$T/setup.conf" <<EOF
 TSX_SETUP_PORT=0
 TSX_SETUP_LAN=on
+TSX_SETUP_HA_LOGIN=off
 TSX_SETUP_WINDOW=6
 EOF
 
@@ -167,6 +171,7 @@ p.add_argument("--port", type=int, required=True)
 p.add_argument("--source", default=None)
 p.add_argument("--cookie", default=None)
 p.add_argument("--data", default=None)
+p.add_argument("--no-csrf", action="store_true")
 a = p.parse_args()
 kwargs = {"timeout": 3}
 if a.source:
@@ -179,6 +184,23 @@ if a.data is not None:
 	headers["Content-Type"] = "application/json"
 if a.cookie:
 	headers["Cookie"] = "tsxsetup=" + a.cookie
+# A POST carries the CSRF token of the session, as the page sends it: the
+# state API gives it (/setup/api/pair needs none). A rebind of the listener
+# can reset the connection: try again.
+if a.method == "POST" and not a.no_csrf and a.path != "/setup/api/pair":
+	import time
+	for _try in range(6):
+		try:
+			c0 = http.client.HTTPConnection(a.source or "127.0.0.1", a.port, timeout=120,
+			                                source_address=(a.source, 0) if a.source else None)
+			c0.request("GET", "/setup/api/state", headers={"Cookie": headers.get("Cookie", "")})
+			tok = json.loads(c0.getresponse().read() or b"{}").get("csrf")
+			c0.close()
+			if tok:
+				headers["X-TSX-CSRF"] = tok
+			break
+		except Exception:
+			time.sleep(0.3)
 def fail(e, retry):
 	print(0); print("")
 	print(json.dumps({"_client_error": str(e), "retry": retry}))
@@ -819,10 +841,12 @@ for _ in $(seq 1 50); do grep -q "listening on" "$T/setupd2.log" 2>/dev/null && 
 PORT_HA=$PORT; PORT=$PORT2
 out=$(call GET /setup); page=$(body_of "$out")
 [ "$(status_of "$out")" = 200 ] && ok "base page: GET /setup 200" || bad "base page: $(status_of "$out")"
-for want in 'name="KIOSK_URL"' 'name="PANEL_NAME"' 'name="TZ_NAME"' 'name="ORIENTATION"' 'name="BLANK_TIMEOUT"' 'name="AUTO_BRIGHTNESS"' 'name="ALS_SCALE"' 'name="ROOT_PASSWORD"' 'name="SSH_AUTHORIZED_KEY"' 'name="KERNEL_FLAVOR"' '<h2>Network</h2>' '<h2>Display</h2>' '<summary>Updates</summary>'; do
+for want in 'name="KIOSK_URL"' 'name="PANEL_NAME"' 'name="TZ_NAME"' 'name="ORIENTATION"' 'id="p-blank_timeout"' 'href="/setup/login"' 'name="AUTO_BRIGHTNESS"' 'name="ALS_SCALE"' 'name="ROOT_PASSWORD"' 'name="SSH_AUTHORIZED_KEY"' 'name="KERNEL_FLAVOR"' '<h2>Network</h2>' '<h2>Display</h2>' '<summary>Updates</summary>'; do
 	case "$page" in *"$want"*) ok "base page has $want";; *) bad "base page lacks $want";; esac
 done
-for nope in HA_LOGIN_METHOD HA_TOKEN '"VOICE"' WAKE_WORD MQTT_ 'Home Assistant' homeassistant 'Voice assistant' 'discover' 'check-url' '@@' 'SLOT'; do
+# The base page names Home Assistant only for "Log in with Home Assistant"
+# (tsx-setupd itself); every field of Home Assistant comes from the plugin.
+for nope in HA_LOGIN_METHOD HA_TOKEN '"VOICE"' WAKE_WORD MQTT_ 'Home Assistant URL' 'name="HA_URL"' homeassistant 'Voice assistant' 'discover' 'check-url' '@@' 'SLOT'; do
 	case "$page" in *"$nope"*) bad "base page has $nope";; *) ok "base page has no $nope";; esac
 done
 case "$page" in *'id="submit-btn" type="submit">Save</button>'*) ok "base page: the button says Save";; *) bad "base page: button text";; esac

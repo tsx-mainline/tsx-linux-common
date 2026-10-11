@@ -7,6 +7,8 @@ the time zone, the display, the root login and the updates. With it, the page
 adds these fields:
 
   * the Home Assistant URL, with "Find it automatically" and "Check"
+  * the Home Assistant URL of "Log in with Home Assistant" (HA_URL, see
+    docs/setup.md), when it is not the origin of the page URL
   * how the panel logs in (login form, long-lived token, trusted network)
   * the voice assistant and its wake word
   * the Bluetooth proxy (on, off or the default of the board)
@@ -25,7 +27,10 @@ What a plugin gives to tsx-setupd (all names are optional except NAME):
                      (secrets masked). ctx.no_zeroconf is the test switch.
                      ctx.helper_call(line[, timeout]) sends one request line
                      to tsx-setup-helper and returns (ok, text).
-                     ctx.lan_allowed() tells if the LAN window is open.
+                     ctx.lan_allowed() tells if the LAN can reach the page
+                     (the pairing window or the login with Home Assistant).
+                     ctx.pairing_open() and ctx.login_available() tell
+                     which of the two.
   SIMPLE_KEYS        panel.conf keys that the page sets with the same rules as
                      the keys of the base page
   CLEARABLE_BLANK    the keys among them that an empty value removes
@@ -85,12 +90,12 @@ def init(ctx):
     _ctx = ctx
 
 
-SIMPLE_KEYS = ["VOICE", "WAKE_WORD", "MQTT_HOST", "MQTT_PORT", "MQTT_USER", "MQTT_PASSWORD", "BT_PROXY"]
+SIMPLE_KEYS = ["VOICE", "WAKE_WORD", "MQTT_HOST", "MQTT_PORT", "MQTT_USER", "MQTT_PASSWORD", "BT_PROXY", "HA_URL"]
 # Empty = cleared. The page pre-fills these keys and sends one only when the
 # user changed it, so an empty one was cleared on purpose. MQTT_PASSWORD is
 # not one of them: the page never pre-fills it, and an empty field keeps it.
 # An empty BT_PROXY is the default of the board.
-CLEARABLE_BLANK = {"MQTT_HOST", "MQTT_PORT", "MQTT_USER", "BT_PROXY"}
+CLEARABLE_BLANK = {"MQTT_HOST", "MQTT_PORT", "MQTT_USER", "BT_PROXY", "HA_URL"}
 STATE_KEYS = SIMPLE_KEYS + ["HA_LOGIN_METHOD", "HA_TOKEN"]
 # The login method and the token are for the browser of the kiosk.
 KIOSK_ONLY_KEYS = ["HA_LOGIN_METHOD", "HA_TOKEN"]
@@ -201,6 +206,13 @@ HTML = {
       <div class="hint" id="hw-hint" style="display:none"></div>
 """,
     "details": """
+    <details id="ha-login-wrap"><summary>Log in with Home Assistant</summary>
+      <div class="card">
+        <label for="f-haurl">Home Assistant URL for the login on this page</label>
+        <input id="f-haurl" name="HA_URL" type="url" placeholder="(the page URL)">
+        <div class="hint">An administrator of this Home Assistant can open this page from the network with no pairing code. Only the scheme, the host and the port count. Leave it blank to use the page URL.</div>
+      </div>
+    </details>
     <details><summary>MQTT (optional)</summary>
       <div class="card">
         <label for="f-mqtt-host">Broker host</label>
@@ -235,6 +247,7 @@ JS = {
     $("wake-wrap").style.display = $("f-voice").checked ? "block" : "none";
     $("f-wake").value = fields.WAKE_WORD || "";
     $("f-btproxy").value = fields.BT_PROXY || "";
+    $("f-haurl").value = fields.HA_URL || "";
     $("f-mqtt-host").value = fields.MQTT_HOST || "";
     $("f-mqtt-port").value = fields.MQTT_PORT || "";
     $("f-mqtt-user").value = fields.MQTT_USER || "";
@@ -260,6 +273,7 @@ JS = {
     if (notes.length) { $("hw-hint").textContent = notes.join(" "); $("hw-hint").style.display = "block"; }
 """,
     "kiosk": """
+    if (!on) $("f-haurl").placeholder = "https://homeassistant.local:8123";
     $("login-wrap").style.display = on ? "block" : "none";
     document.querySelectorAll('input[name=HA_LOGIN_METHOD]').forEach(function(r){ r.disabled = !on; });
     $("f-token").disabled = !on;

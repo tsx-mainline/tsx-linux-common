@@ -8,7 +8,7 @@
 set -u
 cd "$(dirname "$0")/.."
 PLAIN="test-brightness-learn test-autoupdate-logic test-autoupdate-flow test-board-fake test-bt test-clock test-confont test-ledbard test-panel-board
-test-panelctl test-data-backup test-rescue-backlight test-rescue-login test-rescue-screen test-root-login test-setup test-setup-page test-shim-keypad test-shim-keys test-shim-ledbar test-shim-sensors test-shim-wakewords
+test-panelctl test-data-backup test-rescue-backlight test-rescue-login test-rescue-screen test-root-login test-setup test-setup-page test-setup-login test-shim-keypad test-shim-keys test-shim-ledbar test-shim-sensors test-shim-wakewords
 test-tsx-config test-tsx-config-apply test-tsx-data test-tsx-setup-mac test-kiosk-page test-missing-parts
 test-voice-esphome-run mqtt-dry mqtt-ledbar-live mqtt-stop-timeout
 test-config-plugins test-shim-plugins test-generic-gate test-panel-layout test-panel-app-run test-panel-editor test-panel-editor-page test-panel-app-config test-layout-parity"

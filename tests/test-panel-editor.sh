@@ -73,6 +73,7 @@ APP_ENT="$EV/run/entities.json"; HA_ENT="$EV/run/ha-entities.json"; HA_TOKEN="$E
 cat > "$T/setup.conf" <<EOF
 TSX_SETUP_PORT=0
 TSX_SETUP_LAN=on
+TSX_SETUP_HA_LOGIN=off
 TSX_SETUP_WINDOW=8
 EOF
 get_free_port() { python3 -c "
@@ -107,6 +108,23 @@ if a.data is not None:
 	headers["Content-Type"] = "application/json"
 if a.cookie:
 	headers["Cookie"] = "tsxsetup=" + a.cookie
+# A POST carries the CSRF token of the session, as the page sends it: the
+# state API gives it (/setup/api/pair needs none). A rebind of the listener
+# can reset the connection: try again.
+if a.method == "POST" and a.path != "/setup/api/pair":
+	import time
+	for _try in range(6):
+		try:
+			c0 = http.client.HTTPConnection(a.source or "127.0.0.1", a.port, timeout=120,
+			                                source_address=(a.source, 0) if a.source else None)
+			c0.request("GET", "/setup/api/state", headers={"Cookie": headers.get("Cookie", "")})
+			tok = json.loads(c0.getresponse().read() or b"{}").get("csrf")
+			c0.close()
+			if tok:
+				headers["X-TSX-CSRF"] = tok
+			break
+		except Exception:
+			time.sleep(0.3)
 def fail(e, retry):
 	print(0); print("")
 	print(json.dumps({"_client_error": str(e), "retry": retry}))
@@ -241,7 +259,7 @@ CODE=$(jget pairing_code <<<"$body")
 printf '%s' "$CODE" | grep -Eq '^[0-9]{6}$' && ok "loopback still gets the pairing code from the state API" || bad "pairing code: '$CODE'"
 out=$(call GET /setup); page=$(body_of "$out")
 [ "$(status_of "$out")" = 200 ] && ok "GET /setup 200" || bad "GET /setup: $(status_of "$out")"
-case "$page" in *'id="url-card"'*'id="blank-wrap"'*'function applyKiosk(on, s)'*) ok "the page has the blocks that the script hides with no kiosk";; *) bad "the page lacks the kiosk blocks";; esac
+case "$page" in *'id="url-card"'*'function applyKiosk(on, s)'*) ok "the page has the blocks that the script hides with no kiosk";; *) bad "the page lacks the kiosk blocks";; esac
 case "$page" in *'id="submit-btn" type="submit">Save</button>'*) ok "the save button says Save, not the words of a plugin for a kiosk";; *) bad "the save button text: $(printf '%s' "$page" | grep -o 'id="submit-btn"[^<]*')";; esac
 case "$page" in *'Saved. The settings are in use now.'*) ok "the text after a save does not say that the panel loads a page";; *) bad "done text";; esac
 case "$page" in *'$("login-wrap").style.display = on'*) ok "the login method of the browser is hidden too (the plugin names its keys)";; *) bad "no login-wrap hide";; esac

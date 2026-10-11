@@ -79,6 +79,16 @@
 #                          entities from Home Assistant with the stored token
 #                          and writes /run/tsx/panel-app/ha-entities.json. The
 #                          reply is "ok COUNT" or "err MESSAGE".
+#   panel-state           tsx-panelctl state (as root: the volume needs the
+#                          sound card): the controls of the Panel section of
+#                          the page, one "NAME VALUE" line each (\1 between
+#                          the lines, as for show).
+#   panel CMD ARGS        tsx-panelctl send CMD ARGS, for the live controls of
+#                          the Panel section. Only these forms pass: blank
+#                          on|off, brightness-pct N, volume N, ledbar off,
+#                          ledbar set R G B, keypad led N|off, lights on|off,
+#                          lights set B R G B (N, R, G, B: digits). The
+#                          daemon of tsx-panelctl checks the ranges again.
 #   rootpw PASSWORD       chpasswd (PASSWORD over its stdin, never argv).
 #                          Then it copies the new /etc/shadow hash into
 #                          ROOT_PASSWORD_HASH, the way tsx-config apply
@@ -263,6 +273,38 @@ handle() {
 		else
 			out=$(printf '%s\n' "$out" | sed -n '1p'); reply_err "${out:-ha-entities failed}"
 		fi
+		;;
+	panel-state)
+		[ -z "$rest" ] || { reply_err "panel-state takes no arguments"; return; }
+		if out=$("$PANELCTL" state 2>/dev/null); then reply_ok "$(printf '%s' "$out" | tr '\n' '\1')"
+		else reply_err "tsx-panelctl state failed"; fi
+		;;
+	panel)
+		# Digits, lower-case words and single spaces only, then the exact forms.
+		case "$rest" in *[!a-z0-9\ -]*|*"  "*|" "*|*" ") reply_err "panel: bad command"; return;; esac
+		n='[0-9]'
+		case "$rest" in
+		"blank on"|"blank off"|"ledbar off"|"keypad led off"|"lights on"|"lights off") ;;
+		"brightness-pct "$n|"brightness-pct "$n$n|"brightness-pct "$n$n$n) ;;
+		"volume "$n|"volume "$n$n|"volume "$n$n$n) ;;
+		"keypad led "$n|"keypad led "$n$n|"keypad led "$n$n$n) ;;
+		"ledbar set "*|"lights set "*)
+			set -f
+			# shellcheck disable=SC2086
+			set -- $rest
+			set +f
+			want=5; [ "$1" = lights ] && want=6
+			[ $# = "$want" ] || { reply_err "panel: bad command"; return; }
+			shift 2
+			for v in "$@"; do case "$v" in ''|*[!0-9]*) reply_err "panel: bad command"; return;; esac; [ "${#v}" -le 3 ] || { reply_err "panel: bad command"; return; }; done
+			;;
+		*) reply_err "panel: unknown command"; return;;
+		esac
+		log "panel $rest"
+		set -f
+		# shellcheck disable=SC2086
+		if out=$("$PANELCTL" send $rest 2>&1); then set +f; reply_ok
+		else set +f; reply_err "${out:-tsx-panelctl send failed}"; fi
 		;;
 	rootpw)
 		# Never log the password, and never put it in $out on failure. The
