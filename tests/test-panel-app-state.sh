@@ -93,7 +93,10 @@ grep -q 'this->write_idle_state_(raw);' "$SRC/screen.cpp" && ok "each backlight 
 grep -q 'getenv("TSX_IDLED_STATE")' "$SRC/screen.cpp" && ok "TSX_IDLED_STATE sets the file" || bad "no TSX_IDLED_STATE"
 grep -q '"/run/tsx-idled.state"' "$SRC/tsx_cards.h" && ok "the default is the file of tsx-idled" || bad "the default file differs from tsx-idled"
 [ "$(grep -c 'this->write_app_state_();' "$SRC/tsx_cards.cpp")" = 2 ] && ok "the first frame and the Home Assistant connection update the app state" || bad "write_app_state_ calls in tsx_cards.cpp"
-grep -q '"/panel-app.state"' "$SRC/screen.cpp" && ok "the app state is panel-app.state of the run folder" || bad "app state file name"
+grep -q 'out_path_("panel-app.state")' "$SRC/screen.cpp" && grep -q 'this->run_dir_ + "/panel-app.state"' "$SRC/control.cpp" \
+	&& ok "the app state is panel-app.state of the run folder (or of the folder of the app)" || bad "app state file name"
+grep -q 'getenv("TSX_PANEL_APP_OUT_DIR")' "$SRC/screen.cpp" && grep -q 'out_dir_ + "/idled.state"' "$SRC/screen.cpp" \
+	&& ok "TSX_PANEL_APP_OUT_DIR moves the state files into the folder of the app" || bad "no TSX_PANEL_APP_OUT_DIR"
 
 echo "== test-panel-app-state: $N ok, $F failed =="
 [ "$F" = 0 ]

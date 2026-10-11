@@ -329,7 +329,7 @@ The app controls the backlight of the panel (the first folder in `/sys/class/bac
 - With `input_id`, the first report of a touch wakes the screen at once, in the loop of `tsx_evdev`. LVGL does not have to read the touch first. So a very short tap also wakes the screen.
 - The wake has a fixed order. First the CPU goes to full speed (see "CPU speed"). Then the app runs `on_screen` with `on` true: the display puts the full picture on the output and waits for the flip. Then the backlight comes on. So the glass shows no old, black or white frame with the backlight on.
 - A five-finger tap or a key opens the settings overlay only while the screen is on.
-- The app writes the screen state to `/run/tsx-idled.state`, in the format of `tsx-idled`: `on LEVEL` while the screen is on or dim, `blank` while it is off. `tsx-autoupdate` installs only while the screen is off. The app also writes `/run/tsx/panel-app.state` (the process, the first frame and the Home Assistant connection) for the health check after an update reboot. See [autoupdate.md](autoupdate.md).
+- The app writes the screen state to `/run/tsx-idled.state`, in the format of `tsx-idled`: `on LEVEL` while the screen is on or dim, `blank` while it is off. `tsx-autoupdate` installs only while the screen is off. The app also writes `/run/tsx/panel-app.state` (the process, the first frame and the Home Assistant connection) for the health check after an update reboot. See [autoupdate.md](autoupdate.md). An app that runs as the user `tsx-panel-app` writes these files in `/run/tsx/panel-app/app`, and the two paths are links to them (see "Service").
 
 The times and the dim level come from these places. A later place wins:
 
@@ -341,7 +341,7 @@ The times and the dim level come from these places. A later place wins:
 
 0 s means never. `BLANK_TIMEOUT` is the key that the kiosk panels use for `tsx-idled`. `tsx-config apply` writes the run-time files from `panel.conf`. The plugin `/usr/local/lib/tsx/config.d/panel_app.sh` adds the keys `DIM_TIMEOUT` (0 to 86400) and `DIM_LEVEL` (1 to 100) to `tsx-config`. The app reads the files every 5 s.
 
-When you change a time in the overlay or in Home Assistant, the app uses the new value at once. After 2 s it runs `tsx-config set` and `tsx-config apply`, so `panel.conf` keeps the value. For 30 s after a change, the app does not read the run-time files.
+When you change a time in the overlay or in Home Assistant, the app uses the new value at once. After 2 s it runs `tsx-config set` and `tsx-config apply`, so `panel.conf` keeps the value. An app that does not run as root sends `blank-timeout`, `dim-timeout` or `dim-level` to `tsx-panelctl` instead, and `tsx-panelctl` runs the two commands. For 30 s after a change, the app does not read the run-time files.
 
 The app has these Home Assistant entities for the screen. Home Assistant can change them, also when the device setting "Allow the device to perform Home Assistant actions" is off. That setting is only for the actions that the app sends.
 
@@ -352,6 +352,7 @@ The app has these Home Assistant entities for the screen. Home Assistant can cha
 | Blank timeout | number, s | `BLANK_TIMEOUT`. |
 | Dim timeout | number, s | `DIM_TIMEOUT`. |
 | Dim level | number, 1 to 100 % | `DIM_LEVEL`. |
+| Volume | number, 0 to 100 % | The volume of the panel (see "Volume"). Unknown on a panel with no sound card. |
 | Layout hash | text sensor | The SHA-256 of the layout file in use (see "Layout from Home Assistant"). |
 
 The names and the units are the same as on the kiosk panels. See "Panel settings" in [esphome.md](esphome.md).
@@ -367,7 +368,7 @@ The setup page and other services of the panel change the screen and the lights 
 | `lights on`, `lights off` | `lights on`, `lights off` |
 | `lights set B R G BL` | `lights B R G BL` (brightness 1 to 100, color 0 to 255) |
 
-The daemon writes one file for each command into `/run/tsx/panel-app/control.d`: a temporary file whose name starts with a dot, then a rename. Only root can write the folder. The app reads the folder twice a second. It runs the lines in the order of the file names, removes each file and refuses every other line (log line `control: refused`). The code is `control.h` and `control.cpp` of `tsx_cards`.
+The daemon writes one file for each command into `/run/tsx/panel-app/control.d`: a temporary file in `/run/tsx`, then a rename. When the app runs as root, only root can write the folder. When the app runs as `tsx-panel-app`, that user owns the folder, and root owns the folder above it (see [security.md](security.md)). The app reads the folder twice a second. It runs the lines in the order of the file names, removes each file and refuses every other line (log line `control: refused`). The code is `control.h` and `control.cpp` of `tsx_cards`.
 
 The app writes its values to `/run/tsx/panel-app/screen.state` (mode 644) when a value changes:
 
@@ -394,8 +395,8 @@ The app has two Home Assistant actions. Home Assistant names them `esphome.<devi
 `set_layout` does these steps:
 
 1. The app checks the text with its own rules (`parse_layout`, at most 65536 bytes). An error goes back at once as the error of the action.
-2. The app writes the text to `/run/tsx/panel-app/layout.ha` (mode 600).
-3. The app runs `tsx-layout-check --install` on it, as a child process. The tool checks the text again with the same rules and the icon list. It installs the file atomically as the first layout file (`/var/lib/tsx/panel-layout.json`).
+2. The app writes the text to `layout.ha` (mode 600) in `/run/tsx/panel-app`, or in `/run/tsx/panel-app/app` when it runs as `tsx-panel-app`.
+3. The app runs `tsx-layout-check --install` on it, as a child process. The tool checks the text again with the same rules and the icon list. It installs the file atomically as the first layout file (`/var/lib/tsx/panel-layout.json`). An app that does not run as root cannot write that folder. It sends `layout-install ID` to `tsx-panelctl`, which runs the same command as root and writes the result to `/run/tsx/panel-app/layout.result`. The app waits for the result of its ID, at most 30 s.
 4. The app reads the new file and makes the pages again (see "Reload").
 
 The result of step 3 is the `status` of `get_layout`: `saved` or `error: TEXT`. While one `set_layout` runs, a second one gets an error. The file of the user stays after a reboot, as a save of the layout editor does. Example of a call from a Home Assistant script (the device name is `hall-panel`):
@@ -421,7 +422,7 @@ A UI draws in short bursts. A load governor such as `ondemand` sees the load of 
 | `CPUFREQ_BOOST_MS` | After each touch report, key press, redraw burst (two frames within 100 ms) and wake, the app sets `scaling_min_freq` to the highest frequency for this time. Then it sets the lowest frequency again, and the governor scales the CPU down. 0 or no key: no boost. |
 | `CPUFREQ_SCREEN_OFF` | `lowest`: while the screen is off, the app sets `scaling_max_freq` to the lowest frequency. At the wake it sets the full range again, before the picture. `keep` or no key: the full range. |
 
-The app writes only the two limits of each policy in `/sys/devices/system/cpu/cpufreq` (`TSX_CPUFREQ_SYS` replaces this folder for tests). It writes the full range (`cpuinfo_min_freq` to `cpuinfo_max_freq`) at the start and at the end. The board sets the governor and its settings, for example in a boot service. A write that changes the frequency also changes the core voltage. On a single-core ARM CPU, such a write can take 2 to 10 ms.
+The app writes only the two limits of each policy in `/sys/devices/system/cpu/cpufreq` (`TSX_CPUFREQ_SYS` replaces this folder for tests). For an app that runs as `tsx-panel-app`, the service gives the group of that user write access to the two files before the start. It writes the full range (`cpuinfo_min_freq` to `cpuinfo_max_freq`) at the start and at the end. The board sets the governor and its settings, for example in a boot service. A write that changes the frequency also changes the core voltage. On a single-core ARM CPU, such a write can take 2 to 10 ms.
 
 ## Settings overlay
 
@@ -432,17 +433,24 @@ The overlay has these items:
 | Item | Function |
 |---|---|
 | Brightness slider | Sets the backlight. On a panel with a light sensor (`LIGHT=yes` or `ALS=yes` in `/run/tsx/hw.conf`), the row "Auto brightness: off" under the slider tells that the app does not change the backlight from the sensor. On a panel with no light sensor, the overlay has no such row. |
+| Volume slider | Sets the volume of the panel (see "Volume"). Only a panel with a volume control has it. |
 | Dim after, Screen off after | The times of the screen, with - and + buttons. The steps are Never, 15 s, 30 s, 1 min, 2 min, 5 min, 10 min, 15 min, 30 min, 1 h and 2 h. |
 | Screen off | Turns the screen off at once. |
 | Lights | Turns the panel lights on or off (see "Panel lights"). The button has the `card_on` color while a light is on. A board with no panel lights has no button. |
 | Open setup | Runs `tsx-config setup` and closes the overlay. The setup banner shows the address and the pairing code (see "Setup banner"). |
-| Reboot | Asks "Reboot the panel now?". "Reboot" runs `reboot`, "Cancel" closes the question. |
+| Reboot | Asks "Reboot the panel now?". "Reboot" runs `reboot` (an app that does not run as root sends `reboot` to `tsx-panelctl`), "Cancel" closes the question. |
 | Facts | The address, the host name, the Home Assistant connection, the device name and the versions of the panel app packages. |
 | Close | Closes the overlay. |
 
 A tap outside the overlay closes it. The overlay also closes after `overlay_timeout` (10 s) with no touch. The item "Reload page" of the kiosk overlay is for a browser. The app does not have it.
 
 Test hooks: `TSX_PANEL_APP_REBOOT_CMD` replaces `reboot`, `TSX_PANEL_APP_CONFIG_CMD` replaces `tsx-config`, `TSX_RUN_DIR` replaces `/run/tsx`, `TSX_BACKLIGHT_DIR` replaces the backlight folder, `TSX_PANEL_BOARD_CONF` replaces `/etc/tsx/panel-board.conf`.
+
+## Volume
+
+The volume of the panel is one mixer control of the sound card: `Master`, the softvol of the board in `/etc/asound.conf`. The setup page and `tsx-panelctl` set the same control, so all three show one value. The app reads and writes the control with the control ioctls of the kernel, as a member of the group `audio`. It needs no alsa-lib. `tsx-panel-app-run` gives the app the card of the board (`TSX_SOUND_CARD` of `board.sh`) as `TSX_PANEL_APP_SOUND_CARD`. `TSX_PANEL_APP_VOLUME_CTL` names another control. The percent is the position in the range of the control: for the softvol of `Master` with 101 steps, the percent is the raw value.
+
+With no card or no control, the Volume number is unknown and the overlay has no volume slider. The app tries to open the control again every 10 s, because the board makes the softvol at boot. Music Assistant sets the volume of a Sendspin player on top of `Master` (see [sendspin.md](sendspin.md)).
 
 ## Panel lights
 
@@ -546,15 +554,30 @@ Later starts use the saved values. So a new host name does not make a new device
 
 `tsx-panel-app-run --print` shows the values and starts nothing. The log of the program is `/var/log/tsx-panel-app.log`.
 
+### The user of the program
+
+The program runs as the user `tsx-panel-app` (the package makes it) when the program can do so: the program has the text `TSX_PANEL_APP_OUT_DIR`. An older program runs as root. `PANEL_APP_USER` of `/etc/tsx/panel-app.conf` changes the choice: empty is the choice above, `root` is always root. `tsx-panel-app-run --user` prints the user. [security.md](security.md) lists the groups and the root helper.
+
+Before each start, the service runs `tsx-panel-app-run --prepare` as root. It does these steps:
+
+1. It saves the identity (see above).
+2. It moves the ESPHome preferences from `PANEL_APP_PREFDIR` to `PANEL_APP_PREFDIR/app` (mode 700, owned by the user) once. The program gets this folder as `ESPHOME_PREFDIR`. `PANEL_APP_PREFDIR` gets mode 711. Root keeps the token of the layout editor there.
+3. It makes `/run/tsx/panel-app/app` and `/run/tsx/panel-app/control.d` for the user. `/run/tsx/panel-app` stays a folder of root.
+4. It makes `/run/tsx-idled.state`, `/run/tsx/panel-app.state`, `/run/tsx/panel-app/screen.state` and `/run/tsx/panel-app/entities.json` links to the files of the program in `/run/tsx/panel-app/app`. The program gets this folder as `TSX_PANEL_APP_OUT_DIR`.
+5. It gives the folders of `PANEL_APP_DIRS` to the user.
+6. For a user that is not root: it gives the group of the user write access to `scaling_min_freq` and `scaling_max_freq` of each CPU policy, and to `brightness` and `multi_intensity` of the LEDs of `PANEL_APP_LEDS` (shell patterns of names in `/sys/class/leds`, the board sets them).
+
+A program that does not run as root gets `TSX_PANEL_APP_PANELCTL`, the FIFO of `tsx-panelctl`. It sends the actions that need root there: `reboot`, `setup`, `blank-timeout`, `dim-timeout`, `dim-level` and `layout-install`.
+
 ## Setup banner
 
-While the pairing code of the setup page works, `tsx-setupd` writes `/run/tsx-setup/screen.json` with the pairing code, the port and the addresses of the panel. The app checks the file every 2 s. While the file is less than 30 s old, the app shows a bar at the top of the screen: `Setup: http://ADDRESS:PORT/setup    Code: CODE`. The bar takes no touch: a tap goes to the card below it. The log tells only that the bar is on or off. It never has the code.
+While the pairing code of the setup page works, `tsx-setupd` writes `/run/tsx-setup/screen.json` with the pairing code, the port and the addresses of the panel. The file has the group `tsx-setup-screen` and mode 640, so the app as `tsx-panel-app` can read it. The app checks the file every 2 s. While the file is less than 30 s old, the app shows a bar at the top of the screen: `Setup: http://ADDRESS:PORT/setup    Code: CODE`. The bar takes no touch: a tap goes to the card below it. The log tells only that the bar is on or off. It never has the code.
 
-The key action `"setup"` runs `tsx-config setup`. That command opens the window for about 15 minutes (see [setup.md](setup.md)). An administrator of Home Assistant needs no code: see "Log in with Home Assistant" in [setup.md](setup.md). The environment variable `TSX_PANEL_APP_SETUP_CMD` replaces the command for a test.
+The key action `"setup"` runs `tsx-config setup` (an app that does not run as root sends `setup` to `tsx-panelctl`). That command opens the window for about 15 minutes (see [setup.md](setup.md)). An administrator of Home Assistant needs no code: see "Log in with Home Assistant" in [setup.md](setup.md). The environment variable `TSX_PANEL_APP_SETUP_CMD` replaces the command for a test.
 
 ## Entity list
 
-The app writes `/run/tsx/panel-app/entities.json` at most every 2 s, after a state changes or after a reload. The layout editor of the setup page reads it. The file has the entities of the layout and their last states:
+The app writes `/run/tsx/panel-app/entities.json` (a link to `/run/tsx/panel-app/app/entities.json` for an app that runs as `tsx-panel-app`) at most every 2 s, after a state changes or after a reload. The layout editor of the setup page reads it. The file has the entities of the layout and their last states:
 
 ```json
 {"uptime": 3351, "entities": [{"entity_id": "light.kitchen", "name": "Kitchen", "state": "on"}]}

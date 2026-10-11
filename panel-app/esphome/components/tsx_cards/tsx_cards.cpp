@@ -423,6 +423,13 @@ void TsxCards::open_setup_() {
     return;
   }
   const char *cmd = getenv("TSX_PANEL_APP_SETUP_CMD");
+  if ((cmd == nullptr || cmd[0] == '\0') && !this->panelctl_.empty()) {
+    // Not root: tsx-panelctl runs tsx-config setup (as root).
+    ESP_LOGI(TAG, "setup: tsx-panelctl setup");
+    this->panelctl_send_("setup");
+    this->last_setup_poll_ = millis() - 1000;
+    return;
+  }
   if (cmd == nullptr || cmd[0] == '\0')
     cmd = "tsx-config";
   char *const argv[] = {const_cast<char *>(cmd), const_cast<char *>("setup"), nullptr};

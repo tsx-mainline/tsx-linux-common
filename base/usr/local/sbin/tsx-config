@@ -727,24 +727,28 @@ apply() {
 		esac
 	fi
 
-	# HA_API_KEY: /run/tsx/esphome.key, mode 640. tsx-esphome and tsx-panel-app
-	# (root) and the voice satellite (user kiosk) read it at start. If the
-	# file exists but cannot be read, they refuse to start rather than
-	# serve plaintext (rootfs/voice/shim/tsx_panel/security.py). The script
-	# writes it under umask 077 first, so it is never world-readable, not
-	# even briefly. The group kiosk exists only when the image has the kiosk
-	# package. Then the file gets this group, so that the voice satellite
-	# can read it, and a failure is a warning. Without the group (for
-	# example on a panel with no kiosk package), the file stays root:root
-	# and apply says nothing about it: only root reads the key.
+	# HA_API_KEY: /run/tsx/esphome.key, mode 640. tsx-esphome (root), the
+	# voice satellite (user kiosk) and the panel app (user tsx-panel-app)
+	# read it at start. If the file exists but cannot be read, they refuse to
+	# start rather than serve plaintext (rootfs/voice/shim/tsx_panel/security.py).
+	# The script writes it under umask 077 first, so it is never
+	# world-readable, not even briefly. The file gets the first group of
+	# KEY_GROUPS that exists: kiosk (a panel with the kiosk package), else
+	# tsx-panel-app (a panel with the panel app as a user that is not root).
+	# A failure is a warning. Without such a group, the file stays root:root
+	# and apply says nothing about it: only root reads the key. The owner
+	# stays root, so a reader cannot change the key.
 	key=$(cfg_get HA_API_KEY) || key=
 	keysum=
 	if [ -n "$key" ]; then
 		tmp="$RUN/esphome.key.tmp.$$"
 		(umask 077; printf '%s\n' "$key" > "$tmp")
-		if grep -q '^kiosk:' "$PREFIX/etc/group" 2>/dev/null \
-			&& ! chgrp kiosk "$tmp" 2>/dev/null && [ "$(id -u)" = 0 ]; then
-			log "WARNING: could not give group kiosk read access to $RUN/esphome.key: the voice satellite (VOICE=on) will refuse to start"
+		kgrp=
+		for g in ${TSX_KEY_GROUPS:-kiosk tsx-panel-app}; do
+			if grep -q "^$g:" "$PREFIX/etc/group" 2>/dev/null; then kgrp=$g; break; fi
+		done
+		if [ -n "$kgrp" ] && ! chgrp "$kgrp" "$tmp" 2>/dev/null && [ "$(id -u)" = 0 ]; then
+			log "WARNING: could not give group $kgrp read access to $RUN/esphome.key: its readers (the voice satellite, the panel app) will refuse to start"
 		fi
 		chmod 640 "$tmp" && mv "$tmp" "$RUN/esphome.key"
 		keysum=$(printf '%s' "$key" | sha256sum | cut -d' ' -f1)

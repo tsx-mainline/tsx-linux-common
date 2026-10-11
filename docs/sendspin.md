@@ -39,4 +39,4 @@ Two volumes act on the music:
 
 ## Least privilege
 
-The player has its own user. It can play sound (group `audio`), talk to avahi over D-Bus and write its state folder, its control socket in `/run/sendspin-cli` and its log. It cannot read `panel.conf` or the HA API key.
+The player has its own user. It can play sound (group `audio`), talk to avahi over D-Bus and write its state folder, its control socket in `/run/sendspin-cli` and its log. It cannot read `panel.conf` or the HA API key. See [security.md](security.md).

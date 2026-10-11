@@ -23,13 +23,19 @@
 //     lights          on|off B R G BL (only with lights of the panel)
 // - The SHA-256 of the layout text, for the "Layout hash" sensor and the
 //   get_layout action.
+// - The lines for the FIFO of tsx-panelctl, for a program that does not run
+//   as root, and the result file of "layout-install".
 #pragma once
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <fcntl.h>
+#include <sstream>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -158,6 +164,76 @@ inline std::string screen_state_text(int screen, int backlight, int dim_s, int b
     out += buf;
   }
   return out;
+}
+
+// ---- the root helper tsx-panelctl (docs/security.md) ----
+// A program that does not run as root asks tsx-panelctl for the actions that
+// need root: one line on its FIFO.
+
+// The tsx-panelctl line for a key of panel.conf that the app sets, or "" for
+// a key that tsx-panelctl does not take. The value must be digits.
+inline std::string panelctl_config_line(const std::string &key, const std::string &value) {
+  if (value.empty() || value.size() > 6 || value.find_first_not_of("0123456789") != std::string::npos)
+    return "";
+  if (key == "BLANK_TIMEOUT")
+    return "blank-timeout " + value;
+  if (key == "DIM_TIMEOUT")
+    return "dim-timeout " + value;
+  if (key == "DIM_LEVEL")
+    return "dim-level " + value;
+  return "";
+}
+
+// Write one line to the FIFO of tsx-panelctl. The open does not wait: with no
+// daemon (no reader) it fails with ENXIO. err gets the reason of a failure.
+inline bool fifo_send_line(const std::string &fifo, const std::string &line, std::string &err) {
+  if (line.empty() || line.size() > 200 || line.find('\n') != std::string::npos) {
+    err = "bad command line";
+    return false;
+  }
+  struct stat st;
+  if (lstat(fifo.c_str(), &st) != 0 || !S_ISFIFO(st.st_mode)) {
+    err = "no FIFO " + fifo;
+    return false;
+  }
+  int fd = open(fifo.c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+  if (fd < 0) {
+    err = std::string("cannot open ") + fifo + ": " + strerror(errno);
+    return false;
+  }
+  std::string text = line + "\n";
+  bool ok = write(fd, text.data(), text.size()) == (ssize_t) text.size();
+  if (!ok)
+    err = std::string("cannot write ") + fifo + ": " + strerror(errno);
+  close(fd);
+  return ok;
+}
+
+// The result file of "layout-install ID" (tsx-panelctl): "id ID", "rc N"
+// and the output of tsx-layout-check. True when the file is the result of
+// the request id; rc and first (the first line of the output) are set then.
+inline bool parse_layout_result(const std::string &text, int id, int &rc, std::string &first) {
+  std::istringstream in(text);
+  std::string line;
+  int got_id = -1;
+  rc = -1;
+  first.clear();
+  int n = 0;
+  while (std::getline(in, line)) {
+    n++;
+    if (n == 1) {
+      if (line.compare(0, 3, "id ") != 0)
+        return false;
+      got_id = atoi(line.c_str() + 3);
+    } else if (n == 2) {
+      if (line.compare(0, 3, "rc ") != 0)
+        return false;
+      rc = atoi(line.c_str() + 3);
+    } else if (n == 3) {
+      first = line;
+    }
+  }
+  return n >= 2 && got_id == id && rc >= 0;
 }
 
 // SHA-256 (FIPS 180-4) of a text, as 64 lower-case hex digits.

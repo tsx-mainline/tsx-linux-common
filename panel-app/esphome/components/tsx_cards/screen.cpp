@@ -29,6 +29,7 @@
 //   connection). tsx-autoupdate reads both: it installs only while the
 //   screen is off, and it checks the app after an update reboot.
 #include "tsx_cards.h"
+#include "control.h"
 #include "runstate.h"
 
 #include <algorithm>
@@ -131,9 +132,28 @@ void TsxCards::screen_setup_() {
     this->run_dir_ = rd;
   const char *pd = getenv("ESPHOME_PREFDIR");
   this->pref_dir_ = pd != nullptr && pd[0] != '\0' ? pd : "/var/lib/tsx/panel-app";
+  // A program that does not run as root writes its files into its own
+  // folder (tsx-panel-app-run sets it, docs/security.md). Links at the old
+  // places point there.
+  const char *od = getenv("TSX_PANEL_APP_OUT_DIR");
+  if (od != nullptr && od[0] != '\0') {
+    this->out_dir_ = od;
+    this->idle_state_file_ = this->out_dir_ + "/idled.state";
+    if (this->entities_file_ == "/run/tsx/panel-app/entities.json")
+      this->entities_file_ = this->out_dir_ + "/entities.json";
+  }
   const char *is = getenv("TSX_IDLED_STATE");
   if (is != nullptr && is[0] != '\0')
     this->idle_state_file_ = is;
+  const char *pc = getenv("TSX_PANEL_APP_PANELCTL");
+  if (pc != nullptr && pc[0] != '\0')
+    this->panelctl_ = pc;
+  const char *sc = getenv("TSX_PANEL_APP_SOUND_CARD");
+  if (sc != nullptr && sc[0] != '\0')
+    this->snd_card_ = sc;
+  const char *vc = getenv("TSX_PANEL_APP_VOLUME_CTL");
+  if (vc != nullptr && vc[0] != '\0')
+    this->vol_ctl_ = vc;
   this->started_at_ = (long) ::time(nullptr);
   this->state_files_ready_ = true;
   this->write_app_state_();
@@ -277,7 +297,7 @@ void TsxCards::write_idle_state_(int raw) {
 }
 
 void TsxCards::write_app_state_() {
-  this->write_run_file_(this->run_dir_ + "/panel-app.state",
+  this->write_run_file_(this->out_path_("panel-app.state"),
                         app_state_text((long) getpid(), this->started_at_, this->first_frame_at_,
                                        this->ha_connected_at_, this->connected_));
 }
@@ -493,6 +513,19 @@ void TsxCards::reap_children_() {
   }
   if (this->config_pending_.empty() || (int32_t) (millis() - this->config_due_) < 0 || !this->children_.empty())
     return;
+  if (!this->panelctl_.empty()) {
+    // tsx-panelctl sets the key and runs tsx-config apply (as root).
+    for (auto &kv : this->config_pending_) {
+      std::string line = panelctl_config_line(kv.first, kv.second);
+      if (line.empty())
+        ESP_LOGW(TAG, "%s=%s: tsx-panelctl does not take this key", kv.first.c_str(), kv.second.c_str());
+      else if (this->panelctl_send_(line))
+        ESP_LOGI(TAG, "%s=%s: sent to tsx-panelctl", kv.first.c_str(), kv.second.c_str());
+    }
+    this->config_pending_.clear();
+    this->local_set_at_ = millis();
+    return;
+  }
   const char *cmd = getenv("TSX_PANEL_APP_CONFIG_CMD");
   if (cmd == nullptr || cmd[0] == '\0')
     cmd = "tsx-config";

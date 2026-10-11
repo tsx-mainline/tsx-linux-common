@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
@@ -191,27 +192,35 @@ void TsxCards::open_overlay(const char *origin) {
   // takes its space.
   bool light_row = has_light_sensor(this->run_dir_ + "/hw.conf");
   int row_h = light_row ? 0 : 38;
+  // A panel with a volume control (volume.cpp) gets a second slider for the
+  // volume, right of the brightness slider.
+  bool vol = this->has_volume();
+  int bx = vol ? 18 : 46, vx = 82;
+  auto make_slider = [&](int x, int lo, int hi, int value) {
+    lv_obj_t *sl = lv_slider_create(b);
+    lv_obj_remove_style_all(sl);
+    lv_obj_set_pos(sl, x, 64);
+    lv_obj_set_size(sl, 44, bh - 214 + row_h);
+    lv_slider_set_range(sl, lo, hi);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(th.background), LV_PART_MAIN);
+    lv_obj_set_style_radius(sl, 12, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(th.card_on), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(sl, 12, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(th.text), LV_PART_KNOB);
+    lv_obj_set_style_radius(sl, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(sl, 4, LV_PART_KNOB);
+    lv_obj_remove_flag(sl, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_slider_set_value(sl, value, LV_ANIM_OFF);
+    return sl;
+  };
   lv_obj_t *icon = this->label_(b, FONT_ICON, th.text);
   this->set_icon_(icon, "brightness-6", "brightness-6");
-  lv_obj_set_pos(icon, 50, 14);
-  this->ov_slider_ = lv_slider_create(b);
+  lv_obj_set_pos(icon, bx + 4, 14);
+  this->ov_slider_ = make_slider(bx, 1, 100, (int) this->level_pct_);
   lv_obj_t *sl = this->ov_slider_;
-  lv_obj_remove_style_all(sl);
-  lv_obj_set_pos(sl, 46, 64);
-  lv_obj_set_size(sl, 44, bh - 214 + row_h);
-  lv_slider_set_range(sl, 1, 100);
-  lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(sl, lv_color_hex(th.background), LV_PART_MAIN);
-  lv_obj_set_style_radius(sl, 12, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_color(sl, lv_color_hex(th.card_on), LV_PART_INDICATOR);
-  lv_obj_set_style_radius(sl, 12, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_KNOB);
-  lv_obj_set_style_bg_color(sl, lv_color_hex(th.text), LV_PART_KNOB);
-  lv_obj_set_style_radius(sl, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-  lv_obj_set_style_pad_all(sl, 4, LV_PART_KNOB);
-  lv_obj_remove_flag(sl, LV_OBJ_FLAG_GESTURE_BUBBLE);
-  lv_slider_set_value(sl, (int) this->level_pct_, LV_ANIM_OFF);
   lv_obj_add_event_cb(
       sl,
       [](lv_event_t *e) {
@@ -232,16 +241,38 @@ void TsxCards::open_overlay(const char *origin) {
       },
       LV_EVENT_RELEASED, this);
   this->ov_level_ = this->label_(b, FONT_LABEL, th.text);
-  lv_obj_set_width(this->ov_level_, 120);
+  lv_obj_set_width(this->ov_level_, vol ? 80 : 120);
   lv_obj_set_style_text_align(this->ov_level_, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_pos(this->ov_level_, 8, bh - 142 + row_h);
+  lv_obj_set_pos(this->ov_level_, vol ? bx - 18 : 8, bh - 142 + row_h);
   if (light_row) {
     lv_obj_t *note = this->label_(b, FONT_SMALL, th.text_dim);
-    lv_obj_set_width(note, 128);
+    lv_obj_set_width(note, vol ? 80 : 128);
     lv_label_set_long_mode(note, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(note, "Auto brightness: off");
-    lv_obj_set_pos(note, 4, bh - 108);
+    lv_obj_set_pos(note, vol ? 0 : 4, bh - 108);
+  }
+  if (vol) {
+    icon = this->label_(b, FONT_ICON, th.text);
+    this->set_icon_(icon, "volume-high", "volume-high");
+    lv_obj_set_pos(icon, vx + 4, 14);
+    float v = this->volume();
+    this->ov_vol_slider_ = make_slider(vx, 0, 100, std::isnan(v) ? 0 : (int) v);
+    lv_obj_add_event_cb(
+        this->ov_vol_slider_,
+        [](lv_event_t *e) {
+          auto *self = static_cast<TsxCards *>(lv_event_get_user_data(e));
+          int val = lv_slider_get_value(static_cast<lv_obj_t *>(lv_event_get_target(e)));
+          self->set_volume(val);
+          char buf[16];
+          snprintf(buf, sizeof buf, "%d%%", val);
+          lv_label_set_text(self->ov_vol_level_, buf);
+        },
+        LV_EVENT_VALUE_CHANGED, this);
+    this->ov_vol_level_ = this->label_(b, FONT_LABEL, th.text);
+    lv_obj_set_width(this->ov_vol_level_, 80);
+    lv_obj_set_style_text_align(this->ov_vol_level_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(this->ov_vol_level_, vx - 18, bh - 142 + row_h);
   }
 
   // Right: the times, the buttons and the facts.
@@ -325,6 +356,14 @@ void TsxCards::overlay_refresh_() {
     snprintf(buf, sizeof buf, "%d%%", (int) this->level_pct_);
     this->set_text_(this->ov_level_, buf);
   }
+  if (this->ov_vol_slider_ != nullptr && !lv_obj_has_state(this->ov_vol_slider_, LV_STATE_PRESSED)) {
+    float v = this->volume();
+    if (!std::isnan(v)) {
+      lv_slider_set_value(this->ov_vol_slider_, (int) v, LV_ANIM_OFF);
+      snprintf(buf, sizeof buf, "%d%%", (int) v);
+      this->set_text_(this->ov_vol_level_, buf);
+    }
+  }
   this->set_text_(this->ov_dim_, time_text(this->dim_timeout_).c_str());
   this->set_text_(this->ov_blank_, time_text(this->blank_timeout_).c_str());
   if (this->ov_bars_ != nullptr)
@@ -369,6 +408,12 @@ void TsxCards::overlay_confirm_reboot_() {
   lv_obj_align(no, LV_ALIGN_BOTTOM_LEFT, 24, -24);
   lv_obj_t *yes = this->button_(b, this->ov_btns_, "restart", "Reboot", 170, 60, [this, l]() {
     const char *cmd = getenv("TSX_PANEL_APP_REBOOT_CMD");
+    if ((cmd == nullptr || cmd[0] == '\0') && !this->panelctl_.empty()) {
+      // Not root: tsx-panelctl reboots the panel.
+      ESP_LOGW(TAG, "overlay: reboot (tsx-panelctl)");
+      lv_label_set_text(l, this->panelctl_send_("reboot") ? "Rebooting ..." : "The reboot failed");
+      return;
+    }
     if (cmd == nullptr || cmd[0] == '\0')
       cmd = "reboot";
     ESP_LOGW(TAG, "overlay: reboot (%s)", cmd);
@@ -391,6 +436,7 @@ void TsxCards::close_overlay() {
   lv_obj_delete(this->ov_catcher_);
   this->ov_catcher_ = this->ov_box_ = this->ov_slider_ = this->ov_level_ = nullptr;
   this->ov_dim_ = this->ov_blank_ = this->ov_info_ = this->ov_bars_ = this->ov_confirm_ = nullptr;
+  this->ov_vol_slider_ = this->ov_vol_level_ = nullptr;
   this->ov_btns_.clear();
   ESP_LOGI(TAG, "settings overlay closed");
 }

@@ -152,6 +152,20 @@ if [ -n "$ROOT" ]; then
 	case "$OUT" in *"group kiosk"*) bad "no group kiosk, as root: apply warns: $OUT";; *) ok "no group kiosk, as root: no warning (a panel with no kiosk package)";; esac
 fi
 
+echo "== HA_API_KEY and the group tsx-panel-app (a panel with the panel app and no kiosk) =="
+printf 'root:x:0:\ntsx-panel-app:x:1005:\n' > "$FXK/etc/group"
+rm -f "$FXK/run/tsx/esphome.key"; OUT=$(applyk)
+case "$OUT" in *"WARNING: could not give group"*) bad "the group tsx-panel-app, run as a user: apply warns: $OUT";; *) ok "the group tsx-panel-app, run as a user: no warning";; esac
+keyok && ok "the group tsx-panel-app: the key file is written with mode 640" || bad "tsx-panel-app: key file missing or wrong mode"
+if [ -n "$ROOT" ]; then
+	rm -f "$FXK/run/tsx/esphome.key"; OUT=$(runk)
+	case "$OUT" in *"WARNING: could not give group tsx-panel-app read access"*) ok "the group tsx-panel-app and chgrp fails (as root): the warning names it";; *) bad "tsx-panel-app as root: $OUT";; esac
+	printf 'root:x:0:\ntsx-panel-app:x:1005:\nkiosk:x:1000:\n' > "$FXK/etc/group"
+	rm -f "$FXK/run/tsx/esphome.key"; OUT=$(runk)
+	case "$OUT" in *"WARNING: could not give group kiosk read access"*) ok "both groups: kiosk comes first";; *) bad "both groups: $OUT";; esac
+fi
+rm -f "$FXK/etc/group"
+
 echo "== apply warns while the API is open (no HA_API_KEY, no HA_ALLOW_FROM) =="
 TSX_CONF="$CFG" busybox sh "$SCRIPT" unset HA_ALLOW_FROM >/dev/null 2>&1 || true
 OUT=$(apply_ 2>&1)   # not piped into grep -q: pipefail would see the SIGPIPE

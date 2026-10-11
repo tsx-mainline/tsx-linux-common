@@ -505,6 +505,39 @@ echo "on 17" > "$T/idled.state"; printf 'level 17\nmax 31\n' > "$T/run/brightnes
 [ "$(pa state | sed -n 1p)" = "owner kiosk" ] && ok "state: owner kiosk while tsx-idled writes its state" || bad "state owner: $(pa state)"
 pa state | grep -q '^lights' && bad "state lists lights with no panel app" || ok "state lists no lights with no panel app"
 
+ls -A "$T/run" | grep -q '^\.panel-app-cmd' && bad "a temporary file of pa_send stays in the run folder" || ok "no temporary file of pa_send stays in the run folder"
+
+echo "== layout-install: tsx-layout-check of the fixed file, the result in layout.result =="
+cat > "$T/bin/tsx-layout-check" <<EOF
+#!/bin/sh
+echo "tsx-layout-check \$*" >> "$T/cmds.log"
+[ -e "$T/layout-fail" ] && { echo "card 3: no entity_id"; echo "second line"; exit 1; }
+exit 0
+EOF
+chmod +x "$T/bin/tsx-layout-check"
+: > "$T/cmds.log"; rm -f "$T/run/panel-app/layout.result"
+send "layout-install 17"
+grep -qxF "tsx-layout-check --install $T/run/panel-app/app/layout.ha /var/lib/tsx/panel-layout.json" "$T/cmds.log" \
+	&& ok "layout-install runs tsx-layout-check --install on the fixed file" || bad "layout-install: $(cat "$T/cmds.log")"
+[ "$(sed -n '1,2p' "$T/run/panel-app/layout.result" 2>/dev/null)" = "$(printf 'id 17\nrc 0')" ] \
+	&& ok "layout.result: id 17, rc 0" || bad "layout.result: $(cat "$T/run/panel-app/layout.result" 2>&1)"
+touch "$T/layout-fail"; send "layout-install 18"; rm -f "$T/layout-fail"
+[ "$(cat "$T/run/panel-app/layout.result" 2>/dev/null)" = "$(printf 'id 18\nrc 1\ncard 3: no entity_id\nsecond line')" ] \
+	&& ok "layout.result of a refused layout: rc 1 and the output" || bad "layout.result (refused): $(cat "$T/run/panel-app/layout.result" 2>&1)"
+[ "$(stat -c %a "$T/run/panel-app/layout.result")" = 644 ] && ok "layout.result has mode 644" || bad "layout.result mode"
+: > "$T/cmds.log"; r0=$(grep -c 'rejected:' "$T/panelctl.log")
+send "layout-install"; send "layout-install x"; send "layout-install 1234567"; send "layout-install 1 2"; send "layout-install -1"
+[ ! -s "$T/cmds.log" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 5)) ] && ok "5 bad layout-install lines rejected" || bad "bad layout-install lines: $(cat "$T/cmds.log")"
+ls -A "$T/run" | grep -q '^\.panel-app-layout' && bad "a temporary result file stays" || ok "no temporary result file stays"
+
+echo "== the group of the FIFO: the first group of TSX_PANELCTL_GROUPS that exists =="
+G=$(id -gn)
+env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run4" TSX_PANELCTL_ONESHOT=1 TSX_PANELCTL_GROUPS="tsx-no-such-group $G" busybox sh "$SCRIPT" > "$T/oneshot4.log" 2>&1 &
+OP=$!
+for _ in $(seq 1 20); do grep -q "listening on" "$T/oneshot4.log" 2>/dev/null && break; sleep 0.1; done
+[ "$(stat -c '%G %a' "$T/run4/panelctl" 2>/dev/null)" = "$G 660" ] && ok "FIFO: group $G (the first one that exists), mode 660" || bad "FIFO group: $(stat -c '%G %a' "$T/run4/panelctl" 2>&1)"
+echo "reboot x" > "$T/run4/panelctl"; wait $OP 2>/dev/null
+
 echo "== volume without TSX_VOLUME_CMD: the Master control of the sound card =="
 mkdir -p "$T/asound/FakeCard" "$T/bin3"
 printf '#!/bin/sh\necho "Simple mixer control Master,0"\necho "  Front Left: Playback 40 [63%%] [on]"\n' > "$T/bin3/amixer"; chmod +x "$T/bin3/amixer"

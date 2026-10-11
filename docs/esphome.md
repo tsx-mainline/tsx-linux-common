@@ -47,7 +47,7 @@ The kiosk panels (this device) and the panel app ([panel-app.md](panel-app.md)) 
 | Screen | switch | yes | yes | Live state |
 | Backlight | number, 1 to 100 % | yes | yes | Live state (the panel app keeps it in its preferences) |
 | Auto brightness | switch | With a light sensor | No panel app board has a light sensor | `AUTO_BRIGHTNESS` |
-| Volume | number, 0 to 100 % | With a sound card | No panel app board has a sound card | The sound card |
+| Volume | number, 0 to 100 % | With a sound card | yes (unknown with no sound card) | The sound card (the `Master` control) |
 | Blank timeout | number, s | yes | yes | `BLANK_TIMEOUT` |
 | Dim timeout, Dim level | number | No dim stage in `tsx-idled` | yes | `DIM_TIMEOUT`, `DIM_LEVEL` |
 | Kiosk URL | text | yes | No | `KIOSK_URL` |

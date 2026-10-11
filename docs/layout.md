@@ -29,7 +29,7 @@ The repo has one directory for each package. A package directory holds the files
 | tsx-hostname | tsx-base | Sets the host name: `PANEL_NAME` from `panel.conf`, else the name that the board suggests, else `<model>-<MAC>`, else `tsx-kiosk` |
 | tsx-setup | tsx-base | Early setup: time zone, `eth0` MAC, zram swap, CPU governor |
 | tsx-data | tsx-base | Moves the writable state to `/data` once and bind-mounts it at every boot |
-| tsx-panelctl | tsx-base | Privileged command FIFO for the unprivileged Home Assistant plugin |
+| tsx-panelctl | tsx-base | Privileged command FIFO for the voice satellite, the kiosk overlay and the panel app (see [Security](security.md)) |
 | kiosk | tsx-kiosk | Compositor and browser |
 | tsx-idled | tsx-kiosk | Screen blanking with wake on touch, backlight schedule, backlight ramp |
 | tsx-setupd | tsx-setup | On-panel setup page |
@@ -42,7 +42,7 @@ The repo has one directory for each package. A package directory holds the files
 | tsx-buttons | tsx-buttons | Front keys and key LEDs. The keys come from `/etc/tsx/buttons-board.conf`, the actions from `/etc/tsx/buttons.conf` |
 | tsx-autoupdate | tsx-autoupdate | Schedules automatic Alpine package updates |
 | tsx-ledbar | tsx-ledbar | Checks the LED bar, recovers it from bootloader mode and sends its color, effect and LED map |
-| tsx-panel-app | tsx-panel-app | The panel app: Home Assistant cards on the screen with no browser. The board gives `/etc/tsx/panel-app-board.conf` |
+| tsx-panel-app | tsx-panel-app | The panel app: Home Assistant cards on the screen with no browser (user `tsx-panel-app`). The board gives `/etc/tsx/panel-app-board.conf` |
 
 ## Not in this repo
 

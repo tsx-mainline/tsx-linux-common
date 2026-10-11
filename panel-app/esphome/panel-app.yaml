@@ -129,6 +129,20 @@ number:
     lambda: return id(panel_cards).backlight();
     set_action:
       - lambda: id(panel_cards).set_backlight(x);
+  # The volume of the panel speaker: the "Master" control of the sound card
+  # (docs/panel-app.md, "Volume"). Unknown on a panel with no sound card.
+  - platform: template
+    name: Volume
+    id: panel_volume
+    icon: mdi:volume-high
+    min_value: 0
+    max_value: 100
+    step: 1
+    unit_of_measurement: "%"
+    update_interval: 2s
+    lambda: return id(panel_cards).volume();
+    set_action:
+      - lambda: id(panel_cards).set_volume(x);
   - platform: template
     name: Blank timeout
     id: panel_blank_timeout

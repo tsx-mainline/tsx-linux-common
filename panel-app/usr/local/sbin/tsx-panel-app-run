@@ -9,17 +9,50 @@
 # so a later change of the host name does not change the device in Home
 # Assistant. See docs/panel-app.md of tsx-linux-common.
 #
-#   tsx-panel-app-run           run the program (exec)
-#   tsx-panel-app-run --print   print the identity and the environment, run nothing
+#   tsx-panel-app-run            run the program (exec)
+#   tsx-panel-app-run --print    print the identity and the environment, run nothing
+#   tsx-panel-app-run --user     print the user that runs the program
+#   tsx-panel-app-run --prepare  (root, the service runs it before the start)
+#                                save the identity, make the folders of the
+#                                program and give them, the sysfs files of
+#                                the program and the links of the state
+#                                files to that user
+#
+# The user (docs/security.md): PANEL_APP_USER of the conf files. Empty: the
+# user tsx-panel-app when it exists and the program can run as a user (the
+# program has the text TSX_PANEL_APP_OUT_DIR), else root. "root": always root.
+# A program that does not run as root gets:
+#   ESPHOME_PREFDIR          PANEL_APP_PREFDIR/app (the user owns it)
+#   TSX_PANEL_APP_OUT_DIR    /run/tsx/panel-app/app: the user owns it, and the
+#                            app writes its state files there. Links at the
+#                            old places (/run/tsx-idled.state,
+#                            /run/tsx/panel-app.state,
+#                            /run/tsx/panel-app/screen.state and
+#                            entities.json) point there.
+#   TSX_PANEL_APP_PANELCTL   the FIFO of tsx-panelctl, for the actions that
+#                            need root (reboot, setup, the screen times in
+#                            panel.conf, layout-install)
+# and write access (its group) to the files of the CPU frequency limits and
+# to the LEDs of PANEL_APP_LEDS (the board names them). The program gets
+# TSX_PANEL_APP_SOUND_CARD (TSX_SOUND_CARD of board.sh) for its volume.
 #
 # Test hooks: TSX_PANEL_APP_CONF, TSX_PANEL_APP_BOARD_CONF,
 # TSX_PANEL_APP_STATE_CONF, TSX_SYS_NET (default /sys/class/net),
-# TSX_HOSTNAME (default: the host name).
+# TSX_HOSTNAME (default: the host name), TSX_RUN_DIR (/run/tsx),
+# TSX_IDLED_STATE (/run/tsx-idled.state), TSX_SYS_CPUFREQ
+# (/sys/devices/system/cpu/cpufreq), TSX_SYS_LEDS (/sys/class/leds),
+# TSX_BOARD_CONF (board.sh).
 set -u
 CONF=${TSX_PANEL_APP_CONF:-/etc/tsx/panel-app.conf}
 BOARD_CONF=${TSX_PANEL_APP_BOARD_CONF:-/etc/tsx/panel-app-board.conf}
 STATE_CONF=${TSX_PANEL_APP_STATE_CONF:-/var/lib/tsx/panel-app.conf}
 SYS_NET=${TSX_SYS_NET:-/sys/class/net}
+RUN=${TSX_RUN_DIR:-/run/tsx}
+PA_RUN=$RUN/panel-app
+OUT=$PA_RUN/app
+IDLED_LINK=${TSX_IDLED_STATE:-/run/tsx-idled.state}
+SYS_CPUFREQ=${TSX_SYS_CPUFREQ:-/sys/devices/system/cpu/cpufreq}
+SYS_LEDS=${TSX_SYS_LEDS:-/sys/class/leds}
 
 PANEL_APP_BIN=/usr/local/bin/tsx-panel-app
 PANEL_APP_PREFDIR=/var/lib/tsx/panel-app
@@ -28,6 +61,8 @@ PANEL_APP_DEVICES=
 PANEL_APP_WAIT=60
 PANEL_APP_ENV=
 PANEL_APP_DIRS=
+PANEL_APP_USER=
+PANEL_APP_LEDS=
 NAME= FRIENDLY_NAME= MAC=
 for f in "$CONF" "$BOARD_CONF"; do
 	if [ -r "$f" ]; then . "$f"; fi
@@ -44,8 +79,31 @@ v=$(state_get MAC); [ -n "$v" ] && MAC=$v
 
 log() { echo "tsx-panel-app-run: $*"; }
 
+# run_user: the user that runs the program (see the top)
+run_user() {
+	case "$PANEL_APP_USER" in
+	root) echo root; return 0;;
+	'') ru=tsx-panel-app; ru_auto=1;;
+	*) ru=$PANEL_APP_USER; ru_auto=;;
+	esac
+	if ! id -u "$ru" >/dev/null 2>&1; then
+		[ -n "$ru_auto" ] || log "no user $ru: the program runs as root" >&2
+		echo root; return 0
+	fi
+	if [ -r "$PANEL_APP_BIN" ] && ! grep -q TSX_PANEL_APP_OUT_DIR "$PANEL_APP_BIN" 2>/dev/null; then
+		log "$PANEL_APP_BIN cannot run as a user (an older build): it runs as root" >&2
+		echo root; return 0
+	fi
+	echo "$ru"
+}
+
 valid_name() { printf '%s' "$1" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,29}[a-z0-9])?$'; }
 valid_mac() { printf '%s' "$1" | grep -Eqi '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'; }
+
+if [ "${1:-}" = --user ]; then
+	run_user
+	exit 0
+fi
 
 host=${TSX_HOSTNAME:-$(hostname 2>/dev/null)}
 new=
@@ -70,8 +128,9 @@ if ! valid_mac "$MAC"; then
 		log "no MAC on $PANEL_APP_NET_IF: the program uses the MAC of its configuration"
 	fi
 fi
-if [ -n "$new" ] && [ -n "$MAC" ] && [ "${1:-}" != --print ]; then
-	# Keep the identity of this panel (written once, atomically).
+# Keep the identity of this panel (written once, atomically). The folder of
+# the file belongs to root: --prepare (root) writes it before a start as a user.
+if [ -n "$new" ] && [ -n "$MAC" ] && [ "${1:-}" != --print ] && [ -w "$(dirname "$STATE_CONF")" ]; then
 	d=$(dirname "$STATE_CONF")
 	mkdir -p "$d" && tmp="$STATE_CONF.tmp.$$" && {
 		echo "# The identity of the panel app in Home Assistant (tsx-panel-app-run wrote it at the first start)."
@@ -79,9 +138,87 @@ if [ -n "$new" ] && [ -n "$MAC" ] && [ "${1:-}" != --print ]; then
 	} > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$STATE_CONF" && log "identity saved in $STATE_CONF"
 fi
 
+# own PATH USER MODE: make the folder PATH (no link) and give it to USER
+own() {
+	[ -L "$1" ] && rm -f "$1"
+	[ -d "$1" ] || { rm -f "$1"; mkdir -p "$1"; } || return 1
+	chown "$2:$2" "$1" && chmod "$3" "$1"
+}
+
+# link PATH TARGET: PATH becomes a link to TARGET (a file or an old link goes)
+link() {
+	[ -d "$1" ] && [ ! -L "$1" ] && { log "$1 is a folder: no link"; return 1; }
+	ln -sfn "$2" "$1"
+}
+
+# group_write FILE GROUP: the group of FILE may write it (a sysfs file)
+group_write() {
+	[ -e "$1" ] || return 0
+	chgrp "$2" "$1" && chmod g+w "$1"
+}
+
+prepare() {
+	[ -d "$(dirname "$STATE_CONF")" ] || mkdir -p "$(dirname "$STATE_CONF")"
+	pu=$(run_user)
+	pg=$(id -gn "$pu" 2>/dev/null) || pg=$pu
+	rc=0
+	# The ESPHome preferences: PANEL_APP_PREFDIR/app. Up to 0.3.4 they were
+	# in PANEL_APP_PREFDIR itself. Root keeps PANEL_APP_PREFDIR (the setup
+	# helper writes the token of the layout editor there).
+	mkdir -p "$PANEL_APP_PREFDIR" && chmod 711 "$PANEL_APP_PREFDIR" || rc=1
+	own "$PANEL_APP_PREFDIR/app" "$pu" 700 || rc=1
+	for f in "$PANEL_APP_PREFDIR"/*.prefs "$PANEL_APP_PREFDIR"/backlight; do
+		[ -f "$f" ] && [ ! -L "$f" ] || continue
+		[ -e "$PANEL_APP_PREFDIR/app/${f##*/}" ] || mv -f "$f" "$PANEL_APP_PREFDIR/app/" || rc=1
+	done
+	chown -R "$pu:$pu" "$PANEL_APP_PREFDIR/app" || rc=1
+	# The run folders: root owns PA_RUN, the user owns OUT and control.d.
+	[ -L "$PA_RUN" ] && { log "$PA_RUN is a link"; return 1; }
+	mkdir -p "$RUN" "$PA_RUN" && chmod 755 "$PA_RUN" || rc=1
+	if [ "$(id -u)" = 0 ]; then chown 0:0 "$PA_RUN" || rc=1; fi
+	own "$OUT" "$pu" 755 || rc=1
+	own "$PA_RUN/control.d" "$pu" 755 || rc=1
+	link "$IDLED_LINK" "$OUT/idled.state" || rc=1
+	link "$RUN/panel-app.state" "$OUT/panel-app.state" || rc=1
+	link "$PA_RUN/screen.state" "$OUT/screen.state" || rc=1
+	link "$PA_RUN/entities.json" "$OUT/entities.json" || rc=1
+	for d in $PANEL_APP_DIRS; do
+		own "$d" "$pu" 700 || rc=1
+	done
+	if [ "$pu" != root ]; then
+		# The CPU frequency limits (the boost of the app, docs/panel-app.md
+		# "CPU speed") and the LEDs that the board names.
+		for f in "$SYS_CPUFREQ"/policy*/scaling_min_freq "$SYS_CPUFREQ"/policy*/scaling_max_freq; do
+			group_write "$f" "$pg" || rc=1
+		done
+		for p in $PANEL_APP_LEDS; do
+			for d in "$SYS_LEDS"/$p; do
+				[ -d "$d" ] || continue
+				group_write "$d/brightness" "$pg" || rc=1
+				group_write "$d/multi_intensity" "$pg" || rc=1
+			done
+		done
+	fi
+	[ "$rc" = 0 ] || log "--prepare: a step failed (see above)"
+	log "prepared for the user $pu"
+	return 0
+}
+
+if [ "${1:-}" = --prepare ]; then
+	[ "$(id -u)" = 0 ] || [ -n "${TSX_PANEL_APP_PREPARE_NONROOT:-}" ] || { log "--prepare must run as root"; exit 1; }
+	prepare
+	exit $?
+fi
+
 export TSX_PANEL_APP_NAME="$NAME" TSX_PANEL_APP_FRIENDLY_NAME="$FRIENDLY_NAME"
 [ -n "$MAC" ] && export TSX_PANEL_APP_MAC="$MAC"
-export ESPHOME_PREFDIR="$PANEL_APP_PREFDIR"
+prefdir=$PANEL_APP_PREFDIR
+[ -d "$PANEL_APP_PREFDIR/app" ] && [ -w "$PANEL_APP_PREFDIR/app" ] && prefdir=$PANEL_APP_PREFDIR/app
+export ESPHOME_PREFDIR="$prefdir"
+[ -d "$OUT" ] && [ -w "$OUT" ] && export TSX_PANEL_APP_OUT_DIR="$OUT"
+[ "$(id -u)" = 0 ] || export TSX_PANEL_APP_PANELCTL="$RUN/panelctl"
+card=$( (. "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}" >/dev/null 2>&1; echo "${TSX_SOUND_CARD:-}") 2>/dev/null)
+[ -n "$card" ] && export TSX_PANEL_APP_SOUND_CARD="$card"
 for w in $PANEL_APP_ENV; do
 	case "$w" in [A-Za-z_]*=*) export "$w";; *) log "ignored PANEL_APP_ENV word '$w'";; esac
 done
@@ -92,11 +229,12 @@ if [ "${1:-}" = --print ]; then
 	echo "MAC=$MAC"
 	echo "BIN=$PANEL_APP_BIN"
 	echo "ENV=$PANEL_APP_ENV"
+	echo "USER=$(run_user)"
 	exit 0
 fi
 
 [ -x "$PANEL_APP_BIN" ] || { log "no program $PANEL_APP_BIN"; exit 1; }
-mkdir -p "$PANEL_APP_PREFDIR" && chmod 700 "$PANEL_APP_PREFDIR"
+mkdir -p "$prefdir" && chmod 700 "$prefdir"
 for d in $PANEL_APP_DIRS; do
 	mkdir -p "$d" && chmod 700 "$d"
 done
@@ -108,5 +246,5 @@ for dev in $PANEL_APP_DEVICES; do
 	done
 	[ -e "$dev" ] || log "$dev is missing after ${PANEL_APP_WAIT}s: starting anyway"
 done
-log "start $NAME ($FRIENDLY_NAME, MAC ${MAC:-from the configuration})"
+log "start $NAME ($FRIENDLY_NAME, MAC ${MAC:-from the configuration}) as $(id -un 2>/dev/null || id -u)"
 exec "$PANEL_APP_BIN"

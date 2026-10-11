@@ -185,6 +185,13 @@ class TsxCards : public Component {
   void set_dim_timeout(float s);
   void set_dim_level(float pct);
 
+  // ---- the volume of the panel (volume.cpp) ----
+  /// The volume control of the sound card in percent (0 to 100), or NAN when
+  /// the panel has no such control (TSX_PANEL_APP_SOUND_CARD, TSX_PANEL_APP_VOLUME_CTL).
+  float volume();
+  bool has_volume();
+  void set_volume(float pct);
+
   // ---- the settings overlay (overlay.cpp) ----
   void set_overlay_timeout(uint32_t ms) { this->overlay_timeout_ = ms; }
   void open_overlay(const char *origin);
@@ -278,6 +285,13 @@ class TsxCards : public Component {
   void cpu_apply_(CpuMode m);
   void config_set_(const char *key, const std::string &value);
   void reap_children_();
+  // The root helper tsx-panelctl (its FIFO), for a program that does not run
+  // as root (docs/security.md). Empty panelctl_: run the tools directly.
+  bool panelctl_send_(const std::string &line);
+  std::string out_path_(const char *name) const;
+  // volume.cpp
+  bool volume_open_();
+  void volume_close_();
   // control.cpp: the commands of tsx-panelctl and screen.state (control.h)
   void control_loop_();
   void apply_control_(const std::string &line);
@@ -413,6 +427,24 @@ class TsxCards : public Component {
   uint64_t last_render_start_{0};
   std::string pref_dir_;
   std::string run_dir_{"/run/tsx"};
+  // The folder of the files that the app writes (TSX_PANEL_APP_OUT_DIR).
+  // Empty: the old places (run_dir_ and /run/tsx-idled.state).
+  std::string out_dir_;
+  // The FIFO of tsx-panelctl (TSX_PANEL_APP_PANELCTL). Set: the app asks
+  // tsx-panelctl for the actions that need root.
+  std::string panelctl_;
+  int layout_req_id_{0};
+  uint32_t layout_wait_until_{0};  // 0: no layout-install waits for its result
+  uint32_t layout_poll_{0};
+  // The volume (volume.cpp).
+  std::string snd_card_;
+  std::string vol_ctl_{"Master"};
+  int vol_fd_{-1};
+  unsigned int vol_numid_{0};
+  unsigned int vol_count_{0};
+  long vol_min_{0}, vol_max_{0};
+  uint32_t vol_retry_at_{0};
+  bool vol_warned_{false};
   Trigger<bool> screen_trigger_;
   std::vector<int> children_;
   std::map<std::string, std::string> config_pending_;
@@ -429,6 +461,8 @@ class TsxCards : public Component {
   lv_obj_t *ov_info_{nullptr};
   lv_obj_t *ov_bars_{nullptr};
   lv_obj_t *ov_confirm_{nullptr};
+  lv_obj_t *ov_vol_slider_{nullptr};
+  lv_obj_t *ov_vol_level_{nullptr};
   uint32_t ov_last_refresh_{0};
   std::string version_;
 

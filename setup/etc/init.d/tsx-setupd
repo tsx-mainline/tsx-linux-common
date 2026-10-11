@@ -26,7 +26,13 @@ depend() {
 start_pre() {
 	checkpath -d -m 0755 /run/tsx
 	# screen.json (the pairing code for a native screen) and layout.new
-	# (a layout that waits for tsx-setup-helper) go here
-	checkpath -d -o tsx-setup:tsx-setup -m 0700 /run/tsx-setup
+	# (a layout that waits for tsx-setup-helper) go here. The group
+	# tsx-setup-screen (the panel app, docs/security.md) may enter the
+	# folder and read screen.json. layout.new stays mode 600.
+	if getent group tsx-setup-screen >/dev/null 2>&1; then
+		checkpath -d -o tsx-setup:tsx-setup-screen -m 0710 /run/tsx-setup
+	else
+		checkpath -d -o tsx-setup:tsx-setup -m 0700 /run/tsx-setup
+	fi
 	checkpath -f -o tsx-setup:tsx-setup -m 0640 /var/log/tsx-setupd.log
 }

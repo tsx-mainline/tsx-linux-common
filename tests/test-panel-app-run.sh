@@ -71,5 +71,61 @@ rm -rf "$T/net/eth9" "$T/state/panel-app.conf"
 TSX_HOSTNAME="h" sh "$RUNNER" --print > "$T/out7" 2>&1
 grep -qx 'MAC=' "$T/out7" && ok "no interface: no MAC" || bad "no interface: $(cat "$T/out7")"
 
+echo "== the user of the program (--user) =="
+ME=$(id -un); MG=$(id -gn)
+mkdir -p "$T/net/eth9"; echo "a0:b1:c2:d3:e4:f5" > "$T/net/eth9/address"
+printf '#!/bin/sh\n# TSX_PANEL_APP_OUT_DIR\nenv | grep -E "^(TSX_PANEL_APP_|ESPHOME_PREFDIR)" | sort\n' > "$T/bin/app"
+printf '#!/bin/sh\necho old\n' > "$T/bin/old"; chmod 755 "$T/bin/app" "$T/bin/old"
+sed -i "s#^PANEL_APP_BIN=.*#PANEL_APP_BIN=$T/bin/app#" "$T/panel-app.conf"
+user_of() { env "$@" TSX_HOSTNAME=h sh "$RUNNER" --user 2>"$T/user.err"; }
+[ "$(user_of PANEL_APP_USER=)" = root ] || [ "$(id -u tsx-panel-app 2>/dev/null)" ] && ok "empty PANEL_APP_USER with no user tsx-panel-app: root" || bad "empty PANEL_APP_USER: $(user_of PANEL_APP_USER=)"
+echo "PANEL_APP_USER=$ME" >> "$T/panel-app.conf"
+[ "$(user_of)" = "$ME" ] && ok "PANEL_APP_USER names a user that exists: that user" || bad "PANEL_APP_USER=$ME: $(user_of)"
+sed -i "s#^PANEL_APP_BIN=.*#PANEL_APP_BIN=$T/bin/old#" "$T/panel-app.conf"
+[ "$(user_of)" = root ] && grep -q 'older build' "$T/user.err" && ok "a program without TSX_PANEL_APP_OUT_DIR runs as root" || bad "old program: $(user_of) $(cat "$T/user.err")"
+sed -i "s#^PANEL_APP_BIN=.*#PANEL_APP_BIN=$T/bin/app#" "$T/panel-app.conf"
+sed -i "s#^PANEL_APP_USER=.*#PANEL_APP_USER=tsx-no-such-user#" "$T/panel-app.conf"
+[ "$(user_of)" = root ] && grep -q 'no user tsx-no-such-user' "$T/user.err" && ok "a missing user: root, with a message" || bad "missing user: $(user_of)"
+sed -i "s#^PANEL_APP_USER=.*#PANEL_APP_USER=root#" "$T/panel-app.conf"
+[ "$(user_of)" = root ] && ok "PANEL_APP_USER=root: root" || bad "root: $(user_of)"
+
+echo "== --prepare: folders, links and sysfs files for the user =="
+sed -i "s#^PANEL_APP_USER=.*#PANEL_APP_USER=$ME#" "$T/panel-app.conf"
+echo 'PANEL_APP_LEDS="rgb:bar-*"' >> "$T/panel-app.conf"
+mkdir -p "$T/prefs" "$T/cpufreq/policy0" "$T/leds/rgb:bar-left" "$T/leds/mmc0::" "$T/rt"
+echo 80 > "$T/prefs/backlight"; echo p > "$T/prefs/dev.prefs"; echo t > "$T/prefs/ha-token"; chmod 600 "$T/prefs/ha-token"
+for f in "$T/cpufreq/policy0/scaling_min_freq" "$T/cpufreq/policy0/scaling_max_freq" "$T/leds/rgb:bar-left/brightness" \
+	"$T/leds/rgb:bar-left/multi_intensity" "$T/leds/mmc0::/brightness"; do echo 0 > "$f"; chmod 644 "$f"; done
+echo "on 5" > "$T/idled.state"
+export TSX_RUN_DIR="$T/rt/tsx" TSX_IDLED_STATE="$T/idled.state" TSX_SYS_CPUFREQ="$T/cpufreq" TSX_SYS_LEDS="$T/leds"
+printf 'TSX_SOUND_CARD=FakeCard\n' > "$T/board.sh"; export TSX_BOARD_CONF="$T/board.sh"
+TSX_PANEL_APP_PREPARE_NONROOT=1 TSX_HOSTNAME=h sh "$RUNNER" --prepare > "$T/prep.out" 2>&1 \
+	&& grep -q "prepared for the user $ME" "$T/prep.out" && ok "--prepare runs" || bad "--prepare: $(cat "$T/prep.out")"
+[ "$(stat -c %a "$T/prefs")" = 711 ] && [ "$(stat -c %a "$T/prefs/app")" = 700 ] && ok "preferences: the folder 711, app/ 700" || bad "preference modes"
+[ -f "$T/prefs/app/backlight" ] && [ -f "$T/prefs/app/dev.prefs" ] && [ ! -e "$T/prefs/backlight" ] && [ -f "$T/prefs/ha-token" ] \
+	&& ok "the preferences move into app/, the token stays" || bad "preference move: $(ls -R "$T/prefs")"
+R=$T/rt/tsx/panel-app
+[ "$(stat -c %a "$R")" = 755 ] && [ "$(stat -c '%U %a' "$R/app")" = "$ME 755" ] && [ "$(stat -c '%U' "$R/control.d")" = "$ME" ] \
+	&& ok "run folders: panel-app 755, app/ and control.d/ of the user" || bad "run folders: $(ls -la "$R")"
+[ "$(readlink "$T/idled.state")" = "$R/app/idled.state" ] && ok "the idle state file is a link into app/" || bad "idled link: $(ls -l "$T/idled.state")"
+[ "$(readlink "$T/rt/tsx/panel-app.state")" = "$R/app/panel-app.state" ] && [ "$(readlink "$R/screen.state")" = "$R/app/screen.state" ] \
+	&& [ "$(readlink "$R/entities.json")" = "$R/app/entities.json" ] && ok "panel-app.state, screen.state and entities.json are links into app/" || bad "links: $(ls -la "$R")"
+for f in cpufreq/policy0/scaling_min_freq cpufreq/policy0/scaling_max_freq leds/rgb:bar-left/brightness leds/rgb:bar-left/multi_intensity; do
+	[ "$(stat -c '%G %a' "$T/$f")" = "$MG 664" ] && ok "group write: $f" || bad "group write $f: $(stat -c '%G %a' "$T/$f")"
+done
+[ "$(stat -c %a "$T/leds/mmc0::/brightness")" = 644 ] && ok "a LED that the board does not name stays as it is" || bad "mmc0 LED changed"
+TSX_PANEL_APP_PREPARE_NONROOT=1 TSX_HOSTNAME=h sh "$RUNNER" --prepare > "$T/prep2.out" 2>&1 && ! grep -q 'failed' "$T/prep2.out" \
+	&& ok "a second --prepare changes nothing and fails nothing" || bad "second --prepare: $(cat "$T/prep2.out")"
+( unset TSX_PANEL_APP_PREPARE_NONROOT; sh "$RUNNER" --prepare ) > "$T/prep3.out" 2>&1 && bad "--prepare as a user ran" || ok "--prepare as a user who is not root refuses"
+
+echo "== the start as the user: the environment of the program =="
+TSX_HOSTNAME=h sh "$RUNNER" > "$T/out8" 2>&1
+grep -qx "ESPHOME_PREFDIR=$T/prefs/app" "$T/out8" && ok "ESPHOME_PREFDIR: the app/ folder" || bad "prefdir: $(cat "$T/out8")"
+grep -qx "TSX_PANEL_APP_OUT_DIR=$R/app" "$T/out8" && ok "TSX_PANEL_APP_OUT_DIR" || bad "out dir: $(cat "$T/out8")"
+if [ "$(id -u)" != 0 ]; then
+	grep -qx "TSX_PANEL_APP_PANELCTL=$T/rt/tsx/panelctl" "$T/out8" && ok "TSX_PANEL_APP_PANELCTL (not root)" || bad "panelctl: $(cat "$T/out8")"
+fi
+grep -qx "TSX_PANEL_APP_SOUND_CARD=FakeCard" "$T/out8" && ok "TSX_PANEL_APP_SOUND_CARD from board.sh" || bad "sound card: $(cat "$T/out8")"
+
 echo "== $N passed, $F failed"
 [ "$F" = 0 ]

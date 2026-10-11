@@ -4,6 +4,9 @@
 # the MAC and the environment of the board, then runs the program. The API
 # key comes from /run/tsx/esphome.key, which tsx-config apply writes from
 # HA_API_KEY of panel.conf. The program reads it again when it changes.
+# The program runs as the user tsx-panel-app when that user exists (the
+# package makes it) and the program can (docs/security.md). Before the start,
+# "tsx-panel-app-run --prepare" (root) gives that user its folders and files.
 description="TSX panel app (Home Assistant cards on the panel screen)"
 supervisor=supervise-daemon
 command=/usr/local/sbin/tsx-panel-app-run
@@ -14,4 +17,13 @@ error_log=/var/log/tsx-panel-app.log
 depend() {
 	need localmount
 	after tsx-data tsx-config tsx-setup tsx-hostname
+}
+start_pre() {
+	u=$("$command" --user) || u=root
+	"$command" --prepare || return 1
+	g=$(id -gn "$u" 2>/dev/null) || g=$u
+	# An empty command_user would give supervise-daemon an empty --user.
+	if [ "$u" = root ]; then unset command_user; else command_user="$u:$g"; fi
+	# supervise-daemon opens the log as command_user.
+	checkpath -f -m 0644 -o "$u:$g" /var/log/tsx-panel-app.log
 }

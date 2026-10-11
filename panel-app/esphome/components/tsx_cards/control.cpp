@@ -92,10 +92,31 @@ void TsxCards::write_screen_state_() {
                                        this->blank_timeout_, this->dim_pct_, lights, bri, r, g, b);
   if (text == this->screen_state_text_)
     return;
-  if (this->write_run_file_(this->run_dir_ + "/panel-app/screen.state", text)) {
-    chmod((this->run_dir_ + "/panel-app/screen.state").c_str(), 0644);
+  std::string path = this->out_path_("screen.state");
+  if (this->write_run_file_(path, text)) {
+    chmod(path.c_str(), 0644);
     this->screen_state_text_ = text;
   }
+}
+
+// The path of a file that the app writes for the other services: in the
+// folder of the app (TSX_PANEL_APP_OUT_DIR), else at the old place.
+std::string TsxCards::out_path_(const char *name) const {
+  if (!this->out_dir_.empty())
+    return this->out_dir_ + "/" + name;
+  if (strcmp(name, "panel-app.state") == 0)
+    return this->run_dir_ + "/panel-app.state";
+  return this->run_dir_ + "/panel-app/" + name;
+}
+
+bool TsxCards::panelctl_send_(const std::string &line) {
+  std::string err;
+  if (fifo_send_line(this->panelctl_, line, err)) {
+    ESP_LOGD(TAG, "tsx-panelctl: %s", line.c_str());
+    return true;
+  }
+  ESP_LOGW(TAG, "tsx-panelctl '%s': %s", line.c_str(), err.c_str());
+  return false;
 }
 
 }  // namespace tsx_cards

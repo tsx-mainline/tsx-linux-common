@@ -11,6 +11,7 @@ This repo holds the software that all TSX panel families share. Each family keep
 - [Layout](layout.md): directories, packages, the board interface, the plugin folders and the tests. Read it to build a package or to port the software to a new board.
 - [Setup page](setup.md): who can open the setup page, the login with Home Assistant, the sessions, CSRF and the live controls of the Panel section.
 - [Panel app](panel-app.md): the native Home Assistant card screen (ESPHome and LVGL), its JSON layout format, the reload and the log lines. Experimental.
+- [Security](security.md): the users and groups of the services, the root helpers and their commands, and the services that stay root.
 - [Sendspin](sendspin.md): the Sendspin player for Music Assistant, the key `SENDSPIN`, the audio path and the volume.
 - [LED bar](ledbar.md): the tools of the USB RGB LED bar, the settings, the recovery from bootloader mode, the effects, the 16 LEDs and the LED map.
 - [Wake words](wake-words.md): the built-in wake words of the voice satellite, and how to add a custom wake word model.

@@ -73,11 +73,22 @@
 # tsx-idled. The app owns the screen and the backlight. "has panel-app" is
 # true while the app runs: $TSX_RUN_DIR/panel-app.state names a process that
 # exists. Then the daemon sends "blank", "brightness-pct" and "lights" to the
-# app: one file per command in $TSX_RUN_DIR/panel-app/control.d (a temporary
-# file and a rename). The app reads the folder, runs the commands in the
-# order of the file names and removes the files. The app writes its values
-# to $TSX_RUN_DIR/panel-app/screen.state ("key value" lines, world-readable),
-# and get reads them from there.
+# app: one file per command in $TSX_RUN_DIR/panel-app/control.d. The app reads
+# the folder, runs the commands in the order of the file names and removes
+# the files. The app writes its values to $TSX_RUN_DIR/panel-app/screen.state
+# ("key value" lines, world-readable), and get reads them from there.
+# The app can run as the user tsx-panel-app (docs/security.md). Then that user
+# owns control.d, and root owns the folder above it. The daemon writes each
+# command to a temporary file in $TSX_RUN_DIR (root only) and renames it into
+# control.d. A rename never follows a link that the app put there, and the
+# app cannot replace control.d itself.
+# The app asks for root actions with the commands of the FIFO: reboot,
+# setup, blank-timeout, dim-timeout, dim-level and layout-install. The
+# command "layout-install ID" runs tsx-layout-check --install on the fixed
+# file $TSX_RUN_DIR/panel-app/app/layout.ha (the app wrote it) with the
+# target /var/lib/tsx/panel-layout.json. The result goes to
+# $TSX_RUN_DIR/panel-app/layout.result (root owns it, mode 644): "id ID",
+# "rc N" and the first lines of the output of the check.
 #
 # LED bar attached: tsx-ledbard (root) writes /run/tsx/ledbar.usb. It holds
 # one word: "app" (the bar runs its application) or "bootloader" (the bar is
@@ -135,7 +146,9 @@
 #
 # THREAT MODEL: the writer of the FIFO is the "kiosk" group. "kiosk" is also
 # the user that Chromium (unsandboxed on this hardware) runs as. So treat
-# every line as hostile, not only as malformed. The script matches every
+# every line as hostile, not only as malformed. A panel with no group kiosk
+# gives the FIFO to the group tsx-panel-app (the panel app as a user that is
+# not root), if it exists. TSX_PANELCTL_GROUPS lists the groups in that order. The script matches every
 # command below against the EXACT form that tsx_panel/backend.py sends: a
 # fixed argument count, numeric args range-checked, enum args compared with
 # `=`. It never hands a glob or a string that the caller chose to a root CLI
@@ -157,7 +170,8 @@
 # TSX_LEDBAR_USB (the attached file of the LED bar, $TSX_RUN_DIR/ledbar.usb),
 # TSX_KIOSK_CONF (/etc/kiosk.conf), TSX_PANEL_APP_STATE
 # ($TSX_RUN_DIR/panel-app.state), TSX_PANEL_APP_RUN ($TSX_RUN_DIR/panel-app),
-# TSX_PROC_DIR (/proc).
+# TSX_PROC_DIR (/proc), TSX_PANELCTL_GROUPS ("kiosk tsx-panel-app"),
+# TSX_LAYOUT_CHECK_BIN, TSX_PANEL_LAYOUT_FILE.
 set -u -f
 R=${TSX_RUN_DIR:-/run/tsx}
 FIFO=${TSX_PANELCTL:-$R/panelctl}
@@ -192,6 +206,8 @@ KIOSK_CONF=${TSX_KIOSK_CONF:-/etc/kiosk.conf}
 PA_STATE=${TSX_PANEL_APP_STATE:-$R/panel-app.state}
 PA_RUN=${TSX_PANEL_APP_RUN:-$R/panel-app}
 PROC=${TSX_PROC_DIR:-/proc}
+LAYOUT_CHECK=${TSX_LAYOUT_CHECK_BIN:-tsx-layout-check}
+LAYOUT_FILE=${TSX_PANEL_LAYOUT_FILE:-/var/lib/tsx/panel-layout.json}
 PA_SEQ=0
 PA_START=$(date +%s 2>/dev/null)
 case "$PA_START" in ''|*[!0-9]*) PA_START=0;; esac
@@ -264,13 +280,31 @@ panel_app_up() {
 	[ "${#pa_pid}" -le 9 ] && [ -d "$PROC/$pa_pid" ]
 }
 
-# pa_send LINE: one command for the panel app (see "Panel app" at the top)
+# pa_send LINE: one command for the panel app (see "Panel app" at the top).
+# The temporary file is in $R (root only). Only the rename goes into
+# control.d, which the app can own.
 pa_send() {
-	mkdir -p "$PA_RUN/control.d" || return 1
+	[ -d "$PA_RUN/control.d" ] || mkdir -p "$PA_RUN/control.d" || return 1
 	PA_SEQ=$((PA_SEQ + 1))
 	pa_name=$(printf '%010d.%06d' "$PA_START" "$PA_SEQ")
-	pa_tmp="$PA_RUN/control.d/.tmp.$$"
-	printf '%s\n' "$1" > "$pa_tmp" && mv -f "$pa_tmp" "$PA_RUN/control.d/$pa_name"
+	pa_tmp="$R/.panel-app-cmd.$$"
+	rm -f "$pa_tmp"
+	(umask 022; printf '%s\n' "$1" > "$pa_tmp") && mv -f "$pa_tmp" "$PA_RUN/control.d/$pa_name"
+}
+
+# layout_install ID: install the layout that the app wrote (see "Panel app"
+# at the top). tsx-layout-check opens the file with O_NOFOLLOW, so a link
+# there fails. The result file is written in $R and renamed.
+layout_install() {
+	li_tmp="$R/.panel-app-layout.$$"
+	mkdir -p "$PA_RUN"
+	li_out=$("$LAYOUT_CHECK" --install "$PA_RUN/app/layout.ha" "$LAYOUT_FILE" 2>&1)
+	li_rc=$?
+	rm -f "$li_tmp"
+	(umask 022
+	 { printf 'id %s\nrc %s\n' "$1" "$li_rc"
+	   printf '%s\n' "$li_out" | head -n 20 | cut -c1-200; } > "$li_tmp") && mv -f "$li_tmp" "$PA_RUN/layout.result"
+	log "layout-install $1: rc $li_rc"
 }
 
 # kiosk_conf_get KEY: the last value of KEY in kiosk.conf, without quotes
@@ -487,7 +521,11 @@ esac
 
 mkdir -p "$R"
 if [ ! -p "$FIFO" ]; then rm -f "$FIFO"; mkfifo "$FIFO" || { log "mkfifo $FIFO failed"; exit 1; }; fi
-chown root:kiosk "$FIFO" 2>/dev/null || true
+# The writers of the FIFO: the group kiosk, else the group tsx-panel-app (see
+# THREAT MODEL at the top). With neither, only root can write.
+for g in ${TSX_PANELCTL_GROUPS:-kiosk tsx-panel-app}; do
+	chown "root:$g" "$FIFO" 2>/dev/null && break
+done
 chmod 660 "$FIFO"
 
 # handle CMD A1 A2 A3 A4 REST -- the script always calls it with exactly six
@@ -655,6 +693,12 @@ handle() {
 		if [ -z "$a1$a2$a3$a4$rest" ]; then
 			log "reboot requested"; "$REBOOT_BIN"
 		else reject "reboot $a1 $a2 $a3 $a4 $rest"; fi;;
+	layout-install)
+		# The panel app installs a layout from Home Assistant (set_layout).
+		# ID: digits that the app chose, so it finds its own result.
+		if in_range "$a1" 0 999999 && [ -z "$a2$a3$a4$rest" ]; then
+			layout_install "$a1"
+		else reject "layout-install $a1 $a2 $a3 $a4 $rest"; fi;;
 	update-install)
 		if [ -z "$a1$a2$a3$a4$rest" ]; then
 			log "update-install requested"; "$UPDATE_BIN" now &
