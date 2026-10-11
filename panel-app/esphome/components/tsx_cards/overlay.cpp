@@ -191,7 +191,17 @@ void TsxCards::open_overlay(const char *origin) {
   // from the sensor. With no sensor the row is not there, and the slider
   // takes its space.
   bool light_row = has_light_sensor(this->run_dir_ + "/hw.conf");
-  int row_h = light_row ? 0 : 38;
+  // The column from the top: the icon (36 px at y 14), the slider, the value
+  // under it and the sensor row. The knob (the slider width + 2 x 4 px) sticks
+  // out half its size past each end of the slider: at 100 % above the top, at
+  // 0 % below the bottom. So the slider starts a knob radius under the icon
+  // and ends a knob radius above the value. The value and the sensor row sit
+  // at the bottom of the box.
+  const int knob_r = 44 / 2 + 4, icon_bottom = 14 + 36, label_h = 24, note_h = 40;
+  int note_y = bh - 16 - note_h;
+  int level_y = light_row ? note_y - 4 - label_h : bh - 20 - label_h;
+  int slider_y = icon_bottom + 8 + knob_r;
+  int slider_h = level_y - 8 - knob_r - slider_y;
   // A panel with a volume (volume.cpp) gets a second slider for the volume,
   // right of the brightness slider. While the Sendspin player runs, it is
   // the player volume, and a tap on its icon mutes or unmutes the player.
@@ -200,8 +210,8 @@ void TsxCards::open_overlay(const char *origin) {
   auto make_slider = [&](int x, int lo, int hi, int value) {
     lv_obj_t *sl = lv_slider_create(b);
     lv_obj_remove_style_all(sl);
-    lv_obj_set_pos(sl, x, 64);
-    lv_obj_set_size(sl, 44, bh - 214 + row_h);
+    lv_obj_set_pos(sl, x, slider_y);
+    lv_obj_set_size(sl, 44, slider_h);
     lv_slider_set_range(sl, lo, hi);
     lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_bg_color(sl, lv_color_hex(th.background), LV_PART_MAIN);
@@ -244,14 +254,16 @@ void TsxCards::open_overlay(const char *origin) {
   this->ov_level_ = this->label_(b, FONT_LABEL, th.text);
   lv_obj_set_width(this->ov_level_, vol ? 80 : 120);
   lv_obj_set_style_text_align(this->ov_level_, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_pos(this->ov_level_, vol ? bx - 18 : 8, bh - 142 + row_h);
+  lv_obj_set_pos(this->ov_level_, vol ? bx - 18 : 8, level_y);
   if (light_row) {
     lv_obj_t *note = this->label_(b, FONT_SMALL, th.text_dim);
-    lv_obj_set_width(note, vol ? 80 : 128);
+    // Two lines at most (note_h): with the volume slider the row spans both
+    // columns, because one column (80 px) would break the words.
+    lv_obj_set_width(note, vol ? 136 : 128);
     lv_label_set_long_mode(note, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(note, "Auto brightness: off");
-    lv_obj_set_pos(note, vol ? 0 : 4, bh - 108);
+    lv_obj_set_pos(note, 4, note_y);
   }
   if (vol) {
     icon = this->label_(b, FONT_ICON, th.text);
@@ -288,7 +300,7 @@ void TsxCards::open_overlay(const char *origin) {
     this->ov_vol_level_ = this->label_(b, FONT_LABEL, th.text);
     lv_obj_set_width(this->ov_vol_level_, 80);
     lv_obj_set_style_text_align(this->ov_vol_level_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(this->ov_vol_level_, vx - 18, bh - 142 + row_h);
+    lv_obj_set_pos(this->ov_vol_level_, vx - 18, level_y);
   }
 
   // Right: the times, the buttons and the facts.
