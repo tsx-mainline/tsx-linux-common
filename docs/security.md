@@ -49,14 +49,15 @@ The FIFO is `/run/tsx/panelctl`, mode 660. The group is `kiosk` on a panel with 
 | `lights on\|off`, `lights set B R G B` | The lights of the panel app |
 | `als auto on\|off` | The automatic brightness |
 | `blank-timeout S`, `dim-timeout S`, `dim-level P`, `orientation NAME`, `config-url URL`, `verbose-boot on\|off` | A key of `panel.conf`, then `tsx-config apply` |
-| `volume P` | The volume (`TSX_VOLUME_CMD` of the board, or the `Master` control) |
+| `volume P` | The volume: `sendspin-cli player-vol P` while the Sendspin player runs (see [Sendspin](sendspin.md) "Audio and volume"), else `TSX_VOLUME_CMD` of the board or the `Master` control |
+| `mute on\|off` | `sendspin-cli player-mute on\|off` while the Sendspin player runs. Else it is refused (the mixer has no mute) |
 | `reload-page` | The page of the kiosk |
 | `reboot` | `reboot` |
 | `update-install` | `tsx-autoupdate now` |
 | `setup` | `tsx-config setup`: open the setup page for about 15 minutes |
 | `layout-install ID` | `tsx-layout-check --install` of the fixed file `/run/tsx/panel-app/app/layout.ha` to `/var/lib/tsx/panel-layout.json`. The result goes to `/run/tsx/panel-app/layout.result`. |
 
-The panel app as `tsx-panel-app` uses `reboot` (the overlay), `setup` (the overlay and the key action), `blank-timeout`, `dim-timeout` and `dim-level` (the overlay and Home Assistant) and `layout-install` (the action `set_layout`).
+The panel app as `tsx-panel-app` uses `reboot` (the overlay), `setup` (the overlay and the key action), `blank-timeout`, `dim-timeout` and `dim-level` (the overlay and Home Assistant), `layout-install` (the action `set_layout`) and, while the Sendspin player runs, `volume` and `mute` (the overlay and Home Assistant). The control socket of the player is mode 600 for the user `tsx-sendspin`. Only root (the daemon) opens it. The app reads the volume from the file `/run/sendspin-cli/volume` (mode 644).
 
 The daemon writes into the folder of the panel app only with a rename of a file that it made in `/run/tsx`. A rename never follows a link. Root owns the folder above, so the app cannot replace the folder with a link. `tsx-layout-check` opens the layout file with `O_NOFOLLOW` and refuses a file that is not a regular file.
 

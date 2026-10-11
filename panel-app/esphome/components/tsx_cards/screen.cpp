@@ -154,6 +154,9 @@ void TsxCards::screen_setup_() {
   const char *vc = getenv("TSX_PANEL_APP_VOLUME_CTL");
   if (vc != nullptr && vc[0] != '\0')
     this->vol_ctl_ = vc;
+  const char *pv = getenv("TSX_PANEL_APP_SENDSPIN_VOLUME");
+  if (pv != nullptr && pv[0] != '\0')
+    this->player_vol_file_ = pv;
   this->started_at_ = (long) ::time(nullptr);
   this->state_files_ready_ = true;
   this->write_app_state_();

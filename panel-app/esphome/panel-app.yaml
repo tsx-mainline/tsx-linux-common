@@ -129,8 +129,10 @@ number:
     lambda: return id(panel_cards).backlight();
     set_action:
       - lambda: id(panel_cards).set_backlight(x);
-  # The volume of the panel speaker: the "Master" control of the sound card
-  # (docs/panel-app.md, "Volume"). Unknown on a panel with no sound card.
+  # The volume of the panel speaker (docs/panel-app.md, "Volume"): the player
+  # volume while the Sendspin player runs (a change in Music Assistant shows
+  # here within a second), else the "Master" control of the sound card.
+  # Unknown on a panel with no sound card.
   - platform: template
     name: Volume
     id: panel_volume
@@ -139,7 +141,7 @@ number:
     max_value: 100
     step: 1
     unit_of_measurement: "%"
-    update_interval: 2s
+    update_interval: 1s
     lambda: return id(panel_cards).volume();
     set_action:
       - lambda: id(panel_cards).set_volume(x);

@@ -431,6 +431,14 @@ const STORED = {
   p.server.panelPost = { status: 502, body: { error: "the panel did not take the command" } };
   p.$("p-volume").value = "10"; p.$("p-volume").fire("change"); await flush();
   ok(p.$("panel-status").textContent === "the panel did not take the command", "an error of the panel shows");
+  ok(p.$("p-mute-row").style.display === "none" && p.$("p-volume-player").style.display === "none", "a mixer volume: no Mute box");
+  p = load({ state: stateWith(STORED), status: {}, panel: { owner: "panel-app", controls: { volume: { value: 30, muted: true } } } });
+  await flush();
+  ok(p.$("p-mute-row").style.display === "flex" && p.$("p-mute").checked && p.$("p-volume-player").style.display === "block",
+     "the volume of the Sendspin player: the Mute box shows the mute, and the note shows");
+  p.$("p-mute").checked = false; p.$("p-mute").fire("change"); await flush();
+  ok(same(p.calls.filter(c => c.path === "/setup/api/panel" && c.method === "POST").map(c => c.body).pop(), { control: "mute", value: false }),
+     "the Mute box sends mute false");
   p = load({ state: stateWith(STORED), status: {}, panel: { owner: "none", controls: {} } });
   await flush();
   ok(p.$("panel-wrap").style.display !== "block", "a panel with no control: no Panel section");

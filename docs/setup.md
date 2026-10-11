@@ -94,7 +94,7 @@ The *Panel* section has live controls. A control shows only when the panel has t
 |---|---|---|
 | Screen on and off | All | `tsx-panelctl send blank` |
 | Brightness, 1 to 100 % | All | `tsx-panelctl send brightness-pct` |
-| Volume, 0 to 100 % | A sound card | `tsx-panelctl send volume` |
+| Volume, 0 to 100 % | A sound card | `tsx-panelctl send volume`. While the Sendspin player runs, it is the player volume, and a "Mute" box mutes the player (`tsx-panelctl send mute`). See [Sendspin](sendspin.md) "Audio and volume" |
 | Dim the screen after, dim level | Panel app | `tsx-config set DIM_TIMEOUT` or `DIM_LEVEL`, then `apply` |
 | Turn the screen off after | All | `tsx-config set BLANK_TIMEOUT`, then `apply` |
 | LED bar: on, color, brightness | A LED bar | `tsx-panelctl send ledbar` |

@@ -314,6 +314,7 @@ void TsxCards::loop() {
   this->overlay_loop_();
   this->popup_loop_();
   this->slider_loop_();
+  this->volume_loop_();
   for (auto &it : this->keys_) {
     KeyState &k = it.second;
     if (k.down && !k.swallowed && !k.long_sent && now - k.down_at >= 800) {

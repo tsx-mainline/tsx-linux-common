@@ -3,6 +3,13 @@
 # tsx-sendspin does not put it into a runlevel. The key SENDSPIN of panel.conf
 # (the config.d plugin sendspin.sh) or the audio tool of a board does that.
 # It runs as the user tsx-sendspin (group audio), which the package makes.
+# The volume (docs/sendspin.md, "Audio and volume"): while the player runs,
+# its volume is the volume of the panel. sendspin-cli writes it to
+# /run/sendspin-cli/volume (--volume-file) at each change. tsx-panelctl and
+# the panel app read that file and set the volume on the control socket.
+# start_pre sets the mixer of the board to its fixed level
+# (TSX_VOLUME_FIXED_CMD of board.sh). stop_post removes the file, so the
+# mixer is the volume of the panel again.
 description="Sendspin synchronized-audio player (/etc/tsx/sendspin.conf)"
 supervisor=supervise-daemon
 # Use the sendspin-cli package (tsx-aports) if it is installed. Otherwise use
@@ -14,6 +21,9 @@ respawn_max=0
 output_log=/var/log/tsx-sendspin.log
 error_log=/var/log/tsx-sendspin.log
 SENDSPIN_USER=tsx-sendspin
+# The folder of the control socket and of the volume file. The variable is
+# for the host test only (OpenRC gives a service a clean environment).
+SENDSPIN_RUN=${TSX_SENDSPIN_RUN:-/run/sendspin-cli}
 command_user="$SENDSPIN_USER:audio"
 depend() { need net; use avahi-daemon; after tsx-setup tsx-audio; }
 start_pre() {
@@ -29,19 +39,34 @@ start_pre() {
 	SENDSPIN_STATIC_DELAY=0 SENDSPIN_SERVER= SENDSPIN_ARGS=
 	[ -r /etc/tsx/sendspin.conf ] && . /etc/tsx/sendspin.conf
 	[ -r /run/tsx/sendspin.conf ] && . /run/tsx/sendspin.conf   # panel.conf PANEL_NAME (tsx-config apply)
-	checkpath -d -m 0755 -o "$command_user" /run/sendspin-cli
+	checkpath -d -m 0755 -o "$command_user" "$SENDSPIN_RUN"
 	checkpath -d -m 0755 -o "$command_user" /var/lib/sendspin
 	# Up to 0.3.4 the player ran as the user kiosk. Its state file (the client
 	# id and the volume) stays: give it to the new user.
-	chown -R "$command_user" /var/lib/sendspin /run/sendspin-cli
+	chown -R "$command_user" /var/lib/sendspin "$SENDSPIN_RUN"
 	# The model name of the board for Music Assistant (as for Home Assistant).
 	model=
 	command -v tsx_board_ha_model >/dev/null 2>&1 && model=$(tsx_board_ha_model)
 	[ -n "$model" ] || model=${TSX_HA_MODEL:-panel}
-	command_args="-n \"${SENDSPIN_NAME:-$(hostname)}\" -o $SENDSPIN_OUTPUT --buffer-ms $SENDSPIN_BUFFER_MS --static-delay $SENDSPIN_STATIC_DELAY --control-socket /run/sendspin-cli/control.sock --state-dir /var/lib/sendspin --manufacturer Crestron --product-name \"$model\""
+	command_args="-n \"${SENDSPIN_NAME:-$(hostname)}\" -o $SENDSPIN_OUTPUT --buffer-ms $SENDSPIN_BUFFER_MS --static-delay $SENDSPIN_STATIC_DELAY --control-socket $SENDSPIN_RUN/control.sock --state-dir /var/lib/sendspin --manufacturer Crestron --product-name \"$model\""
 	[ -n "$SENDSPIN_ID" ] && command_args="$command_args --id $SENDSPIN_ID"
 	[ -n "$SENDSPIN_FORMATS" ] && command_args="$command_args --audio-format $SENDSPIN_FORMATS"
 	[ -n "$SENDSPIN_SERVER" ] && command_args="$command_args -s $SENDSPIN_SERVER"
+	# The volume file needs sendspin-cli 0.3.0-r1 or later (player-vol,
+	# player-mute and --volume-file). An older binary keeps the old volume:
+	# the mixer of the board.
+	rm -f "$SENDSPIN_RUN/volume"
+	if "$command" --help 2>&1 | grep -q -- --volume-file; then
+		command_args="$command_args --volume-file $SENDSPIN_RUN/volume"
+		if [ -n "${TSX_VOLUME_FIXED_CMD:-}" ]; then
+			$TSX_VOLUME_FIXED_CMD >/dev/null 2>&1 || ewarn "'$TSX_VOLUME_FIXED_CMD' failed"
+		fi
+	else
+		ewarn "$command has no --volume-file: the mixer stays the volume of the panel"
+	fi
 	command_args="$command_args $SENDSPIN_ARGS"
 	return 0
+}
+stop_post() {
+	rm -f "$SENDSPIN_RUN/volume"
 }

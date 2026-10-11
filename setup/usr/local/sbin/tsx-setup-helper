@@ -85,7 +85,8 @@
 #                          the lines, as for show).
 #   panel CMD ARGS        tsx-panelctl send CMD ARGS, for the live controls of
 #                          the Panel section. Only these forms pass: blank
-#                          on|off, brightness-pct N, volume N, ledbar off,
+#                          on|off, brightness-pct N, volume N, mute on|off,
+#                          ledbar off,
 #                          ledbar set R G B, keypad led N|off, lights on|off,
 #                          lights set B R G B (N, R, G, B: digits). The
 #                          daemon of tsx-panelctl checks the ranges again.
@@ -284,7 +285,7 @@ handle() {
 		case "$rest" in *[!a-z0-9\ -]*|*"  "*|" "*|*" ") reply_err "panel: bad command"; return;; esac
 		n='[0-9]'
 		case "$rest" in
-		"blank on"|"blank off"|"ledbar off"|"keypad led off"|"lights on"|"lights off") ;;
+		"blank on"|"blank off"|"mute on"|"mute off"|"ledbar off"|"keypad led off"|"lights on"|"lights off") ;;
 		"brightness-pct "$n|"brightness-pct "$n$n|"brightness-pct "$n$n$n) ;;
 		"volume "$n|"volume "$n$n|"volume "$n$n$n) ;;
 		"keypad led "$n|"keypad led "$n$n|"keypad led "$n$n$n) ;;

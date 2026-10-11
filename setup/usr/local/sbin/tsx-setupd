@@ -1057,6 +1057,9 @@ def panel_state():
     n = _first_int(vals.get("volume"))
     if n is not None:
         c["volume"] = {"value": n}
+        # Only the Sendspin player has a mute (tsx-panelctl, "Volume").
+        if vals.get("mute") in ("on", "off"):
+            c["volume"]["muted"] = vals["mute"] == "on"
     if "ledbar" in vals:
         rgb = [_first_int(x) or 0 for x in (vals["ledbar"].split() + ["0", "0", "0"])[:3]]
         top = max(rgb)
@@ -1104,6 +1107,8 @@ def panel_set(control, value):
         return _panel_send("brightness-pct %d" % _int(value, 1, 100))
     if control == "volume" and _int(value, 0, 100) is not None:
         return _panel_send("volume %d" % _int(value, 0, 100))
+    if control == "mute" and isinstance(value, bool):
+        return _panel_send("mute on" if value else "mute off")
     if control == "blank_timeout" and _int(value, 0, 86400) is not None:
         return _panel_setting("BLANK_TIMEOUT", _int(value, 0, 86400))
     if control == "dim_timeout" and _int(value, 0, 86400) is not None:
@@ -1813,6 +1818,8 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
       <div class="ctl" id="ctl-volume" style="display:none">
         <label for="p-volume">Volume: <span id="p-volume-v"></span> %</label>
         <input type="range" id="p-volume" min="0" max="100" step="1">
+        <div class="toggle" id="p-mute-row" style="display:none"><input type="checkbox" id="p-mute"><label for="p-mute" style="margin:0">Mute</label></div>
+        <p class="hint" id="p-volume-player" style="display:none">This is the volume of the Sendspin player. Music Assistant shows the same value.</p>
       </div>
       <div class="ctl" id="ctl-dim_timeout" style="display:none">
         <label for="p-dim_timeout">Dim the screen after (seconds, 0 = never)</label>
@@ -2178,7 +2185,13 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
     ["screen", "backlight", "volume", "dim_timeout", "dim_level", "blank_timeout", "ledbar", "key_leds", "lights"].forEach(function(n){ showCtl(n, !!c[n]); });
     if (c.screen) $("p-screen-state").textContent = c.screen.on ? "The screen is on." : "The screen is off.";
     if (c.backlight) { $("p-backlight").value = c.backlight.value; $("p-backlight-v").textContent = c.backlight.value; }
-    if (c.volume) { $("p-volume").value = c.volume.value; $("p-volume-v").textContent = c.volume.value; }
+    if (c.volume) {
+      $("p-volume").value = c.volume.value; $("p-volume-v").textContent = c.volume.value;
+      var player = typeof c.volume.muted === "boolean";
+      $("p-mute-row").style.display = player ? "flex" : "none";
+      $("p-volume-player").style.display = player ? "block" : "none";
+      if (player) $("p-mute").checked = c.volume.muted;
+    }
     ["dim_timeout", "dim_level", "blank_timeout"].forEach(function(n){
       var el = $("p-" + n);
       if (c[n] && document.activeElement !== el) el.value = c[n].value;
@@ -2221,6 +2234,7 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
     $("p-" + n).addEventListener("input", function(){ $("p-" + n + "-v").textContent = $("p-" + n).value; });
     $("p-" + n).addEventListener("change", function(){ setPanel(n, parseInt($("p-" + n).value, 10)); });
   });
+  $("p-mute").addEventListener("change", function(){ setPanel("mute", $("p-mute").checked); });
   ["dim_timeout", "dim_level", "blank_timeout"].forEach(function(n){
     $("p-" + n + "-set").addEventListener("click", function(){
       var v = parseInt($("p-" + n).value, 10);

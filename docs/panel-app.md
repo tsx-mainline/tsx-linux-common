@@ -477,7 +477,7 @@ The overlay has these items:
 | Item | Function |
 |---|---|
 | Brightness slider | Sets the backlight. On a panel with a light sensor (`LIGHT=yes` or `ALS=yes` in `/run/tsx/hw.conf`), the row "Auto brightness: off" under the slider tells that the app does not change the backlight from the sensor. On a panel with no light sensor, the overlay has no such row. |
-| Volume slider | Sets the volume of the panel (see "Volume"). Only a panel with a volume control has it. |
+| Volume slider | Sets the volume of the panel (see "Volume"). Only a panel with a volume has it. While the Sendspin player runs, a tap on the volume icon mutes or unmutes the player. The icon then shows the mute, and the text under the slider says "Muted". |
 | Dim after, Screen off after | The times of the screen, with - and + buttons. The steps are Never, 15 s, 30 s, 1 min, 2 min, 5 min, 10 min, 15 min, 30 min, 1 h and 2 h. |
 | Screen off | Turns the screen off at once. |
 | Lights | Turns the panel lights on or off (see "Panel lights"). The button has the `card_on` color while a light is on. A board with no panel lights has no button. |
@@ -492,9 +492,15 @@ Test hooks: `TSX_PANEL_APP_REBOOT_CMD` replaces `reboot`, `TSX_PANEL_APP_CONFIG_
 
 ## Volume
 
-The volume of the panel is one mixer control of the sound card: `Master`, the softvol of the board in `/etc/asound.conf`. The setup page and `tsx-panelctl` set the same control, so all three show one value. The app reads and writes the control with the control ioctls of the kernel, as a member of the group `audio`. It needs no alsa-lib. `tsx-panel-app-run` gives the app the card of the board (`TSX_SOUND_CARD` of `board.sh`) as `TSX_PANEL_APP_SOUND_CARD`. `TSX_PANEL_APP_VOLUME_CTL` names another control. The percent is the position in the range of the control: for the softvol of `Master` with 101 steps, the percent is the raw value.
+The panel has one volume. The setup page, `tsx-panelctl`, the Home Assistant number "Volume" and the overlay show and set the same value.
 
-With no card or no control, the Volume number is unknown and the overlay has no volume slider. The app tries to open the control again every 10 s, because the board makes the softvol at boot. Music Assistant sets the volume of a Sendspin player on top of `Master` (see [sendspin.md](sendspin.md)).
+While the Sendspin player runs, the volume of the panel is the player volume of Music Assistant (see [sendspin.md](sendspin.md), "Audio and volume"). The player writes its volume and mute to `/run/sendspin-cli/volume` at each change (`TSX_PANEL_APP_SENDSPIN_VOLUME` names another file). The app reads that file. A change in Music Assistant shows in the overlay and in the number "Volume" within about a second.
+
+The app sends a change to `tsx-panelctl` (`volume N`, `mute on|off`), which sets the player. A drag of the slider sends at most four values per second, and always the last one. After a change, the app shows the new value until the player reports it, for at most 3 s. A program that runs as root uses the same FIFO.
+
+Without that file, the volume of the panel is one mixer control of the sound card: `Master`, the softvol of the board in `/etc/asound.conf`. The app reads and writes the control with the control ioctls of the kernel, as a member of the group `audio`. It needs no alsa-lib. `tsx-panel-app-run` gives the app the card of the board (`TSX_SOUND_CARD` of `board.sh`) as `TSX_PANEL_APP_SOUND_CARD`. `TSX_PANEL_APP_VOLUME_CTL` names another control. The percent is the position in the range of the control: for the softvol of `Master` with 101 steps, the percent is the raw value.
+
+With no player, no card and no control, the Volume number is unknown and the overlay has no volume slider. The app tries to open the control again every 10 s, because the board makes the softvol at boot.
 
 ## Panel lights
 

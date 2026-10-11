@@ -192,8 +192,9 @@ void TsxCards::open_overlay(const char *origin) {
   // takes its space.
   bool light_row = has_light_sensor(this->run_dir_ + "/hw.conf");
   int row_h = light_row ? 0 : 38;
-  // A panel with a volume control (volume.cpp) gets a second slider for the
-  // volume, right of the brightness slider.
+  // A panel with a volume (volume.cpp) gets a second slider for the volume,
+  // right of the brightness slider. While the Sendspin player runs, it is
+  // the player volume, and a tap on its icon mutes or unmutes the player.
   bool vol = this->has_volume();
   int bx = vol ? 18 : 46, vx = 82;
   auto make_slider = [&](int x, int lo, int hi, int value) {
@@ -256,6 +257,21 @@ void TsxCards::open_overlay(const char *origin) {
     icon = this->label_(b, FONT_ICON, th.text);
     this->set_icon_(icon, "volume-high", "volume-high");
     lv_obj_set_pos(icon, vx + 4, 14);
+    this->ov_vol_icon_ = icon;
+    lv_obj_add_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(icon, 16);
+    lv_obj_add_event_cb(
+        icon,
+        [](lv_event_t *e) {
+          auto *self = static_cast<TsxCards *>(lv_event_get_user_data(e));
+          int m = self->volume_muted();
+          if (m < 0)
+            return;  // the mixer has no mute
+          ESP_LOGI(TAG, "overlay: %s the Sendspin player", m ? "unmute" : "mute");
+          self->set_volume_muted(m == 0);
+          self->overlay_refresh_();
+        },
+        LV_EVENT_CLICKED, this);
     float v = this->volume();
     this->ov_vol_slider_ = make_slider(vx, 0, 100, std::isnan(v) ? 0 : (int) v);
     lv_obj_add_event_cb(
@@ -358,10 +374,15 @@ void TsxCards::overlay_refresh_() {
   }
   if (this->ov_vol_slider_ != nullptr && !lv_obj_has_state(this->ov_vol_slider_, LV_STATE_PRESSED)) {
     float v = this->volume();
+    int muted = this->volume_muted();
     if (!std::isnan(v)) {
       lv_slider_set_value(this->ov_vol_slider_, (int) v, LV_ANIM_OFF);
       snprintf(buf, sizeof buf, "%d%%", (int) v);
-      this->set_text_(this->ov_vol_level_, buf);
+      this->set_text_(this->ov_vol_level_, muted == 1 ? "Muted" : buf);
+    }
+    if (this->ov_vol_icon_ != nullptr && muted != this->ov_vol_icon_muted_) {
+      this->ov_vol_icon_muted_ = muted;
+      this->set_icon_(this->ov_vol_icon_, muted == 1 ? "volume-off" : "volume-high", "volume-high");
     }
   }
   this->set_text_(this->ov_dim_, time_text(this->dim_timeout_).c_str());
@@ -436,7 +457,8 @@ void TsxCards::close_overlay() {
   lv_obj_delete(this->ov_catcher_);
   this->ov_catcher_ = this->ov_box_ = this->ov_slider_ = this->ov_level_ = nullptr;
   this->ov_dim_ = this->ov_blank_ = this->ov_info_ = this->ov_bars_ = this->ov_confirm_ = nullptr;
-  this->ov_vol_slider_ = this->ov_vol_level_ = nullptr;
+  this->ov_vol_slider_ = this->ov_vol_level_ = this->ov_vol_icon_ = nullptr;
+  this->ov_vol_icon_muted_ = -1;
   this->ov_btns_.clear();
   ESP_LOGI(TAG, "settings overlay closed");
 }

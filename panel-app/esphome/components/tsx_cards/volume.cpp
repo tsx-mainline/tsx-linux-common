@@ -1,7 +1,12 @@
 // volume.cpp: the volume of the panel, for the Home Assistant number "Volume"
 // and the settings overlay. See docs/panel-app.md, "Volume".
 //
-// The volume is one mixer control of the sound card (the "Master" softvol of
+// While the Sendspin player runs, the volume of the panel is the player
+// volume (volume_logic.h): the app reads the volume file of the player
+// (TSX_PANEL_APP_SENDSPIN_VOLUME, default /run/sendspin-cli/volume) and sets
+// the volume and the mute through tsx-panelctl. The mixer stays at the fixed
+// level of the board. Without that file:
+// the volume is one mixer control of the sound card (the "Master" softvol of
 // the board, the same control that tsx-panelctl and the setup page set). The
 // app reads and writes it with the control ioctls of the kernel (no
 // alsa-lib), as a member of the group audio. The board names the card in
@@ -10,6 +15,8 @@
 // (default Master). With no card or no control, volume() is NAN and the
 // overlay shows no volume slider.
 #include "tsx_cards.h"
+#include "control.h"
+#include "volume_logic.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -101,9 +108,52 @@ void TsxCards::volume_close_() {
   this->vol_fd_ = -1;
 }
 
-bool TsxCards::has_volume() { return this->volume_open_(); }
+// ---- the Sendspin player ----
+
+bool TsxCards::player_volume_() const { return access(this->player_vol_file_.c_str(), R_OK) == 0; }
+
+// One line for tsx-panelctl. A program that runs as root has no
+// TSX_PANEL_APP_PANELCTL, but may write the FIFO too.
+void TsxCards::player_send_(const std::string &line) {
+  std::string fifo = this->panelctl_.empty() ? this->run_dir_ + "/panelctl" : this->panelctl_;
+  std::string err;
+  if (fifo_send_line(fifo, line, err))
+    ESP_LOGI(TAG, "%s (Sendspin player, tsx-panelctl)", line.c_str());
+  else
+    ESP_LOGW(TAG, "tsx-panelctl '%s': %s", line.c_str(), err.c_str());
+}
+
+// Called from loop(): send the last value of a drag when its time has come.
+void TsxCards::volume_loop_() {
+  uint32_t now = millis();
+  int v = this->vol_set_.due(now);
+  if (v >= 0)
+    this->player_send_("volume " + std::to_string(v));
+  int m = this->mute_set_.due(now);
+  if (m >= 0)
+    this->player_send_(m ? "mute on" : "mute off");
+}
+
+int TsxCards::volume_muted() {
+  int v, m;
+  if (!read_player_volume(this->player_vol_file_, v, m))
+    return -1;
+  return this->mute_set_.shown(m, millis());
+}
+
+void TsxCards::set_volume_muted(bool muted) {
+  if (!this->player_volume_())
+    return;
+  this->mute_set_.want(muted ? 1 : 0, millis());
+  this->volume_loop_();
+}
+
+bool TsxCards::has_volume() { return this->player_volume_() || this->volume_open_(); }
 
 float TsxCards::volume() {
+  int pv, pm;
+  if (read_player_volume(this->player_vol_file_, pv, pm))
+    return (float) this->vol_set_.shown(pv, millis());
   if (!this->volume_open_())
     return NAN;
   snd_ctl_elem_value v;
@@ -119,9 +169,16 @@ float TsxCards::volume() {
 }
 
 void TsxCards::set_volume(float pct) {
-  if (std::isnan(pct) || !this->volume_open_())
+  if (std::isnan(pct))
     return;
   pct = std::max(0.0f, std::min(100.0f, pct));
+  if (this->player_volume_()) {
+    this->vol_set_.want((int) lroundf(pct), millis());
+    this->volume_loop_();
+    return;
+  }
+  if (!this->volume_open_())
+    return;
   long raw = this->vol_min_ + lround(double(pct) * double(this->vol_max_ - this->vol_min_) / 100.0);
   snd_ctl_elem_value v;
   memset(&v, 0, sizeof v);

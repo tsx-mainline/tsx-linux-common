@@ -75,7 +75,7 @@ EOF
 cat > "$T/bin/tsx-panelctl" <<EOF
 #!/bin/sh
 case "\$1" in
-state) printf 'owner kiosk\nscreen on\nbacklight-pct 40\nblank-timeout 300\nvolume 55\nledbar 100 50 0\nkeypad-led 128 unknown\nlights off 40 1 2 3\n';;
+state) printf 'owner kiosk\nscreen on\nbacklight-pct 40\nblank-timeout 300\nvolume 55\nmute off\nledbar 100 50 0\nkeypad-led 128 unknown\nlights off 40 1 2 3\n';;
 send) shift; echo "send \$*" >> "$T/panelctl.log";;
 *) exit 2;;
 esac
@@ -345,15 +345,15 @@ print("== the Panel section ==")
 _, E = login("admin")
 p = req("GET", "/setup/api/panel", cookies=E).json()
 c = p.get("controls", {})
-ok(p.get("owner") == "kiosk" and c.get("screen") == {"on": True} and c.get("backlight") == {"value": 40} and c.get("volume") == {"value": 55},
-   "the screen, the brightness and the volume: %s" % c)
+ok(p.get("owner") == "kiosk" and c.get("screen") == {"on": True} and c.get("backlight") == {"value": 40} and c.get("volume") == {"value": 55, "muted": False},
+   "the screen, the brightness, the volume and the mute of the Sendspin player: %s" % c)
 ok(c.get("ledbar") == {"on": True, "brightness": 100, "color": "#ff8000"} and c.get("key_leds") == {"on": True, "level": 128},
    "the LED bar (R G B 0..100 as a color and a brightness) and the key LEDs: %s %s" % (c.get("ledbar"), c.get("key_leds")))
 ok(c.get("lights") == {"on": False, "brightness": 40, "color": "#010203"} and "dim_timeout" not in c, "the lights of the panel app; no dim time: %s" % c.get("lights"))
 ok(req("GET", "/setup/api/panel").status == 403, "without a session: 403")
 open(T + "/panelctl.log", "w").close()
 for control, value, want in (("backlight", 70, "send brightness-pct 70"), ("screen", False, "send blank on"), ("screen", True, "send blank off"),
-                             ("volume", 0, "send volume 0"),
+                             ("volume", 0, "send volume 0"), ("mute", True, "send mute on"), ("mute", False, "send mute off"),
                              ("ledbar", {"on": True, "brightness": 50, "color": "#ff8000"}, "send ledbar set 50 25 0"),
                              ("ledbar", {"on": False}, "send ledbar off"),
                              ("lights", {"on": True, "brightness": 40, "color": "#0a141e"}, "send lights set 40 10 20 30"),
@@ -362,7 +362,7 @@ for control, value, want in (("backlight", 70, "send brightness-pct 70"), ("scre
     last = open(T + "/panelctl.log").read().strip().split("\n")[-1]
     ok(r.status == 200 and last == want, "%s %s -> tsx-panelctl %s" % (control, json.dumps(value), last))
 n = open(T + "/panelctl.log").read().count("send")
-for control, value in (("backlight", 0), ("backlight", 101), ("backlight", True), ("volume", "50"), ("screen", "on"),
+for control, value in (("backlight", 0), ("backlight", 101), ("backlight", True), ("volume", "50"), ("mute", "on"), ("mute", 1), ("screen", "on"),
                        ("ledbar", {"on": True, "brightness": 50, "color": "red"}), ("key_leds", {"on": True, "level": 300}),
                        ("dim_level", 0), ("blank_timeout", 86401), ("reboot", 1)):
     r = post("/setup/api/panel", {"control": control, "value": value}, E)
@@ -383,10 +383,13 @@ def helper2(line):
     return out
 open(T + "/panelctl.log", "w").close()
 for line in ("panel reboot", "panel blank on; rm -rf /", "panel ledbar set 1 2", "panel brightness-pct 1000", "panel volume -5",
-             "panel lights set 1 2 3 4 5", "panel blank  on", "panel keypad led auto", "panel setup", "panel config-url http://x"):
+             "panel lights set 1 2 3 4 5", "panel blank  on", "panel keypad led auto", "panel setup", "panel config-url http://x",
+             "panel mute maybe", "panel mute on off", "panel mute"):
     ok(helper2(line).startswith("err"), "the helper refuses '%s'" % line)
 ok(open(T + "/panelctl.log").read() == "", "no refused line reached tsx-panelctl")
 ok(helper2("panel volume 50") == "ok" and open(T + "/panelctl.log").read().strip() == "send volume 50", "the helper passes 'panel volume 50'")
+open(T + "/panelctl.log", "w").close()
+ok(helper2("panel mute on") == "ok" and open(T + "/panelctl.log").read().strip() == "send mute on", "the helper passes 'panel mute on'")
 r = helper2("panel-state")
 ok(r.startswith("ok owner kiosk\x01screen on"), "panel-state gives the lines of tsx-panelctl state")
 

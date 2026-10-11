@@ -25,6 +25,7 @@
 #include "lvgl.h"
 #include "layout.h"
 #include "slider_logic.h"
+#include "volume_logic.h"
 
 #ifdef USE_FONT
 #include "esphome/components/font/font.h"
@@ -216,11 +217,17 @@ class TsxCards : public Component {
   void set_dim_level(float pct);
 
   // ---- the volume of the panel (volume.cpp) ----
-  /// The volume control of the sound card in percent (0 to 100), or NAN when
-  /// the panel has no such control (TSX_PANEL_APP_SOUND_CARD, TSX_PANEL_APP_VOLUME_CTL).
+  /// The volume in percent (0 to 100): the player volume while the Sendspin
+  /// player runs (its volume file exists), else the volume control of the
+  /// sound card. NAN when the panel has neither (TSX_PANEL_APP_SOUND_CARD,
+  /// TSX_PANEL_APP_VOLUME_CTL, TSX_PANEL_APP_SENDSPIN_VOLUME).
   float volume();
   bool has_volume();
   void set_volume(float pct);
+  /// The mute of the Sendspin player: 1 muted, 0 not, -1 no mute (the
+  /// player does not run: the mixer has no mute).
+  int volume_muted();
+  void set_volume_muted(bool muted);
 
   // ---- the settings overlay (overlay.cpp) ----
   void set_overlay_timeout(uint32_t ms) { this->overlay_timeout_ = ms; }
@@ -324,6 +331,9 @@ class TsxCards : public Component {
   // volume.cpp
   bool volume_open_();
   void volume_close_();
+  bool player_volume_() const;
+  void player_send_(const std::string &line);
+  void volume_loop_();
   // control.cpp: the commands of tsx-panelctl and screen.state (control.h)
   void control_loop_();
   void apply_control_(const std::string &line);
@@ -489,6 +499,10 @@ class TsxCards : public Component {
   long vol_min_{0}, vol_max_{0};
   uint32_t vol_retry_at_{0};
   bool vol_warned_{false};
+  // The Sendspin player (volume_logic.h).
+  std::string player_vol_file_{"/run/sendspin-cli/volume"};
+  PlayerSetting vol_set_;
+  PlayerSetting mute_set_;
   Trigger<bool> screen_trigger_;
   std::vector<int> children_;
   std::map<std::string, std::string> config_pending_;
@@ -507,6 +521,8 @@ class TsxCards : public Component {
   lv_obj_t *ov_confirm_{nullptr};
   lv_obj_t *ov_vol_slider_{nullptr};
   lv_obj_t *ov_vol_level_{nullptr};
+  lv_obj_t *ov_vol_icon_{nullptr};
+  int ov_vol_icon_muted_{-1};  // the mute that the icon shows
   uint32_t ov_last_refresh_{0};
   std::string version_;
 

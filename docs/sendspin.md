@@ -32,10 +32,34 @@ The package does not start the player. Use the key `SENDSPIN` of `panel.conf`:
 
 The player plays to `SENDSPIN_OUTPUT`, by default `alsa:media`: the `media` PCM of `/etc/asound.conf` of the board. The board makes it a softvol `Media` on top of the softvol `Master`, on a dmix. So other users can play at the same time (sounds of the panel, a voice feature), and a voice feature can turn the music down with `Media`.
 
-Two volumes act on the music:
+The panel has one volume. While the player runs, the volume of the panel is the player volume of Music Assistant:
 
-- The player volume of Music Assistant or Home Assistant. `sendspin-cli` scales the stream by (volume/100)^1.5.
-- The volume of the panel: `Master`. The setup page, `tsx-panelctl volume`, the Home Assistant number "Volume" of the panel and the overlay of the panel app set it.
+- The setup page, `tsx-panelctl volume`, the Home Assistant number "Volume" of the panel, `tsx-mqtt` and the overlay of the panel app show and set the player volume.
+- A change in Music Assistant or in Home Assistant (the media player of the panel) shows on all of them, in about a second.
+- `sendspin-cli` scales the stream by (volume/100)^1.5: 100 % = 0 dB, 60 % = -6.7 dB, 50 % = -9 dB, 30 % = -15.7 dB, 10 % = -30 dB.
+- The mute is the mute of the player. The setup page has a "Mute" box, and a tap on the volume icon of the overlay of the panel app mutes or unmutes. `tsx-panelctl get mute` and `send mute on|off` read and set it.
+- The mixer of the board (`Master`) stays at a fixed level. Nothing on the panel shows it or changes it. The board sets the level with `TSX_VOLUME_FIXED_CMD` of `board.sh` when the service starts. A board without that command keeps `Master` where it is. The speaker limits of the board stay below the mixer.
+
+How it works:
+
+1. The service starts `sendspin-cli` with `--volume-file /run/sendspin-cli/volume`. The player writes its volume and mute to that file (mode 644) when it starts and at each change: `volume = 40` and `muted = false`.
+2. `tsx-panelctl` and the panel app read the file. The file is also the sign that the player owns the volume.
+3. A change on the panel goes to `tsx-panelctl` (root). It runs `sendspin-cli player-vol N` or `player-mute on|off` on the control socket of the player. The player applies the value and tells Music Assistant.
+4. When the service stops, it removes the file. The mixer is then the volume of the panel again, at the fixed level. `SENDSPIN=off` does this.
+
+`player-vol`, `player-mute` and `--volume-file` come from a patch of the package sendspin-cli (0.3.0-r1 and later). With an older `sendspin-cli`, the service writes a warning, and `Master` stays the volume of the panel.
+
+### Announcements
+
+Music Assistant plays an announcement on a Sendspin player through the player itself. The player of this package has no announcement feature of its own. So Music Assistant does these steps:
+
+1. It stops the music of the player, if it plays.
+2. It unmutes the player, if it is muted.
+3. It sets the player volume to the announcement volume (the "Announcement volume" settings of the player in Music Assistant), when that volume is not the same as the present one.
+4. It plays the announcement.
+5. It sets the player volume back to the old value, mutes the player again if it was muted, and starts the music again.
+
+The announcement volume is the player volume during the announcement. Nothing scales it again. During the announcement, the panel shows the announcement volume (and no mute). After the announcement, the panel shows the old volume again. Music Assistant sets the old volume at the end of the announcement. So a change on the panel during an announcement does not stay.
 
 ## Least privilege
 
