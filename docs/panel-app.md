@@ -462,7 +462,9 @@ A UI draws in short bursts. A load governor such as `ondemand` sees the load of 
 | Key | Meaning |
 |---|---|
 | `CPUFREQ_BOOST_MS` | After each touch report, key press, redraw burst (two frames within 100 ms) and wake, the app sets `scaling_min_freq` to the highest frequency for this time. Then it sets the lowest frequency again, and the governor scales the CPU down. 0 or no key: no boost. |
-| `CPUFREQ_SCREEN_OFF` | `lowest`: while the screen is off, the app sets `scaling_max_freq` to the lowest frequency. At the wake it sets the full range again, before the picture. `keep` or no key: the full range. |
+| `CPUFREQ_SCREEN_OFF` | `lowest`: while the screen is off, the app sets `scaling_max_freq` to the lowest frequency. While a sound card plays, it keeps the full range (see below). At the wake it sets the full range again, before the picture. `keep` or no key: the full range. |
+
+Audio at the lowest frequency can stutter, for example Sendspin or a voice answer while the screen is off. So with `CPUFREQ_SCREEN_OFF=lowest`, the app checks the playback streams of the sound cards once a second while the screen is off. A stream plays when its file `/proc/asound/cardN/pcmMp/subK/status` has the line `state: RUNNING` or `state: DRAINING`. While a stream plays, the app sets the full range and the governor is free. One second after the last stream stops, the app sets the lowest frequency again. The log has a line for each change (`audio plays` or `no audio`). `TSX_ASOUND_DIR` replaces `/proc/asound` for tests.
 
 The app writes only the two limits of each policy in `/sys/devices/system/cpu/cpufreq` (`TSX_CPUFREQ_SYS` replaces this folder for tests). For an app that runs as `tsx-panel-app`, the service gives the group of that user write access to the two files before the start. It writes the full range (`cpuinfo_min_freq` to `cpuinfo_max_freq`) at the start and at the end. The board sets the governor and its settings, for example in a boot service. A write that changes the frequency also changes the core voltage. On a single-core ARM CPU, such a write can take 2 to 10 ms.
 

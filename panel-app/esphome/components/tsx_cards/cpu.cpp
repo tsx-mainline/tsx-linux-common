@@ -6,7 +6,10 @@
 // (scaling_min_freq) to the highest one for CPUFREQ_BOOST_MS after each
 // touch, key press and redraw burst, and at a wake. The governor scales down
 // again after the boost. With CPUFREQ_SCREEN_OFF=lowest the highest allowed
-// frequency (scaling_max_freq) is the lowest one while the screen is off.
+// frequency (scaling_max_freq) is the lowest one while the screen is off,
+// but not while a sound card plays (playback.h): the app checks the ALSA
+// streams once a second while the screen is off. Audio at the lowest
+// frequency can stutter.
 //
 // The values come from panel-board.conf (TSX_PANEL_BOARD_CONF):
 //   CPUFREQ_BOOST_MS=1500        0 or not set: no boost
@@ -14,9 +17,11 @@
 // The governor and its settings are the job of the board (its boot
 // service). The app writes only the two limits, and gives the full range
 // back at the start and at the end. TSX_CPUFREQ_SYS replaces
-// /sys/devices/system/cpu/cpufreq (tests).
+// /sys/devices/system/cpu/cpufreq and TSX_ASOUND_DIR replaces /proc/asound
+// (tests).
 #include "tsx_cards.h"
 #include "hwconf.h"
+#include "playback.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -32,6 +37,8 @@ namespace esphome {
 namespace tsx_cards {
 
 static const char *const TAG = "tsx_cards.cpu";
+// While the screen is off: the time between two checks of the sound cards.
+static const uint32_t AUDIO_CHECK_MS = 1000;
 
 static bool read_khz(const std::string &path, uint32_t &out) {
   FILE *f = fopen(path.c_str(), "r");
@@ -66,6 +73,9 @@ void TsxCards::cpu_setup_() {
     this->cpu_boost_ms_ = std::min<unsigned long>(strtoul(v.c_str(), nullptr, 10), 60000);
   if (conf_value(conf, "CPUFREQ_SCREEN_OFF", v))
     this->cpu_off_lowest_ = v == "lowest";
+  const char *asd = getenv("TSX_ASOUND_DIR");
+  if (asd != nullptr && asd[0] != '\0')
+    this->asound_dir_ = asd;
   if (this->cpu_boost_ms_ == 0 && !this->cpu_off_lowest_)
     return;
   const char *sys = getenv("TSX_CPUFREQ_SYS");
@@ -100,7 +110,7 @@ void TsxCards::cpu_setup_() {
   const CpuPolicy &p0 = this->cpu_policies_.front();
   ESP_LOGI(TAG, "CPU boost to %u MHz for %u ms after an input; screen off: %s (%u policies, %u..%u MHz)",
            (unsigned) (p0.max / 1000), (unsigned) this->cpu_boost_ms_,
-           this->cpu_off_lowest_ ? "the lowest frequency" : "the full range", (unsigned) this->cpu_policies_.size(),
+           this->cpu_off_lowest_ ? "the lowest frequency (the full range while audio plays)" : "the full range", (unsigned) this->cpu_policies_.size(),
            (unsigned) (p0.min / 1000), (unsigned) (p0.max / 1000));
 }
 
@@ -138,8 +148,25 @@ void TsxCards::cpu_boost_() {
 }
 
 void TsxCards::cpu_loop_() {
-  if (this->cpu_mode_ == CPU_BOOST && (int32_t) (millis() - this->cpu_boost_until_) >= 0)
+  uint32_t now = millis();
+  if (this->cpu_mode_ == CPU_BOOST && (int32_t) (now - this->cpu_boost_until_) >= 0)
     this->cpu_apply_(CPU_FULL_RANGE);
+  if (this->cpu_off_lowest_ && !this->cpu_policies_.empty() && this->screen_ == SCREEN_OFF &&
+      now - this->cpu_audio_check_ >= AUDIO_CHECK_MS)
+    this->cpu_off_mode_();
+}
+
+// The screen is off: the lowest frequency, or the full range (the governor
+// is free) while a sound card plays.
+void TsxCards::cpu_off_mode_() {
+  this->cpu_audio_check_ = millis();
+  bool playing = audio_playing(this->asound_dir_);
+  if (playing != this->cpu_audio_) {
+    this->cpu_audio_ = playing;
+    ESP_LOGI(TAG, "screen off, %s", playing ? "audio plays: the CPU keeps its full range"
+                                            : "no audio: the lowest frequency");
+  }
+  this->cpu_apply_(playing ? CPU_FULL_RANGE : CPU_LOWEST);
 }
 
 void TsxCards::cpu_screen_(bool on) {
@@ -152,8 +179,11 @@ void TsxCards::cpu_screen_(bool on) {
     } else {
       this->cpu_apply_(CPU_FULL_RANGE);
     }
+  } else if (this->cpu_off_lowest_) {
+    this->cpu_audio_ = false;
+    this->cpu_off_mode_();
   } else {
-    this->cpu_apply_(this->cpu_off_lowest_ ? CPU_LOWEST : CPU_FULL_RANGE);
+    this->cpu_apply_(CPU_FULL_RANGE);
   }
 }
 

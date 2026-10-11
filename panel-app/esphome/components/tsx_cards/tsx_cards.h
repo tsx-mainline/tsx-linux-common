@@ -314,6 +314,7 @@ class TsxCards : public Component {
   void cpu_screen_(bool on);
   enum CpuMode : uint8_t { CPU_FULL_RANGE = 0, CPU_BOOST, CPU_LOWEST };
   void cpu_apply_(CpuMode m);
+  void cpu_off_mode_();
   void config_set_(const char *key, const std::string &value);
   void reap_children_();
   // The root helper tsx-panelctl (its FIFO), for a program that does not run
@@ -464,6 +465,9 @@ class TsxCards : public Component {
   uint32_t cpu_boost_until_{0};
   CpuMode cpu_mode_{CPU_FULL_RANGE};
   bool cpu_off_lowest_{false};    // screen off: the lowest frequency only
+  bool cpu_audio_{false};         // screen off: a sound card plays (playback.h)
+  uint32_t cpu_audio_check_{0};
+  std::string asound_dir_{"/proc/asound"};
   uint64_t last_render_start_{0};
   std::string pref_dir_;
   std::string run_dir_{"/run/tsx"};
