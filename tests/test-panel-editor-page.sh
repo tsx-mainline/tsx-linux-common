@@ -10,8 +10,9 @@
 #  - pages: add, rename, move, remove (the keys that show a page follow)
 #  - cards: add, remove, move, the type keys, the entity id, the icon picker,
 #    the tap and hold actions, the entity suggestions, the new types (the
-#    step of a climate card) and the conditional card (the condition, the
-#    states as a text or a list, the inner card)
+#    step of a climate card), the conditional card (the condition, the
+#    states as a text or a list, the inner card) and the slider card (its
+#    domains, orientation, send, min, max and unit)
 #  - the theme, the keys (the actions setup, overlay, lights and screen_off,
 #    and the default of each key), the raw JSON view
 #  - the errors of the check, a refused save, a stale revision, the pairing gate
@@ -63,7 +64,19 @@ cat > "$T/tricky.json" <<'JSEOF'
   {"type": "fan", "entity_id": "fan.a", "hold": {"data": {}}},
   {"type": "cover", "entity_id": "cover.a", "x": 0, "y": 1, "w": 2},
   {"type": "conditional", "entity_id": "light.a", "state": "on", "x": 2, "y": 1, "card": {"type": "sensor", "entity_id": "sensor.a", "precision": 9}},
-  {"type": "media_player", "entity_id": "media_player.a"}]}]}
+  {"type": "media_player", "entity_id": "media_player.a"}]},
+ {"columns": 4, "rows": 2, "cards": [
+  {"type": "slider", "entity_id": "switch.a"},
+  {"type": "slider", "entity_id": "light.a", "max": 101},
+  {"type": "slider", "entity_id": "number.a", "min": 5, "max": 5},
+  {"type": "slider", "entity_id": "fan.a", "orientation": "diagonal"},
+  {"type": "slider", "entity_id": "cover.a", "orientation": "vertical", "h": 2},
+  {"type": "slider", "entity_id": "media_player.a", "send": "always"},
+  {"type": "slider", "entity_id": "input_number.a", "min": -1000000001},
+  {"type": "slider", "entity_id": "number.b", "unit": 3},
+  {"type": "slider", "entity_id": "number.c", "min": -5, "max": 1000, "unit": "", "send": "drag", "w": 2},
+  {"type": "conditional", "entity_id": "light.a", "state": "on", "card": {"type": "slider", "entity_id": "sensor.a"}},
+  {"type": "slider", "entity_id": "light.b", "min": 10, "max": 90}]}]}
 JSEOF
 for n in example tricky; do
 	src="$T/tricky.json"; [ "$n" = example ] && src=$EXAMPLE
@@ -101,9 +114,10 @@ const ENTITIES = [
   { entity_id: "switch.coffee_maker", name: "", state: "off", source: "layout" },
 ];
 const BASE = {
-  icons: ICONS, types: ["light", "switch", "scene", "script", "sensor", "weather", "clock", "cover", "climate", "media_player", "fan", "conditional"],
-  domains: { light: "light", scene: "scene", script: "script", weather: "weather", cover: "cover", climate: "climate", media_player: "media_player", fan: "fan" },
-  type_keys: { sensor: ["attribute", "precision", "unit"], clock: ["date_format", "format"], climate: ["step"] },
+  icons: ICONS, types: ["light", "switch", "scene", "script", "sensor", "weather", "clock", "cover", "climate", "media_player", "fan", "conditional", "slider"],
+  domains: { light: "light", scene: "scene", script: "script", weather: "weather", cover: "cover", climate: "climate", media_player: "media_player", fan: "fan",
+    slider: ["light", "fan", "cover", "media_player", "number", "input_number"] },
+  type_keys: { sensor: ["attribute", "precision", "unit"], clock: ["date_format", "format"], climate: ["step"], slider: ["max", "min", "orientation", "send", "unit"] },
   theme_keys: ["background", "card", "card_on", "text", "text_dim"],
   limits: { max_pages: 16, max_cards: 48, max_grid: 12, max_gap: 40, max_precision: 6, max_file_bytes: 65536 },
   defaults: { theme: { background: "#101418", card: "#2a3038", card_on: "#c88a1e", text: "#f0f0f0", text_dim: "#9aa4b0" }, grid: { columns: 4, rows: 3, gap: 10 } },
@@ -180,8 +194,8 @@ const cellOf = (c) => { // "2 / span 3" -> [col, span]
   ok(p.$("source-note").textContent === "", "the layout of the user needs no note");
   ok(p.cardRows().length === 10, "the card list has 10 cards");
   ok(p.$("gr-columns").value === "4" && p.$("gr-gap").value === "10", "the grid defaults show");
-  ok(p.$("card-add-type").children.length === 12, "the card type list has 12 types");
-  ok(["cover", "climate", "media_player", "fan", "conditional"].every(t => p.$("card-add-type").children.some(o => o.value === t)), "the list has the new types");
+  ok(p.$("card-add-type").children.length === 13, "the card type list has 13 types");
+  ok(["cover", "climate", "media_player", "fan", "conditional", "slider"].every(t => p.$("card-add-type").children.some(o => o.value === t)), "the list has the new types");
 
   console.log("== a save with no change sends the same JSON ==");
   await p.save();
@@ -219,6 +233,12 @@ const cellOf = (c) => { // "2 / span 3" -> [col, span]
   await flush();
   p.selectPage(2); got = p.pcards().map(cellOf);
   ok(same(got, PLACED.tricky[2]), "cards with conditional rules, step and hold that the app leaves out: " + JSON.stringify(got) + " (tsx-layout-check: " + JSON.stringify(PLACED.tricky[2]) + ")");
+  p.selectPage(3); got = p.pcards().map(cellOf);
+  ok(same(got, PLACED.tricky[3]), "slider cards with bad values that the app leaves out: " + JSON.stringify(got) + " (tsx-layout-check: " + JSON.stringify(PLACED.tricky[3]) + ")");
+  p = loadEditor({ layout: clone(EXAMPLE_FULL) });
+  await flush();
+  p.selectPage(3); got = p.pcards().map(cellOf);
+  ok(same(got, PLACED.example[3]) && got.length === 5, "page 4 of the example (the slider cards): " + JSON.stringify(got));
 
   console.log("== the preview uses the places of the check when it matches the layout ==");
   p = loadEditor({ check: { status: 200, body: { ok: true, errors: [], warnings: [], placed: [{ name: "Home", columns: 4, rows: 3, cards: [{ index: 0, x: 1, y: 1, w: 1, h: 1 }] }, { name: "Outside", columns: 3, rows: 2, cards: [] }] } } });
@@ -424,12 +444,45 @@ const cellOf = (c) => { // "2 / span 3" -> [col, span]
   }
   ok(p.$("entity-list").children.length === 0, "the suggestions for a fan card list no entity of another domain");
 
+  console.log("== the slider card ==");
+  p.$("card-add-type").value = "slider";
+  p.click(p.$("card-add"));
+  p.type(p.cardEdit("[name=entity_id]"), "switch.x");
+  ok(p.$("card-edit").textContent.indexOf("A slider card needs a light, fan, cover, media_player, number or input_number entity") >= 0, "a slider card names its domains");
+  ok(p.$("entity-list").children.map(o => o.value).join() === "light.kitchen,light.porch", "the suggestions for a slider card are the entities of its domains");
+  for (const d of ["light", "fan", "cover", "media_player", "number", "input_number"]) {
+    p.type(p.cardEdit("[name=entity_id]"), d + ".a");
+    ok(p.$("card-edit").textContent.indexOf("needs a") < 0, "a slider card takes a " + d + " entity");
+  }
+  p.type(p.cardEdit("[name=entity_id]"), "number.washer_delay");
+  p.pick(p.cardEdit("[name=orientation]"), "vertical");
+  p.pick(p.cardEdit("[name=send]"), "drag");
+  p.type(p.cardEdit("[name=min]"), "0");
+  p.type(p.cardEdit("[name=max]"), "12.5");
+  p.type(p.cardEdit("[name=unit]"), "h");
+  await p.save();
+  ok(same(lastCard(), { type: "slider", entity_id: "number.washer_delay", orientation: "vertical", send: "drag", min: 0, max: 12.5, unit: "h" }),
+    "the slider keys are in the payload, min and max as numbers: " + JSON.stringify(lastCard()));
+  const nu = p.cardEdit("[name=no_unit]"); nu.checked = true; nu.fire("change");
+  p.pick(p.cardEdit("[name=orientation]"), "");
+  p.pick(p.cardEdit("[name=send]"), "");
+  p.type(p.cardEdit("[name=max]"), "");
+  await p.save();
+  ok(same(lastCard(), { type: "slider", entity_id: "number.washer_delay", min: 0, unit: "" }), "the defaults remove the keys, and \"Show no unit\" is the empty unit: " + JSON.stringify(lastCard()));
+  ok(p.cardEdit("[name=hold]") !== null && p.cardEdit("[name=tap]") !== null, "a slider card has tap and hold");
+  p.pick(p.$("c-type"), "sensor");
+  await p.save();
+  ok(same(lastCard(), { type: "sensor", entity_id: "number.washer_delay", unit: "" }), "a sensor card keeps the unit and drops the slider keys: " + JSON.stringify(lastCard()));
+  p.pick(p.$("c-type"), "light");
+  await p.save();
+  ok(lastCard().unit === undefined, "a light card drops the unit");
+
   p.$("card-add-type").value = "conditional";
   p.click(p.$("card-add"));
   await p.save();
   ok(same(lastCard(), { type: "conditional", entity_id: "", state: "on", card: { type: "light", entity_id: "" } }), "a new conditional card has a state and an inner card: " + JSON.stringify(lastCard()));
   ok(p.$("card-edit").textContent.indexOf("The card that the condition shows") >= 0 && p.cardEdit("[name=label]") === null && p.cardEdit("[name=tap]") === null, "a conditional card has no label and no tap of its own");
-  ok(p.$("ci-type").children.every(o => o.value !== "conditional") && p.$("ci-type").children.length === 11, "the inner card cannot be a conditional card");
+  ok(p.$("ci-type").children.every(o => o.value !== "conditional") && p.$("ci-type").children.length === 12, "the inner card cannot be a conditional card");
   p.type(p.cardEdit("[name=entity_id]"), "binary_sensor.front_door");
   p.type(p.cardEdit("[name=state_values]"), "on");
   p.type(p.cardEdit("[name=inner_entity_id]"), "light.porch");

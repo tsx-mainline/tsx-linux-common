@@ -176,7 +176,7 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
   var $ = function(id){ return document.getElementById(id); };
 
   var TYPE_NAME = {light:"Light", "switch":"Switch", scene:"Scene", script:"Script", sensor:"Sensor", weather:"Weather", clock:"Clock",
-    cover:"Cover", climate:"Climate", media_player:"Media player", fan:"Fan", conditional:"Conditional"};
+    cover:"Cover", climate:"Climate", media_player:"Media player", fan:"Fan", conditional:"Conditional", slider:"Slider"};
   var KEY_NAMES = ["home", "up", "down", "power", "lights"];
   // the actions of a key that no card can use, with the text of the editor
   var KEY_ACTION_NAME = {next_page:"Show the next page", prev_page:"Show the previous page", setup:"Open the setup window",
@@ -309,6 +309,32 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
 
   // ---- the placement: the same rules as the app (tsx-layout-check) ----
   function isInt(v, lo, hi){ return typeof v === "number" && Math.floor(v) === v && v >= lo && v <= hi; }
+  // The domain of an entity id fits the card type. A type has one domain
+  // (a text), a list of domains (slider) or none.
+  function domainOk(type, id){
+    var need = S.domains[type], dom = String(id).split(".")[0];
+    if (!need) return true;
+    return Array.isArray(need) ? need.indexOf(dom) >= 0 : dom === need;
+  }
+  function domainText(type){
+    var need = S.domains[type];
+    if (!Array.isArray(need)) return String(need);
+    return need.length > 1 ? need.slice(0, -1).join(", ") + " or " + need[need.length - 1] : need.join("");
+  }
+  var SLIDER_PERCENT = ["light", "fan", "cover", "media_player"];
+  function sliderNumber(v){ return typeof v === "number" && isFinite(v) && Math.abs(v) <= 1e9; }
+  // the rules of a slider card (the same as tsx-layout-check)
+  function validSlider(c){
+    if ("orientation" in c && c.orientation !== "horizontal" && c.orientation !== "vertical") return false;
+    if ("min" in c && !sliderNumber(c.min)) return false;
+    if ("max" in c && !sliderNumber(c.max)) return false;
+    var pct = SLIDER_PERCENT.indexOf(String(c.entity_id).split(".")[0]) >= 0;
+    if (pct && (("min" in c && (c.min < 0 || c.min > 100)) || ("max" in c && (c.max < 0 || c.max > 100)))) return false;
+    if ("min" in c && "max" in c && !(c.min < c.max)) return false;
+    if ("unit" in c && typeof c.unit !== "string") return false;
+    if ("send" in c && c.send !== "release" && c.send !== "drag") return false;
+    return true;
+  }
   function validTap(v){
     if (typeof v === "string") return v === "none" || v === "default";
     if (!isObj(v) || typeof v.action !== "string" || !ENTITY_RE.test(v.action)) return false;
@@ -332,8 +358,7 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     if (!isObj(c) || typeof c.type !== "string" || S.types.indexOf(c.type) < 0) return null;
     if (c.type !== "clock") {
       if (typeof c.entity_id !== "string" || !ENTITY_RE.test(c.entity_id)) return null;
-      var need = S.domains[c.type];
-      if (need && c.entity_id.split(".")[0] !== need) return null;
+      if (!domainOk(c.type, c.entity_id)) return null;
     }
     if (c.type === "conditional") {
       if (!("state" in c) && !("state_not" in c)) return null;
@@ -365,6 +390,7 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
       if ("date_format" in c && typeof c.date_format !== "string") return null;
     }
     if (c.type === "climate" && "step" in c && !(typeof c.step === "number" && c.step >= 0.1 && c.step <= 10)) return null;
+    if (c.type === "slider" && !validSlider(c)) return null;
     if (c.type !== "conditional" && "tap" in c && !validTap(c.tap)) return null;
     if (NO_HOLD.indexOf(c.type) < 0 && "hold" in c && !validTap(c.hold)) return null;
     return g;
@@ -667,9 +693,9 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     return null;
   }
   function fillEntityList(type, listId){
-    var dl = clear($(listId || "entity-list")), dom = S.domains[type];
+    var dl = clear($(listId || "entity-list"));
     S.entities.forEach(function(e){
-      if (dom && e.entity_id.split(".")[0] !== dom) return;
+      if (!domainOk(type, e.entity_id)) return;
       var o = document.createElement("option");
       o.value = e.entity_id;
       o.label = (e.name ? e.name : "") + (e.state ? " (" + e.state + ")" : "");
@@ -680,8 +706,7 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     var id = c.entity_id;
     if (id === undefined || id === "") return {cls:"status", text:"Type an entity id, for example light.kitchen."};
     if (typeof id !== "string" || !ENTITY_RE.test(id)) return {cls:"status bad", text:"An entity id looks like domain.name: small letters, digits and _."};
-    var need = S.domains[c.type];
-    if (need && id.split(".")[0] !== need) return {cls:"status bad", text:"A " + (TYPE_NAME[c.type] || c.type).toLowerCase() + " card needs a " + need + " entity."};
+    if (!domainOk(c.type, id)) return {cls:"status bad", text:"A " + (TYPE_NAME[c.type] || c.type).toLowerCase() + " card needs a " + domainText(c.type) + " entity."};
     var info = entityInfo(id);
     if (info) return {cls:"status ok", text:(info.name ? info.name : id) + (info.state ? " · " + info.state : "")};
     return {cls:"status", text:S.entities.length ? "The panel does not know this entity yet." : ""};
@@ -703,7 +728,9 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
     var typeSel = el("select", {id:inner ? "ci-type" : "c-type", on:{change:function(ev){
       var t = ev.target.value;
       c.type = t;
-      ["attribute", "unit", "precision"].forEach(function(k){ if (t !== "sensor") delete c[k]; });
+      ["attribute", "precision"].forEach(function(k){ if (t !== "sensor") delete c[k]; });
+      if (t !== "sensor" && t !== "slider") delete c.unit;
+      ["orientation", "min", "max", "send"].forEach(function(k){ if (t !== "slider") delete c[k]; });
       ["format", "date_format"].forEach(function(k){ if (t !== "clock") delete c[k]; });
       if (t !== "climate") delete c.step;
       if (NO_HOLD.indexOf(t) >= 0) delete c.hold;
@@ -789,6 +816,39 @@ details > summary { cursor:pointer; color:var(--muted); padding:8px 0; }
         on:{input:function(ev){ numOrDelete(c, "step", ev.target.value); touch(); }}}),
         "The - and + buttons change the target temperature by this value.");
       box.appendChild(f4);
+    }
+
+    if (c.type === "slider") {
+      var f6 = el("div", {className:"fields"});
+      var ori = el("select", {id:newId("a"), name:pre + "orientation", on:{change:function(ev){ setOrDelete(c, "orientation", ev.target.value); touch(); }}});
+      [["", "Horizontal (default)"], ["vertical", "Vertical"], ["horizontal", "Horizontal"]].forEach(function(o){
+        var op = el("option", {value:o[0], textContent:o[1]}); if ((c.orientation || "") === o[0]) op.selected = true; ori.appendChild(op);
+      });
+      field(f6, "Orientation", ori);
+      var snd = el("select", {id:newId("a"), name:pre + "send", on:{change:function(ev){ setOrDelete(c, "send", ev.target.value); touch(); }}});
+      [["", "When the finger lifts (default)"], ["drag", "Also while the finger moves"], ["release", "When the finger lifts"]].forEach(function(o){
+        var op = el("option", {value:o[0], textContent:o[1]}); if ((c.send || "") === o[0]) op.selected = true; snd.appendChild(op);
+      });
+      field(f6, "Send the action", snd, "While the finger moves, the panel sends at most about 3 actions per second.");
+      var pctHint = "Percent (0 to 100) for a light, fan, cover or media player. The unit of the entity for a number.";
+      field(f6, "Minimum", el("input", {type:"number", id:newId("n"), name:pre + "min", step:"any",
+        value:c.min === undefined ? "" : String(c.min), placeholder:"(the minimum of the entity)",
+        on:{input:function(ev){ numOrDelete(c, "min", ev.target.value); touch(); }}}), pctHint);
+      field(f6, "Maximum", el("input", {type:"number", id:newId("n"), name:pre + "max", step:"any",
+        value:c.max === undefined ? "" : String(c.max), placeholder:"(the maximum of the entity)",
+        on:{input:function(ev){ numOrDelete(c, "max", ev.target.value); touch(); }}}));
+      var unBox = el("div", {});
+      var unIn = textInput(c.unit, {name:pre + "unit", placeholder:"(% or the unit of the entity)", disabled:c.unit === "",
+        on:{input:function(ev){ setOrDelete(c, "unit", ev.target.value); touch(); }}});
+      field(unBox, "Unit", unIn);
+      var nu = el("input", {type:"checkbox", id:newId("c"), name:pre + "no_unit", checked:c.unit === "", on:{change:function(ev){
+        if (ev.target.checked) { c.unit = ""; unIn.value = ""; unIn.disabled = true; }
+        else { delete c.unit; unIn.disabled = false; }
+        touch();
+      }}});
+      unBox.appendChild(el("div", {className:"toggle"}, [nu, el("label", {textContent:"Show no unit", htmlFor:nu.id})]));
+      f6.appendChild(unBox);
+      box.appendChild(f6);
     }
 
     if (c.type === "conditional") {

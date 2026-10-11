@@ -24,6 +24,7 @@
 #include "esphome/core/defines.h"
 #include "lvgl.h"
 #include "layout.h"
+#include "slider_logic.h"
 
 #ifdef USE_FONT
 #include "esphome/components/font/font.h"
@@ -65,6 +66,34 @@ struct UiButton {
 };
 using ButtonPool = std::vector<std::unique_ptr<UiButton>>;
 
+// The state of a slider card (slider.cpp). The LVGL slider holds an index
+// of `range` (slider_logic.h).
+struct SliderState {
+  lv_obj_t *obj{nullptr};
+  Slot *min_attr{nullptr}, *max_attr{nullptr};  // number: the attributes min and max
+  Slot *step_attr{nullptr};  // number: step; fan: percentage_step
+  Slot *features{nullptr};  // cover, media_player: supported_features
+  Slot *muted{nullptr};     // media_player: is_volume_muted
+  Slot *modes{nullptr};     // light: supported_color_modes
+  SliderRange range;
+  int ha_index{-1};         // the index of the value of Home Assistant (-1: not known)
+  int indicator_lit{-1};    // the color of the indicator: -1 not set yet, 0 card_on, 1 text
+  bool usable{false};       // the slider can send (a state, a range, the feature)
+  bool pressed{false};      // a finger is on the slider
+  bool cancelled{false};    // this touch sends nothing more (more than one finger)
+  uint32_t press_at{0}, last_send{0};
+  int sent{-1};             // the index that this touch sent last (-1: none)
+  int sends{0};
+  // After a send, the slider keeps the sent value until Home Assistant
+  // reports it, or until hold_until (an older state can come first).
+  bool hold{false};
+  double target{0};
+  uint32_t hold_until{0};
+  // The frames that LVGL drew while the finger was on the slider (log "perf").
+  uint32_t frames{0};
+  uint64_t render_us{0}, max_us{0};
+};
+
 struct CardView {
   TsxCards *owner{nullptr};
   const CardSpec *spec{nullptr};
@@ -99,6 +128,7 @@ struct CardView {
   int shown{-1};             // conditional: -1 not set yet, 0 hidden, 1 shown
   bool long_fired{false};    // a long press ran: no tap at the release
   lv_point_t press_point{};  // where the finger touched the card
+  std::unique_ptr<SliderState> slider;  // a slider card
 };
 
 // The state of the screen (screen.cpp).
@@ -226,6 +256,7 @@ class TsxCards : public Component {
   void on_card_tap(CardView *v);
   void on_card_hold(CardView *v);
   void on_button(UiButton *b);
+  void on_slider(CardView *v, lv_event_code_t code);
   void on_gesture();
   void on_render(bool ready);
 
@@ -303,6 +334,13 @@ class TsxCards : public Component {
   void overlay_refresh_();
   void overlay_confirm_reboot_();
   std::string version_text_();
+  // slider.cpp
+  void slider_build_(CardView *v, int inner_w, int inner_h);
+  void slider_update_(CardView *v, int &lit, std::string &value, const char *&icon);
+  void slider_send_(CardView *v, int index, const char *why);
+  void slider_mute_(CardView *v, const char *origin);
+  void slider_loop_();
+  std::string slider_text_(const CardView *v, double value) const;
   // popup.cpp
   void open_popup_(CardView *v);
   void close_popup_();
@@ -340,6 +378,8 @@ class TsxCards : public Component {
   std::vector<lv_obj_t *> bar_buttons_;
   std::vector<std::unique_ptr<CardView>> views_;
   std::vector<CardView *> clocks_;
+  std::vector<CardView *> sliders_;
+  CardView *slider_active_{nullptr};  // the slider under the finger
   int page_{0};
   int width_{0}, height_{0};
 

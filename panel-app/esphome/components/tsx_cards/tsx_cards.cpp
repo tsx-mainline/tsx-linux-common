@@ -2,6 +2,7 @@
 #include "tsx_cards.h"
 #include "control.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -312,6 +313,7 @@ void TsxCards::loop() {
   this->layout_loop_();
   this->overlay_loop_();
   this->popup_loop_();
+  this->slider_loop_();
   for (auto &it : this->keys_) {
     KeyState &k = it.second;
     if (k.down && !k.swallowed && !k.long_sent && now - k.down_at >= 800) {
@@ -504,6 +506,14 @@ void TsxCards::on_render(bool ready) {
   uint64_t now = mono_us();
   this->frames_++;
   this->render_us_ += now - this->render_t0_;
+  if (this->slider_active_ != nullptr && this->slider_active_->slider != nullptr) {
+    // The frames of a slider drag (slider.cpp logs them at the release).
+    SliderState *s = this->slider_active_->slider.get();
+    uint64_t d = now - this->render_t0_;
+    s->frames++;
+    s->render_us += d;
+    s->max_us = std::max(s->max_us, d);
+  }
   if (this->page_t0_ != 0) {
     ESP_LOGI(PERF, "page change: %.1f ms to the new frame (render %.1f ms)", (now - this->page_t0_) / 1000.0,
              (now - this->render_t0_) / 1000.0);
@@ -600,6 +610,8 @@ void TsxCards::check_layout(bool force) {
     it.second->views.clear();
   this->views_.clear();
   this->clocks_.clear();
+  this->sliders_.clear();
+  this->slider_active_ = nullptr;
   this->layout_ = std::move(next);
   this->have_layout_ = true;
   this->reload_t0_ = t0;
@@ -636,6 +648,8 @@ void TsxCards::show_error_(const std::string &text) {
     it.second->views.clear();
   this->views_.clear();
   this->clocks_.clear();
+  this->sliders_.clear();
+  this->slider_active_ = nullptr;
   this->bar_buttons_.clear();
   this->close_popup_();
   lv_obj_clean(this->root_);
@@ -657,6 +671,8 @@ void TsxCards::build_() {
     it.second->views.clear();
   this->views_.clear();
   this->clocks_.clear();
+  this->sliders_.clear();
+  this->slider_active_ = nullptr;
   this->bar_buttons_.clear();
   lv_obj_clean(this->root_);
   this->card_btns_.clear();
@@ -733,6 +749,21 @@ static std::string default_tap(const CardSpec &c) {
       return "cover.toggle";
     case CardType::FAN:
       return "fan.toggle";
+    case CardType::SLIDER:
+      // A tap on the card, not on the slider. A volume slider mutes
+      // (slider_mute_), a number slider has no tap.
+      switch (c.slider) {
+        case SliderMode::LIGHT:
+          return "light.toggle";
+        case SliderMode::FAN:
+          return "fan.toggle";
+        case SliderMode::COVER:
+          return "cover.toggle";
+        case SliderMode::VOLUME:
+          return "media_player.volume_mute";
+        default:
+          return "";
+      }
     default:
       return "";
   }
@@ -844,6 +875,7 @@ void TsxCards::build_card_(CardView *v, lv_obj_t *tile, int cell_w, int cell_h) 
     case CardType::SENSOR:
     case CardType::WEATHER:
     case CardType::CLIMATE:
+    case CardType::SLIDER:
       v->value = this->label_(o, FONT_VALUE, th.text);
       lv_obj_set_width(v->value, inner_w - ICON_W);
       lv_label_set_long_mode(v->value, LV_LABEL_LONG_MODE_DOTS);
@@ -867,6 +899,8 @@ void TsxCards::build_card_(CardView *v, lv_obj_t *tile, int cell_w, int cell_h) 
   }
   if (c.type == CardType::COVER || c.type == CardType::CLIMATE || c.type == CardType::MEDIA)
     this->card_buttons_(v, inner_w, inner_h);
+  if (c.type == CardType::SLIDER)
+    this->slider_build_(v, inner_w, inner_h);
 
   const std::string &e = c.entity_id;
   v->main = this->watch_(e, c.type == CardType::SENSOR ? c.attribute.c_str() : "", v);
@@ -1366,11 +1400,15 @@ void TsxCards::update_card_(CardView *v) {
         state = on ? "On" : "Off";
       break;
     }
+    case CardType::SLIDER:
+      this->slider_update_(v, lit, value, icon);
+      break;
     default:
       break;
   }
-  // A card with buttons has room for one line of the name only.
-  this->set_fit_text_(v->name, name.c_str(), v->btn[0] != nullptr ? 1 : 2, FONT_LABEL, FONT_LABEL);
+  // A card with buttons or a horizontal slider has room for one line of the name only.
+  bool one_line = v->btn[0] != nullptr || (v->slider != nullptr && !c.vertical);
+  this->set_fit_text_(v->name, name.c_str(), one_line ? 1 : 2, FONT_LABEL, FONT_LABEL);
   this->set_fit_text_(v->state, state.c_str(), 1, FONT_SMALL, FONT_SMALL);
   this->set_fit_text_(v->value, value.c_str(), 1, FONT_VALUE, FONT_LABEL);
   this->set_icon_(v->icon, c.icon, icon);
@@ -1458,6 +1496,10 @@ void TsxCards::on_card_tap(CardView *v) {
            c.entity_id.c_str());
   if (c.tap.kind != ActionSpec::DEFAULT) {
     this->run_action_(c.tap, c.entity_id, origin);
+    return;
+  }
+  if (c.type == CardType::SLIDER && c.slider == SliderMode::VOLUME) {
+    this->slider_mute_(v, origin);
     return;
   }
   ActionSpec a;

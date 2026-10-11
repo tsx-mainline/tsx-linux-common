@@ -2,6 +2,7 @@
 #include "layout.h"
 
 #include <ArduinoJson.h>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -19,7 +20,22 @@ const TypeName TYPES[] = {
     {"script", CardType::SCRIPT}, {"sensor", CardType::SENSOR},   {"weather", CardType::WEATHER},
     {"clock", CardType::CLOCK},   {"cover", CardType::COVER},     {"climate", CardType::CLIMATE},
     {"media_player", CardType::MEDIA}, {"fan", CardType::FAN},    {"conditional", CardType::CONDITIONAL},
+    {"slider", CardType::SLIDER},
 };
+
+// The largest value of "min" and "max" of a slider card (and the smallest, negative).
+const double SLIDER_LIMIT = 1e9;
+
+// A number (not true/false) from -SLIDER_LIMIT to SLIDER_LIMIT.
+bool get_number(JsonVariantConst v, double &out) {
+  if (v.is<bool>() || !(v.is<int>() || v.is<float>() || v.is<double>()))
+    return false;
+  double d = v.as<double>();
+  if (!std::isfinite(d) || std::fabs(d) > SLIDER_LIMIT)
+    return false;
+  out = d;
+  return true;
+}
 
 std::string fmt(const char *f, const std::string &a, const std::string &b = "") {
   char buf[256];
@@ -267,6 +283,8 @@ bool parse_card(JsonVariantConst v, const PageSpec &page, CardSpec &c, std::stri
       known |= k == "format" || k == "date_format";
     if (c.type == CardType::CLIMATE)
       known |= k == "step";
+    if (c.type == CardType::SLIDER)
+      known |= k == "orientation" || k == "min" || k == "max" || k == "unit" || k == "send";
     if (!known)
       warnings.push_back(where + fmt(": unknown key \"%s\" (ignored)", k));
   }
@@ -309,6 +327,10 @@ bool parse_card(JsonVariantConst v, const PageSpec &page, CardSpec &c, std::stri
     }
     if (need != nullptr && dom != need) {
       err = fmt("a %s card needs a %s entity", t, need);
+      return false;
+    }
+    if (c.type == CardType::SLIDER && !slider_mode_of(dom, c.slider)) {
+      err = "a slider card needs a light, fan, cover, media_player, number or input_number entity";
       return false;
     }
   } else if (!o["entity_id"].isNull()) {
@@ -423,6 +445,52 @@ bool parse_card(JsonVariantConst v, const PageSpec &page, CardSpec &c, std::stri
     }
     c.step = st;
   }
+  if (c.type == CardType::SLIDER) {
+    JsonVariantConst ov = o["orientation"], mn = o["min"], mx = o["max"], u = o["unit"], sv = o["send"];
+    if (!ov.isNull()) {
+      const char *os = ov.as<const char *>();
+      if (os == nullptr || (strcmp(os, "horizontal") != 0 && strcmp(os, "vertical") != 0)) {
+        err = "\"orientation\" must be \"horizontal\" or \"vertical\"";
+        return false;
+      }
+      c.vertical = strcmp(os, "vertical") == 0;
+    }
+    c.has_min = !mn.isNull();
+    c.has_max = !mx.isNull();
+    if (c.has_min && !get_number(mn, c.min)) {
+      err = "\"min\" must be a number from -1000000000 to 1000000000";
+      return false;
+    }
+    if (c.has_max && !get_number(mx, c.max)) {
+      err = "\"max\" must be a number from -1000000000 to 1000000000";
+      return false;
+    }
+    if (c.slider != SliderMode::NUMBER &&
+        ((c.has_min && (c.min < 0 || c.min > 100)) || (c.has_max && (c.max < 0 || c.max > 100)))) {
+      err = "\"min\" and \"max\" of a light, fan, cover or media_player slider must be 0 to 100";
+      return false;
+    }
+    if (c.has_min && c.has_max && !(c.min < c.max)) {
+      err = "\"min\" must be less than \"max\"";
+      return false;
+    }
+    if (!u.isNull()) {
+      if (!u.is<const char *>()) {
+        err = "\"unit\" must be a text";
+        return false;
+      }
+      c.unit = u.as<const char *>();
+      c.unit_set = true;
+    }
+    if (!sv.isNull()) {
+      const char *ss = sv.as<const char *>();
+      if (ss == nullptr || (strcmp(ss, "release") != 0 && strcmp(ss, "drag") != 0)) {
+        err = "\"send\" must be \"release\" or \"drag\"";
+        return false;
+      }
+      c.send_drag = strcmp(ss, "drag") == 0;
+    }
+  }
   if (!cond && !o["tap"].isNull()) {
     std::string aerr;
     if (!parse_action(o["tap"], false, c.tap, aerr)) {
@@ -515,6 +583,22 @@ const char *card_type_name(CardType t) {
 }
 
 std::string entity_domain(const std::string &entity_id) { return entity_id.substr(0, entity_id.find('.')); }
+
+bool slider_mode_of(const std::string &domain, SliderMode &out) {
+  if (domain == "light")
+    out = SliderMode::LIGHT;
+  else if (domain == "fan")
+    out = SliderMode::FAN;
+  else if (domain == "cover")
+    out = SliderMode::COVER;
+  else if (domain == "media_player")
+    out = SliderMode::VOLUME;
+  else if (domain == "number" || domain == "input_number")
+    out = SliderMode::NUMBER;
+  else
+    return false;
+  return true;
+}
 
 bool parse_layout(const std::string &text, Layout &out, std::string &error, std::vector<std::string> &warnings) {
   out = Layout();

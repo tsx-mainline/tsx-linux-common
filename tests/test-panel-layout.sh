@@ -6,8 +6,9 @@
 #  - tsx-layout-check: errors, warnings, exit codes and the placement of the
 #    cards (the same rules as the C++ component). This includes the new card
 #    types (cover, climate, media_player, fan), hold and step, the key actions
-#    overlay, lights and screen_off, and the conditional card: its errors in
-#    the order of the spec, its warnings, and its place on the page
+#    overlay, lights and screen_off, the conditional card (its errors in the
+#    order of the spec, its warnings, and its place on the page) and the
+#    slider card (its domains, orientation, min, max, unit and send)
 #  - tsx-layout-check --install: it refuses a link, a file that is too big and
 #    a layout with an error, and leaves the destination as it was. It installs
 #    a good layout with mode 644, byte for byte
@@ -40,7 +41,7 @@ assert used == set(mod.TYPES), sorted(set(mod.TYPES) ^ used)
 assert sc["$defs"]["card"]["properties"]["type"]["enum"] == list(mod.TYPES)
 assert sc["$defs"]["keyAction"]["oneOf"][0]["enum"] == ["none"] + list(mod.KEY_ACTIONS)
 props = sc["$defs"]["card"]["properties"]
-assert {"hold", "step", "state", "state_not", "card"} <= set(props)
+assert {"hold", "step", "state", "state_not", "card", "orientation", "min", "max", "send"} <= set(props)
 PYEOF
 
 # run NAME EXPECTED_EXIT PATTERN JSON: check JSON, the exit code and that
@@ -133,6 +134,36 @@ run ok-cond-16 0 'OK, 1 pages, 1 cards' "{$C$CI, \"state\": [\"1\",\"2\",\"3\",\
 run ok-cond-inner-clock 0 'OK, 1 pages, 1 cards' "{$C$CI, \"state\": \"on\", \"card\": {\"type\": \"clock\"}}$E}"
 run ok-cond-size 0 'OK, 1 pages, 1 cards' "{$C$CI, \"state\": \"on\", \"w\": 2, \"h\": 2, \"x\": 1, \"y\": 1, $IN}$E}"
 run ok-keys-new 0 'OK, 1 pages' '{"version": 1, "keys": {"power": "overlay", "lights": "lights", "down": "screen_off", "up": "setup"}, "pages": [{}]}'
+
+echo "== slider card: errors =="
+S='{"type": "slider", "entity_id": '
+run slider-domain 1 'page 1 card 1: a slider card needs a light, fan, cover, media_player, number or input_number entity' "{$C$S\"switch.a\"}$E}"
+run slider-domain-sensor 1 'a slider card needs a light, fan, cover' "{$C$S\"sensor.a\"}$E}"
+run slider-no-entity 1 'no valid "entity_id"' "{$C{\"type\": \"slider\"}$E}"
+run slider-orientation 1 '"orientation" must be "horizontal" or "vertical"' "{$C$S\"light.a\", \"orientation\": \"diagonal\"}$E}"
+run slider-orientation-num 1 '"orientation" must be "horizontal" or "vertical"' "{$C$S\"light.a\", \"orientation\": 1}$E}"
+run slider-min-text 1 '"min" must be a number from -1000000000 to 1000000000' "{$C$S\"number.a\", \"min\": \"1\"}$E}"
+run slider-max-bool 1 '"max" must be a number from -1000000000 to 1000000000' "{$C$S\"number.a\", \"max\": true}$E}"
+run slider-max-big 1 '"max" must be a number from -1000000000 to 1000000000' "{$C$S\"number.a\", \"max\": 10000000000}$E}"
+run slider-min-low 1 '"min" must be a number from -1000000000 to 1000000000' "{$C$S\"input_number.a\", \"min\": -1000000000.5}$E}"
+run slider-pct-min 1 '"min" and "max" of a light, fan, cover or media_player slider must be 0 to 100' "{$C$S\"light.a\", \"min\": -1}$E}"
+run slider-pct-max 1 '"min" and "max" of a light, fan, cover or media_player slider must be 0 to 100' "{$C$S\"media_player.a\", \"max\": 100.5}$E}"
+run slider-pct-cover 1 'must be 0 to 100' "{$C$S\"cover.a\", \"min\": 101}$E}"
+run slider-min-max 1 '"min" must be less than "max"' "{$C$S\"number.a\", \"min\": 5, \"max\": 5}$E}"
+run slider-min-max-fan 1 '"min" must be less than "max"' "{$C$S\"fan.a\", \"min\": 60, \"max\": 20}$E}"
+run slider-unit 1 '"unit" must be a text' "{$C$S\"number.a\", \"unit\": 1}$E}"
+run slider-send 1 '"send" must be "release" or "drag"' "{$C$S\"light.a\", \"send\": \"always\"}$E}"
+run slider-send-bool 1 '"send" must be "release" or "drag"' "{$C$S\"light.a\", \"send\": true}$E}"
+run slider-hold 1 '"hold": unknown action "overlay"' "{$C$S\"light.a\", \"hold\": \"overlay\"}$E}"
+run slider-order 1 '"orientation" must be' "{$C$S\"light.a\", \"send\": 1, \"min\": 200, \"orientation\": 2}$E}"
+run cond-inner-slider 1 '"card": a slider card needs a light, fan' "{$C$CI, \"state\": \"on\", \"card\": {\"type\": \"slider\", \"entity_id\": \"switch.a\"}}$E}"
+
+echo "== slider card: good layouts and warnings =="
+run ok-slider-all 0 'OK, 1 pages, 9 cards' "{$C$S\"light.a\", \"w\": 2}, $S\"fan.a\", \"send\": \"drag\", \"min\": 0, \"max\": 100}, $S\"cover.a\", \"orientation\": \"vertical\", \"h\": 2}, $S\"media_player.a\", \"send\": \"release\", \"tap\": \"none\"}, $S\"number.a\", \"min\": -5, \"max\": 5.5, \"unit\": \"\"}, $S\"input_number.a\", \"unit\": \"h\", \"orientation\": \"horizontal\"}, $S\"number.b\", \"min\": -1000000000, \"max\": 1000000000}, $S\"light.b\", \"min\": 10, \"hold\": {\"action\": \"light.turn_on\", \"data\": {\"brightness_pct\": 100}}}, $CI, \"state\": \"on\", \"card\": $S\"number.c\", \"max\": 3}}$E}"
+run slider-warn-step 0 'warning: page 1 card 1: unknown key "step" (ignored)' "{$C$S\"number.a\", \"step\": 1}$E}"
+run slider-warn-precision 0 'warning: page 1 card 1: unknown key "precision" (ignored)' "{$C$S\"number.a\", \"precision\": 1}$E}"
+run sensor-warn-orientation 0 'warning: page 1 card 1: unknown key "orientation" (ignored)' "{$C{\"type\": \"sensor\", \"entity_id\": \"sensor.a\", \"orientation\": \"vertical\"}$E}"
+run light-warn-min 0 'warning: page 1 card 1: unknown key "min" (ignored)' "{$C{\"type\": \"light\", \"entity_id\": \"light.a\", \"min\": 1}$E}"
 
 echo "== conditional card: warnings =="
 run cond-warn-inner-place 0 'warning: page 1 card 1 card: "x" is ignored (the conditional card sets the place)' "{$C$CI, \"state\": \"on\", \"card\": {\"type\": \"switch\", \"entity_id\": \"switch.a\", \"x\": 3, \"y\": 9, \"w\": 9, \"h\": 9}}$E}"

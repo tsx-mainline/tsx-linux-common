@@ -12,7 +12,10 @@
 namespace esphome {
 namespace tsx_cards {
 
-enum class CardType { LIGHT, SWITCH, SCENE, SCRIPT, SENSOR, WEATHER, CLOCK, COVER, CLIMATE, MEDIA, FAN, CONDITIONAL };
+enum class CardType { LIGHT, SWITCH, SCENE, SCRIPT, SENSOR, WEATHER, CLOCK, COVER, CLIMATE, MEDIA, FAN, CONDITIONAL, SLIDER };
+
+// The kind of a slider card. The domain of its entity sets it.
+enum class SliderMode : uint8_t { LIGHT, FAN, COVER, VOLUME, NUMBER };
 
 const char *card_type_name(CardType t);
 
@@ -32,7 +35,8 @@ struct CardSpec {
   std::string label;
   std::string icon;         // MDI name without "mdi:", or empty
   std::string attribute;    // sensor: show this attribute instead of the state
-  std::string unit;         // sensor: unit text instead of unit_of_measurement
+  std::string unit;         // sensor, slider: unit text instead of unit_of_measurement
+  bool unit_set{false};     // slider: the layout has "unit" (an empty text shows no unit)
   std::string format;       // clock: strftime format of the time
   std::string date_format;  // clock: strftime format of the date ("" = no date)
   int precision{-1};        // sensor: decimals of a numeric value (-1 = as sent)
@@ -47,6 +51,14 @@ struct CardSpec {
   std::vector<std::string> states;
   bool state_not{false};
   std::shared_ptr<CardSpec> inner;
+  // slider: the mode (from the domain), the orientation, the range of the
+  // layout (in the unit of the slider: percent, or the unit of a number
+  // entity) and when it sends the action.
+  SliderMode slider{SliderMode::NUMBER};
+  bool vertical{false};
+  bool has_min{false}, has_max{false};
+  double min{0}, max{0};
+  bool send_drag{false};  // "send": "drag": also while the finger moves (at most about 3 per second)
 };
 
 struct PageSpec {
@@ -84,6 +96,9 @@ bool parse_layout(const std::string &text, Layout &out, std::string &error, std:
 
 // "domain" of "domain.object_id".
 std::string entity_domain(const std::string &entity_id);
+
+// The slider mode of an entity domain. False when a slider card cannot use the domain.
+bool slider_mode_of(const std::string &domain, SliderMode &out);
 
 }  // namespace tsx_cards
 }  // namespace esphome

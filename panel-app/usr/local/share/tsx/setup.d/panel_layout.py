@@ -30,7 +30,7 @@ GET /setup/api/layout answers:
 
   {"layout": object or null, "source": "user" | "board" | "none",
    "text": the raw text when the file does not parse (else absent),
-   "icons": [names of icons.txt], "types": [...], "domains": {...},
+   "icons": [names of icons.txt], "types": [...], "domains": {type: domain, "slider": [domains]},
    "type_keys": {...}, "theme_keys": [...], "limits": {...}, "defaults": {...},
    "entities": [{"entity_id", "name", "state", "source"}], "ha_token_set": bool,
    "revision": sha256 of the bytes of the file of the user, or ""}
@@ -297,6 +297,10 @@ def _entities(layout):
     return [found[k] for k in sorted(found)][:MAX_ENTITIES]
 
 
+# The domains of a slider card when the checker is missing (tsx-layout-check has the same list).
+SLIDER_DOMAINS = ("light", "fan", "cover", "media_player", "number", "input_number")
+
+
 def _ha_token_set():
     return os.path.exists(HA_TOKEN_FILE)
 
@@ -343,11 +347,12 @@ def _api_layout(h):
     layout, source, text, rev = _current()
     resp = {"layout": layout, "source": source, "revision": rev,
             "icons": [], "types": ["light", "switch", "scene", "script", "sensor", "weather", "clock",
-                                   "cover", "climate", "media_player", "fan", "conditional"],
+                                   "cover", "climate", "media_player", "fan", "conditional", "slider"],
             "domains": {"light": "light", "scene": "scene", "script": "script", "weather": "weather",
-                        "cover": "cover", "climate": "climate", "media_player": "media_player", "fan": "fan"},
+                        "cover": "cover", "climate": "climate", "media_player": "media_player", "fan": "fan",
+                        "slider": list(SLIDER_DOMAINS)},
             "type_keys": {"sensor": ["attribute", "unit", "precision"], "clock": ["format", "date_format"],
-                          "climate": ["step"]},
+                          "climate": ["step"], "slider": ["max", "min", "orientation", "send", "unit"]},
             "theme_keys": ["background", "card", "card_on", "text", "text_dim"],
             "limits": _limits(chk), "defaults": {"theme": DEFAULT_THEME, "grid": {"columns": 4, "rows": 3, "gap": 10}},
             "entities": _entities(layout), "ha_token_set": _ha_token_set(), "checker": chk is not None}
@@ -358,6 +363,8 @@ def _api_layout(h):
         resp["icons"] = sorted(icons) if icons else []
         resp["types"] = list(chk.TYPES)
         resp["domains"] = dict(chk.NEEDS_DOMAIN)
+        # A slider card takes a list of domains.
+        resp["domains"]["slider"] = list(getattr(chk, "SLIDER_DOMAINS", SLIDER_DOMAINS))
         resp["type_keys"] = {k: sorted(v) for k, v in chk.TYPE_KEYS.items()}
         resp["theme_keys"] = list(chk.THEME_KEYS)
     h._send_json(200, resp)

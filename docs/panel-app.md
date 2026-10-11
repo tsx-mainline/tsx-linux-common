@@ -12,7 +12,7 @@ One program serves all panels of a family. The program holds no value of one pan
 
 | Path | Contents |
 |---|---|
-| `panel-app/esphome/components/tsx_cards/` | The ESPHome component `tsx_cards` (C++). It reads the layout, makes the pages and cards, subscribes to the states and sends the actions. It also shows the setup banner and writes the entity list. It runs the screen (`screen.cpp`), the settings overlay (`overlay.cpp`) and the detail popups (`popup.cpp`). |
+| `panel-app/esphome/components/tsx_cards/` | The ESPHome component `tsx_cards` (C++). It reads the layout, makes the pages and cards, subscribes to the states and sends the actions. It also shows the setup banner and writes the entity list. It runs the screen (`screen.cpp`), the settings overlay (`overlay.cpp`), the detail popups (`popup.cpp`) and the slider cards (`slider.cpp`, with the numbers in `slider_logic.h`). |
 | `panel-app/esphome/components/tsx_leds/` | The ESPHome light platform `tsx_leds` (C++): a light on a Linux LED device (see "Panel lights"). |
 | `panel-app/usr/local/lib/tsx/config.d/panel_app.sh` | The plugin of `tsx-config` with the keys `DIM_TIMEOUT` and `DIM_LEVEL` (see "Screen"). |
 | `panel-app/esphome/components/tsx_runtime/` | The ESPHome component `tsx_runtime` (C++). It sets the device name and the API encryption key at run time. |
@@ -114,8 +114,8 @@ The page bar shows the page names. Tap a name to show its page. A swipe to the l
 
 | Key | Cards | Meaning |
 |---|---|---|
-| `type` | all | `light`, `switch`, `scene`, `script`, `sensor`, `weather`, `clock`, `cover`, `climate`, `media_player`, `fan` or `conditional`. Required. |
-| `entity_id` | all but `clock` | The Home Assistant entity. Required. A `light`, `scene`, `script`, `weather`, `cover`, `climate`, `media_player` or `fan` card needs an entity of that domain. A `conditional` card takes any entity. It is the entity of the condition. |
+| `type` | all | `light`, `switch`, `scene`, `script`, `sensor`, `weather`, `clock`, `cover`, `climate`, `media_player`, `fan`, `conditional` or `slider`. Required. |
+| `entity_id` | all but `clock` | The Home Assistant entity. Required. A `light`, `scene`, `script`, `weather`, `cover`, `climate`, `media_player` or `fan` card needs an entity of that domain. A `slider` card needs a `light`, `fan`, `cover`, `media_player`, `number` or `input_number` entity. A `conditional` card takes any entity. It is the entity of the condition. |
 | `label` | all but `conditional` | The name on the card. Default: the friendly name of the entity. |
 | `icon` | all but `clock` and `conditional` | An icon as `"mdi:name"`. The name must be in `icons.txt`. Default: an icon for the type and the state. |
 | `w`, `h` | all | The size in cells. Default 1. |
@@ -123,11 +123,14 @@ The page bar shows the page names. Tap a name to show its page. A swipe to the l
 | `tap` | all but `conditional` | The action of a tap. See "Actions". Default: the action of the type. |
 | `hold` | all but `clock` and `conditional` | The action of a long press (about 0.4 s). It has the same values as `tap`. Default: the detail popup of a `light`, `fan`, `cover`, `media_player` or `climate` card. The other types do nothing. See "Detail popups". |
 | `attribute` | `sensor` | Show this attribute of the entity, not its state. |
-| `unit` | `sensor` | The unit text. Default: the `unit_of_measurement` of the entity. |
+| `unit` | `sensor`, `slider` | The unit text. Default: the `unit_of_measurement` of the entity (a `slider` in percent shows `%`). On a `slider` card, an empty text shows no unit. |
 | `precision` | `sensor` | The number of decimals of a numeric value (0 to 6). Default: the value as Home Assistant sends it. |
 | `format` | `clock` | The format of the time (strftime). Default `%H:%M`. |
 | `date_format` | `clock` | The format of the date (strftime). Default `%a %d %b`. An empty text removes the date. |
 | `step` | `climate` | The change of the target temperature for one tap on - or +. A number from 0.1 to 10. Default: the attribute `target_temp_step` of the entity, else 0.5. |
+| `orientation` | `slider` | `"horizontal"` (default) or `"vertical"`. See "Slider cards". |
+| `min`, `max` | `slider` | The ends of the slider: numbers from -1000000000 to 1000000000, `min` less than `max`. A `light`, `fan`, `cover` or `media_player` slider is in percent, so its `min` and `max` are 0 to 100. A `number` slider uses the unit of the entity. Default: the range of the entity. |
+| `send` | `slider` | When the slider sends its action: `"release"` (default) when the finger lifts, or `"drag"` also while the finger moves. |
 | `state` | `conditional` | A text, or a list of 1 to 16 texts. The inner card shows while the entity has one of these states. |
 | `state_not` | `conditional` | A text, or a list of 1 to 16 texts. The inner card shows while the entity has none of these states. |
 | `card` | `conditional` | The inner card: an object with the keys of a card. Required. |
@@ -148,6 +151,7 @@ The card types:
 | `media_player` | The state, or the title and the artist while the player plays. Also the volume. Three buttons: volume down, play/pause and volume up. The card has the `card_on` color while the player plays. | none |
 | `fan` | On with the speed in percent, or Off. The card has the `card_on` color while the fan is on. | `fan.toggle` |
 | `conditional` | The inner card while the condition is true. Else the cells stay empty. | The tap of the inner card |
+| `slider` | A slider for the entity, its value and its unit. See "Slider cards". | `light.toggle`, `fan.toggle`, `cover.toggle`, mute on or off for a `media_player`, none for a `number` |
 
 A value that is not known yet shows `--`.
 
@@ -192,6 +196,44 @@ A long press on a `light`, `fan`, `cover`, `media_player` or `climate` card open
 | `climate` | A button for each mode in `hvac_modes` (`climate.set_hvac_mode`). The buttons - and +. |
 
 A tap outside the popup closes it. The popup also closes after 10 s with no touch. The inner card of a `conditional` card has its own `tap` and `hold`.
+
+### Slider cards
+
+A `slider` card has a slider for one value of its entity. The domain of the entity sets what the slider changes:
+
+| Domain | The slider changes | Action of the slider | The card shows |
+|---|---|---|---|
+| `light` | The brightness, 0 to 100 % | `light.turn_on` with `brightness_pct`. 0 % sends `light.turn_off`. A light with only on and off (`supported_color_modes`) gets `light.turn_on` with no brightness. | The brightness, or Off. The card has the `card_on` color when the light is on. |
+| `fan` | The speed, 0 to 100 %, in the steps of `percentage_step` | `fan.set_percentage` with `percentage` | The speed, or Off. The card has the `card_on` color when the fan is on. |
+| `cover` | The position, 0 to 100 % | `cover.set_cover_position` with `position` | The position. The card has the `card_on` color while the cover is open or moves. |
+| `media_player` | The volume, 0 to 100 % | `media_player.volume_set` with `volume_level` (0.00 to 1.00) | The volume, or Muted, or Off. The card has the `card_on` color while the player plays. |
+| `number`, `input_number` | The value, from the attributes `min`, `max` and `step` | `number.set_value` or `input_number.set_value` with `value` | The value and the unit. |
+
+Drag the slider, or tap a point of the slider, to set the value. A tap on the card outside the slider runs `tap`. The default tap turns a light or a fan on or off and toggles a cover. On a `media_player` card it turns the mute on or off (`media_player.volume_mute`), when the player has the mute feature. A `number` card has no default tap. A long press runs `hold`. A slider card has no detail popup.
+
+The slider sends its action when the finger lifts. With `"send": "drag"`, it also sends while the finger moves, at most one action in 0.3 s. So a drag does not flood Home Assistant. The slider sends nothing when the value did not change.
+
+The slider follows the state of Home Assistant while no finger is on it. After a send, it keeps the sent value for up to 3 s, until Home Assistant reports it. So an older state does not make the slider jump back.
+
+The `min` and `max` of the layout narrow the range. A `number` slider keeps the limits of its entity. When the entity has no `min`, `max` or `step` attribute, the slider uses 0, 100 and 1. A slider has at most 100000 positions. A larger range uses a larger step.
+
+These rules apply to the touch:
+
+- The touch that wakes a dark or dim screen does nothing (see "Screen").
+- A touch with more than one finger never sends a slider action. The slider goes back to the state of Home Assistant.
+- A swipe that starts on the slider moves the slider and does not change the page. Start a page swipe outside the sliders.
+
+The slider shows no knob and sends nothing while the entity is unavailable or has no value yet. The same applies to a `cover` with no position feature, to a `media_player` that is off or has no volume feature, and to a `number` with no usable range. The tap on the card still works.
+
+A horizontal slider sits between the icon and the name. A vertical slider fills the right side of the card, with the icon, the value and the name on the left. The slider has no shadow, no outline and no transparency, so a drag redraws only the slider and the value. The log line `slider drag` (tag `perf`) gives the frames and the render time of each drag.
+
+Example:
+
+```json
+{"type": "slider", "entity_id": "light.kitchen", "label": "Kitchen", "w": 2},
+{"type": "slider", "entity_id": "cover.living_room_blinds", "orientation": "vertical", "h": 2},
+{"type": "slider", "entity_id": "input_number.washer_delay", "min": 0, "max": 12, "unit": "h", "send": "drag"}
+```
 
 ### Actions
 
@@ -253,7 +295,7 @@ The editor edits the layout file in the format that this page describes. It show
 | Pages | Add, remove, rename and move a page. Set the columns and the rows of a page. |
 | Grid | Set the default columns, rows and gap. |
 | Cards | A preview of the grid shows the cards in the cells where the app places them. Add, remove and move a card in the list. Tap an empty cell to move the selected card there. |
-| One card | The type, the entity id, the label, the icon (a search in `icons.txt`), the size, the cell (empty means automatic), the tap action, the hold action and the keys of the type. A `climate` card has the field `step`. |
+| One card | The type, the entity id, the label, the icon (a search in `icons.txt`), the size, the cell (empty means automatic), the tap action, the hold action and the keys of the type. A `climate` card has the field `step`. A `slider` card has the fields orientation, send, minimum, maximum and unit (with "Show no unit"). |
 | Conditional card | The entity of the condition, the choice "state" or "state_not", the states, and the inner card. The states are one text field with commas. The editor saves one state as a text and more states as a list. The inner card has a type, an entity id, a label, an icon, a tap action, a hold action and the keys of its type. |
 | Theme | The five colors. Each color can use the default. |
 | Keys | One row for each of `home`, `up`, `down`, `power` and `lights`, and a row for each other key. The list shows the default of the key. A key can use the default, do nothing, show page N, or show the next or the previous page. It can also open the setup window, open the settings overlay, turn the panel lights on or off, turn the screen off, or send a Home Assistant action. |
@@ -504,6 +546,7 @@ The app writes the times of the start and of a reload to the log, with the tag `
 | `page change` | The time from a page change to the new frame. |
 | `wake (ORIGIN)` | The time from the input event (or from the wake call) to the backlight on, with the parts: to the wake, the CPU limits, and the picture on the output. |
 | `last 60 s` | The frames that LVGL drew in the last minute, and their average render time. A screen with no change draws no frame. |
+| `slider drag on page P card C` | The frames that LVGL drew while the finger was on a slider, the time of the touch, the average and the largest render time, and the number of actions that the slider sent. |
 
 A tap or a key press writes a line with the tag `tsx_cards`, for example `tap on page 1 card 3 (light light.kitchen): action light.toggle`.
 

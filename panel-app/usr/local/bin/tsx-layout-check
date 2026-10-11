@@ -31,6 +31,7 @@ Other Python code can use check_text(text, icons=None). It returns
 (layout, errors, warnings). layout is None when the file cannot be used.
 """
 import json
+import math
 import os
 import re
 import stat
@@ -40,12 +41,16 @@ MAX_PAGES = 16
 MAX_CARDS = 48
 MAX_GRID = 12
 TYPES = ("light", "switch", "scene", "script", "sensor", "weather", "clock",
-         "cover", "climate", "media_player", "fan", "conditional")
+         "cover", "climate", "media_player", "fan", "conditional", "slider")
 NEEDS_DOMAIN = {"light": "light", "scene": "scene", "script": "script", "weather": "weather",
                 "cover": "cover", "climate": "climate", "media_player": "media_player", "fan": "fan"}
 COMMON_KEYS = {"type", "entity_id", "label", "icon", "x", "y", "w", "h", "tap", "hold"}
 TYPE_KEYS = {"sensor": {"attribute", "unit", "precision"}, "clock": {"format", "date_format"},
-             "climate": {"step"}}
+             "climate": {"step"}, "slider": {"orientation", "min", "max", "unit", "send"}}
+# The domains of a slider card and the slider mode of each (docs/panel-app.md).
+SLIDER_DOMAINS = {"light": "light", "fan": "fan", "cover": "cover", "media_player": "volume",
+                  "number": "number", "input_number": "number"}
+SLIDER_LIMIT = 1e9
 NO_HOLD = ("clock", "conditional")
 CONDITIONAL_KEYS = {"type", "entity_id", "x", "y", "w", "h", "state", "state_not", "card"}
 PLACE_KEYS = ("x", "y", "w", "h")
@@ -63,6 +68,28 @@ class CardError(Exception):
 
 def is_int(v, lo, hi):
     return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+
+
+def is_number(v):
+    """A number (not true/false) from -SLIDER_LIMIT to SLIDER_LIMIT."""
+    # abs() first: math.isfinite() of a very large int raises OverflowError.
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and abs(v) <= SLIDER_LIMIT and math.isfinite(v)
+
+
+def check_slider(c, domain):
+    if "orientation" in c and c["orientation"] not in ("horizontal", "vertical"):
+        raise CardError('"orientation" must be "horizontal" or "vertical"')
+    for k in ("min", "max"):
+        if k in c and not is_number(c[k]):
+            raise CardError(f'"{k}" must be a number from -1000000000 to 1000000000')
+    if SLIDER_DOMAINS[domain] != "number" and any(k in c and not 0 <= c[k] <= 100 for k in ("min", "max")):
+        raise CardError('"min" and "max" of a light, fan, cover or media_player slider must be 0 to 100')
+    if "min" in c and "max" in c and not c["min"] < c["max"]:
+        raise CardError('"min" must be less than "max"')
+    if "unit" in c and not isinstance(c["unit"], str):
+        raise CardError('"unit" must be a text')
+    if "send" in c and c["send"] not in ("release", "drag"):
+        raise CardError('"send" must be "release" or "drag"')
 
 
 def read_icons(path):
@@ -172,6 +199,8 @@ def check_card(c, page, where, warnings, icons, inner=False):
         need = NEEDS_DOMAIN.get(t)
         if need and e.split(".")[0] != need:
             raise CardError(f"a {t} card needs a {need} entity")
+        if t == "slider" and e.split(".")[0] not in SLIDER_DOMAINS:
+            raise CardError("a slider card needs a light, fan, cover, media_player, number or input_number entity")
         if t == "conditional":
             check_conditional(c, page, where, warnings, icons)
     elif "entity_id" in c:
@@ -204,6 +233,8 @@ def check_card(c, page, where, warnings, icons, inner=False):
         v = c["step"]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0.1 <= v <= 10:
             raise CardError('"step" must be a number from 0.1 to 10')
+    if t == "slider":
+        check_slider(c, c["entity_id"].split(".")[0])
     for name in ("tap", "hold"):
         if name in c and not (name == "hold" and t in NO_HOLD):
             try:

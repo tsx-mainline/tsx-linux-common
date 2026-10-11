@@ -38,6 +38,7 @@
   },
   "$defs": {
     "gridSize": {"type": "integer", "minimum": 1, "maximum": 12},
+    "sliderLimit": {"type": "number", "minimum": -1000000000, "maximum": 1000000000},
     "color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
     "entityId": {"type": "string", "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$"},
     "call": {
@@ -92,7 +93,7 @@
       "required": ["type"],
       "properties": {
         "type": {"enum": ["light", "switch", "scene", "script", "sensor", "weather", "clock",
-                          "cover", "climate", "media_player", "fan", "conditional"]},
+                          "cover", "climate", "media_player", "fan", "conditional", "slider"]},
         "entity_id": {"$ref": "#/$defs/entityId"},
         "label": {"type": "string"},
         "icon": {"type": "string", "pattern": "^mdi:[a-z0-9-]+$"},
@@ -110,7 +111,11 @@
         "unit": {"type": "string"},
         "precision": {"type": "integer", "minimum": 0, "maximum": 6},
         "format": {"type": "string", "minLength": 1},
-        "date_format": {"type": "string"}
+        "date_format": {"type": "string"},
+        "orientation": {"enum": ["horizontal", "vertical"]},
+        "min": {"$ref": "#/$defs/sliderLimit"},
+        "max": {"$ref": "#/$defs/sliderLimit"},
+        "send": {"enum": ["release", "drag"]}
       },
       "dependentRequired": {"x": ["y"], "y": ["x"]},
       "allOf": [
@@ -149,6 +154,18 @@
         {
           "if": {"properties": {"type": {"const": "fan"}}},
           "then": {"properties": {"entity_id": {"pattern": "^fan\\."}}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "slider"}}},
+          "then": {"properties": {"entity_id": {"pattern": "^(light|fan|cover|media_player|number|input_number)\\."}}}
+        },
+        {
+          "description": "A slider in percent: min and max are 0 to 100.",
+          "if": {
+            "properties": {"type": {"const": "slider"}, "entity_id": {"pattern": "^(light|fan|cover|media_player)\\."}},
+            "required": ["type", "entity_id"]
+          },
+          "then": {"properties": {"min": {"minimum": 0, "maximum": 100}, "max": {"minimum": 0, "maximum": 100}}}
         },
         {
           "if": {"properties": {"type": {"const": "conditional"}}},

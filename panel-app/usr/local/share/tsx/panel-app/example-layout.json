@@ -43,6 +43,16 @@
         {"type": "conditional", "entity_id": "binary_sensor.front_door", "state": "on",
          "card": {"type": "switch", "entity_id": "switch.porch_light", "label": "Porch Light", "icon": "mdi:outdoor-lamp"}}
       ]
+    },
+    {
+      "name": "Sliders",
+      "cards": [
+        {"type": "slider", "entity_id": "light.kitchen", "label": "Kitchen", "w": 2},
+        {"type": "slider", "entity_id": "media_player.kitchen_speaker", "label": "Kitchen Volume", "w": 2},
+        {"type": "slider", "entity_id": "cover.living_room_blinds", "label": "Blinds", "orientation": "vertical", "h": 2},
+        {"type": "slider", "entity_id": "fan.bedroom", "label": "Bedroom Fan", "send": "drag"},
+        {"type": "slider", "entity_id": "input_number.washer_delay", "label": "Washer Delay", "min": 0, "max": 12, "unit": "h", "w": 2}
+      ]
     }
   ]
 }
