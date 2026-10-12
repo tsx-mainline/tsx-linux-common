@@ -53,7 +53,7 @@ The FIFO is `/run/tsx/panelctl`, mode 660. The group is `kiosk` on a panel with 
 | `mute on\|off` | `sendspin-cli player-mute on\|off` while the Sendspin player runs. Else it is refused (the mixer has no mute) |
 | `reload-page` | The page of the kiosk |
 | `reboot` | `reboot` |
-| `update-install` | `tsx-autoupdate now`: install at once, in both modes. See [Automatic update](autoupdate.md). |
+| `update-install` | `tsx-autoupdate now`: install at once, in both modes. The daemon starts it detached (its own session, no FIFO, no terminal). Init adopts and reaps it, so no zombie stays. See [Automatic update](autoupdate.md). |
 | `update-mode auto\|manual`, `auto-restart on\|off` | A key of `panel.conf` (`UPDATE_MODE`, `UPDATE_AUTO_RESTART`), then `tsx-config apply` |
 | `setup` | `tsx-config setup`: open the setup page for about 15 minutes |
 | `layout-install ID` | `tsx-layout-check --install` of the fixed file `/run/tsx/panel-app/app/layout.ha` to `/var/lib/tsx/panel-layout.json`. The result goes to `/run/tsx/panel-app/layout.result`. |

@@ -31,6 +31,8 @@ echo "$b \$*" >> "$T/cmds.log"
 EOF
 	chmod +x "$T/bin/$b"
 done
+# The real "tsx-autoupdate now" runs for a while (apk). The fake runs 0.3 s.
+printf '#!/bin/sh\necho "tsx-autoupdate $*" >> "%s/cmds.log"\n[ "${1:-}" = now ] && sleep 0.3\nexit 0\n' "$T" > "$T/bin/tsx-autoupdate"
 cat > "$T/bin/reboot" <<EOF
 #!/bin/sh
 # tsx-panelctl's reboot branch never passes an argument -- keep this exact
@@ -131,6 +133,24 @@ for l in "keypad led-blank 256" "keypad led-blank -1" "keypad led-blank" "keypad
 rejected=$(grep -c 'rejected:' "$T/panelctl.log")
 [ "$rejected" -ge 21 ] && ok "all 21 hostile lines were logged as rejected ($rejected)" || bad "expected >=21 rejections, got $rejected"
 kill -0 "$PID" 2>/dev/null && ok "daemon is still alive after the hostile batch" || bad "daemon died"
+
+echo "== update-install leaves no zombie (init adopts and reaps tsx-autoupdate) =="
+zombies() {  # the number of dead children of the daemon that nobody reaped
+	n=0
+	for st in /proc/[0-9]*/stat; do
+		l=$(cat "$st" 2>/dev/null) || continue
+		l=${l#*) }   # after the command name: "STATE PPID ..."
+		set -- $l
+		[ "${1:-}" = Z ] && [ "${2:-}" = "$PID" ] && n=$((n + 1))
+	done
+	echo "$n"
+}
+: > "$T/cmds.log"
+send "update-install"
+send "update-install"
+[ "$(grep -c '^tsx-autoupdate now$' "$T/cmds.log")" = 2 ] && ok "update-install ran tsx-autoupdate now twice" || bad "update-install: $(cat "$T/cmds.log")"
+sleep 1
+[ "$(zombies)" = 0 ] && ok "no zombie child of tsx-panelctl after update-install" || bad "$(zombies) zombie child(ren) of tsx-panelctl after update-install"
 
 echo "== orientation: the four names, nothing else =="
 : > "$T/cmds.log"
