@@ -71,6 +71,10 @@
 # TSX_LEDBAR_CONF (the config file), TSX_RUN_DIR (the dir of the model
 # file, the firmware file and the attached file), TSX_LEDBAR_GONE (seconds
 # before the attached file goes), TSX_BOARD_CONF (the board file).
+#
+# The service looks at the USB bus once a second (sysfs sends no event for a
+# plug-in). The wait is read -t on a FIFO that the service holds open, so it
+# starts no process (a sleep started 60 processes a minute).
 CONF=${TSX_LEDBAR_CONF:-/etc/tsx/ledbar.conf}
 USB=${TSX_USB_SYSFS:-/sys/bus/usb/devices}
 LED=${TSX_LEDBAR_SYSFS:-/sys/class/leds/tsx:rgb:bar}
@@ -88,6 +92,21 @@ BOARD=${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}
 log() { echo "$(date '+%F %T') tsx-ledbar: $*"; }
 # the tools of the package tsx-ledbar-fw are in /usr/local/sbin
 PATH=$PATH:/usr/local/sbin
+
+# nap SECONDS: wait without a process, when the service has a FIFO (nap_init).
+# Else sleep waits. The FIFO is open for reading and writing on file
+# descriptor 9, so a read with a time limit ends only at the limit or at a
+# signal.
+NAP_OK=
+nap_init() {
+	ni_f=$RUN/.ledbard-nap.$$
+	if mkfifo "$ni_f" 2>/dev/null && exec 9<>"$ni_f"; then NAP_OK=1; fi
+	rm -f "$ni_f"
+}
+nap() {
+	if [ -n "$NAP_OK" ]; then read -r -t "$1" nap_x <&9; return 0; fi
+	sleep "$1"
+}
 
 # conf_num KEY: the number of KEY in ledbar.conf, empty when not set
 conf_num() {
@@ -265,7 +284,7 @@ wait_led() {
 	[ -d "$DRIVER" ] || return 0
 	led_i=0
 	while [ ! -e "$LED/multi_intensity" ] && [ $led_i -lt 10 ]; do
-		sleep 1
+		nap 1
 		led_i=$((led_i + 1))
 	done
 }
@@ -291,7 +310,7 @@ wait_new() {
 			wait_led
 			return 0
 		fi
-		sleep 1
+		nap 1
 		new_i=$((new_i + 1))
 	done
 	return 1
@@ -377,6 +396,7 @@ SERVICE=1
 fw_drop
 usb_drop
 trap 'fw_drop; usb_drop; exit 0' TERM INT HUP
+nap_init
 cur= first=1 told= tried= btl_told= gone=0
 while :; do
 	if bar_id; then
@@ -399,7 +419,7 @@ while :; do
 				else
 					log "boot color failed, trying again in 5 s"
 					cur=
-					sleep 4
+					nap 4
 				fi
 			else
 				tsx-ledbar apply || log "apply failed"
@@ -438,5 +458,5 @@ while :; do
 			told=1
 		fi
 	fi
-	sleep 1
+	nap 1
 done

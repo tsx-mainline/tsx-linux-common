@@ -253,6 +253,37 @@ unplug() { rm -rf "$T/usb/2-1" "$T/usb/2-1:1.0"; }
 waitfor() { w=0; while [ $w -lt 12 ] && ! eval "$1"; do sleep 1; w=$((w + 1)); done; eval "$1"; }
 lineno() { grep -n -e "$1" "$T/log" | head -n 1 | cut -d: -f1; }
 
+# 7b. the wait of the service starts no process (it started a sleep each second): wrappers in front
+# of PATH log the name of every helper that the service starts. The bar is plugged in and settled,
+# then 6 passes of the loop (1 s each) must start nothing. A hot plug-in is still seen within 2 s,
+# and a TERM ends the service at once.
+mkdir -p "$T/cnt"
+for u in sleep cat sed grep date head tail tr; do
+	r=$(command -v "$u" 2>/dev/null) || continue
+	printf '#!/bin/sh\necho %s >> "%s/cnt.log"\nexec "%s" "$@"\n' "$u" "$T" "$r" > "$T/cnt/$u"; chmod +x "$T/cnt/$u"
+done
+unplug; reset 0; plug 5
+PATH=$T/cnt:$PATH $SH "$D" > "$T/log" 2>&1 &
+DPID=$!
+waitfor 'grep -qx boot "$T/calls"'
+sleep 2; : > "$T/cnt.log"; : > "$T/calls"
+sleep 6.5
+[ ! -s "$T/cnt.log" ] && ok "service: the wait starts no process (6 passes)" || bad "service: processes in the wait: $(sort "$T/cnt.log" | uniq -c | tr '\n' ' ')"
+[ ! -s "$T/calls" ] && ok "service: no tsx-ledbar call while the bar stays" || bad "service: calls while idle: $(cat "$T/calls")"
+unplug; sleep 2.5
+grep -q "LED bar removed" "$T/log" && ok "service: a removal is seen within 2.5 s of the loop" || bad "service: removal not seen"
+t0=$(date +%s%N); kill "$DPID"; wait "$DPID" 2>/dev/null; DPID=; t1=$(date +%s%N)
+[ $(( (t1 - t0) / 1000000 )) -lt 400 ] && ok "service: TERM ends it in $(( (t1 - t0) / 1000000 )) ms" || bad "service: TERM took $(( (t1 - t0) / 1000000 )) ms"
+[ -z "$(ls -A "$T/run" | grep nap)" ] && ok "service: no FIFO is left" || bad "service: FIFO left: $(ls -A "$T/run")"
+# without mkfifo the service waits with sleep and works
+mkdir -p "$T/nofifo"; printf '#!/bin/sh\nexit 1\n' > "$T/nofifo/mkfifo"; chmod +x "$T/nofifo/mkfifo"
+reset 0; plug 5; : > "$T/cnt.log"
+PATH=$T/nofifo:$T/cnt:$PATH $SH "$D" > "$T/log" 2>&1 &
+DPID=$!
+waitfor 'grep -qx boot "$T/calls"' && grep -qx sleep "$T/cnt.log" && ok "service without mkfifo: boot color set, sleep is the wait" || bad "service without mkfifo: calls $(cat "$T/calls") procs $(cat "$T/cnt.log")"
+kill "$DPID"; wait "$DPID" 2>/dev/null; DPID=
+unplug; plug 2
+
 # 9a. in bootloader mode at start, package and image there: one load, then the normal start
 unplug; reset 0; fwi_reset; fwi_on; plug_btl
 $SH "$D" > "$T/log" 2>&1 &
