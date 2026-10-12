@@ -449,6 +449,14 @@ while [ $i -lt 14 ]; do helper_send "rev" > /dev/null; i=$((i + 1)); done
 printf 'KIOSK_URL=http://192.0.2.9/\n' > "$T/conf.old"; touch -d '2020-01-01 00:00:00' "$T/conf.old"; cp -p "$T/conf.old" "$CONF"
 i=0; got=$rc; while [ $i -lt 16 ] && [ "$got" = "$rc" ]; do got=$(helper_send "rev"); i=$((i + 1)); done
 [ "$got" != "$rc" ] && ok "a file put back with an old time gives its revision within 16 revs ($i)" || bad "a file with an old time keeps the old revision"
+# set, unset and apply drop the kept revision: the next rev hashes at once, also when the
+# file is older than the kept hash. (tsx-config renames a temporary file that can have an older
+# time than the kept hash. "apply" leaves the file as it is, so only the drop makes it hash.)
+for c in "set BLANK_TIMEOUT 111" "unset BLANK_TIMEOUT" "apply"; do
+	sleep 1.1; helper_send "rev" > /dev/null; helper_send "rev" > /dev/null
+	sa=$(shas); helper_send "$c" > /dev/null; helper_send "rev" > /dev/null
+	[ "$(shas)" -gt "$sa" ] && ok "'$c' drops the kept revision: the next rev hashes again" || bad "'$c' kept the revision"
+done
 if [ "$had_conf" = 1 ]; then cat "$T/conf.revtest" > "$CONF"; else rm -f "$CONF"; fi
 [ "$(helper_send "rev")" = "$r" ] && ok "the revision is back after the rev test" || bad "panel.conf not restored after the rev test"
 [ "$(stat -c %a "$RUNDIR/setup-helper.salt" 2>/dev/null)" = 600 ] && ok "the salt file has mode 600" || bad "salt file: $(ls -l "$RUNDIR/setup-helper.salt" 2>&1)"

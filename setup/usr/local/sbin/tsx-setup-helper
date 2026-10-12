@@ -209,21 +209,31 @@ handle() {
 		case "$rest" in *" "*) val=${rest#* };; *) val=;; esac
 		[ -n "$key" ] || { reply_err "set: missing key"; return; }
 		log "set $key"
+		# The file changes: the next rev hashes again. (tsx-config writes a
+		# temporary file and renames it, and the file keeps the time of the
+		# temporary file. A rev between the write and the rename would
+		# otherwise keep the old hash.)
+		REV_HASH=
 		if out=$("$CONFIG" set "$key" "$val" 2>&1); then reply_ok
 		else reply_err "$out"; fi
+		REV_HASH=
 		;;
 	unset)
 		key=$rest
 		case "$key" in *" "*|"") reply_err "unset: bad key"; return;; esac
 		log "unset $key"
+		REV_HASH=
 		if out=$("$CONFIG" unset "$key" 2>&1); then reply_ok
 		else reply_err "$out"; fi
+		REV_HASH=
 		;;
 	apply)
 		[ -z "$rest" ] || { reply_err "apply takes no arguments"; return; }
 		log "apply"
+		REV_HASH=
 		if out=$("$CONFIG" apply 2>&1); then reply_ok
 		else reply_err "$out"; fi
+		REV_HASH=
 		;;
 	setup)
 		[ -z "$rest" ] || { reply_err "setup takes no arguments"; return; }
