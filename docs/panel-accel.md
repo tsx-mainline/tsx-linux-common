@@ -115,7 +115,10 @@ The touchscreen platform takes the touch range from the device. The
 `calibration`, `transform` and other options of the ESPHome touchscreen
 schema also work. It reads multi-touch (protocol B) and single-touch
 devices. Each touch report reaches LVGL in the next loop, so a fast swipe
-keeps all its points.
+keeps all its points. The platform does not poll: its `update_interval` is
+`never` by default, because each change of the touch state comes from the
+device. (The ESPHome default of 50 ms woke the main loop 20 times a second,
+also with the screen off.)
 
 `tsx_evdev` adds its device to the `select()` list of the ESPHome main
 loop. So an input event ends the wait of the loop at once, also with a long

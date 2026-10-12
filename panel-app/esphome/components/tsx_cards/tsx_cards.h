@@ -12,6 +12,7 @@
 // (overlay.cpp) and the detail popups of the cards (popup.cpp).
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -22,6 +23,7 @@
 #include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
+#include "esphome/core/optional.h"
 #include "lvgl.h"
 #include "layout.h"
 #include "slider_logic.h"
@@ -46,6 +48,27 @@
 
 namespace esphome {
 namespace tsx_cards {
+
+// For the lambda of a polled template entity (panel-app.yaml): the value, or
+// nothing when the entity has it already. Then ESPHome publishes, and the API
+// sends to Home Assistant, a change only. Without this, each poll of each
+// entity is a message, also while the panel is idle with the screen off.
+template<typename E> optional<float> if_changed(const E *e, float v) {
+  if (e->has_state() && (e->state == v || (std::isnan(e->state) && std::isnan(v))))
+    return {};
+  return v;
+}
+// The same for a text sensor (state) and a select (current_option()).
+template<typename E> optional<std::string> text_if_changed(const E *e, const std::string &v) {
+  if (e->has_state() && e->state == v)
+    return {};
+  return v;
+}
+template<typename E> optional<std::string> option_if_changed(const E *e, const std::string &v) {
+  if (e->has_state() && e->current_option() == v)
+    return {};
+  return v;
+}
 
 enum FontSlot : uint8_t { FONT_SMALL = 0, FONT_LABEL, FONT_VALUE, FONT_CLOCK, FONT_ICON, FONT_COUNT };
 

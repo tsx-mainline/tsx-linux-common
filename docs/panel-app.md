@@ -399,6 +399,8 @@ The app has these Home Assistant entities for the screen. Home Assistant can cha
 
 The names and the units are the same as on the kiosk panels. See "Panel settings" in [esphome.md](esphome.md). The entities for the updates are in "Updates".
 
+The app reads the values of these entities every 1 s to 10 s. It sends a value to Home Assistant only when it changed (`tsx_cards::if_changed()` in the lambdas of `panel-app.yaml`). Each send is a message on the API connection. So an idle panel sends no message.
+
 ## Control from the panel
 
 The setup page and other services of the panel change the screen and the lights of the app through `tsx-panelctl`, as on a kiosk panel. `tsx-panelctl has panel-app` is true while the app runs (`/run/tsx/panel-app.state` names a process that exists). Then the daemon of `tsx-panelctl` hands these commands to the app:

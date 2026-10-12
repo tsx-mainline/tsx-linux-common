@@ -144,7 +144,8 @@ number:
     step: 1
     unit_of_measurement: "%"
     update_interval: 1s
-    lambda: return id(panel_cards).backlight();
+    # The polls publish a change only (tsx_cards::if_changed).
+    lambda: return tsx_cards::if_changed(id(panel_backlight), id(panel_cards).backlight());
     set_action:
       - lambda: id(panel_cards).set_backlight(x);
   # The volume of the panel speaker (docs/panel-app.md, "Volume"): the player
@@ -160,7 +161,7 @@ number:
     step: 1
     unit_of_measurement: "%"
     update_interval: 1s
-    lambda: return id(panel_cards).volume();
+    lambda: return tsx_cards::if_changed(id(panel_volume), id(panel_cards).volume());
     set_action:
       - lambda: id(panel_cards).set_volume(x);
   - platform: template
@@ -174,7 +175,7 @@ number:
     step: 10
     unit_of_measurement: s
     update_interval: 5s
-    lambda: return id(panel_cards).blank_timeout();
+    lambda: return tsx_cards::if_changed(id(panel_blank_timeout), id(panel_cards).blank_timeout());
     set_action:
       - lambda: id(panel_cards).set_blank_timeout(x);
   - platform: template
@@ -188,7 +189,7 @@ number:
     step: 5
     unit_of_measurement: s
     update_interval: 5s
-    lambda: return id(panel_cards).dim_timeout();
+    lambda: return tsx_cards::if_changed(id(panel_dim_timeout), id(panel_cards).dim_timeout());
     set_action:
       - lambda: id(panel_cards).set_dim_timeout(x);
   - platform: template
@@ -201,7 +202,7 @@ number:
     step: 1
     unit_of_measurement: "%"
     update_interval: 5s
-    lambda: return id(panel_cards).dim_level();
+    lambda: return tsx_cards::if_changed(id(panel_dim_level), id(panel_cards).dim_level());
     set_action:
       - lambda: id(panel_cards).set_dim_level(x);
 
@@ -214,7 +215,7 @@ text_sensor:
     icon: mdi:view-dashboard-edit-outline
     entity_category: diagnostic
     update_interval: 10s
-    lambda: return id(panel_cards).layout_hash();
+    lambda: return tsx_cards::text_if_changed(id(panel_layout_hash), id(panel_cards).layout_hash());
 
 # Updates (docs/panel-app.md, "Updates"). The state is the file
 # /run/tsx/update.state of tsx-autoupdate. Every action goes through the
@@ -263,6 +264,6 @@ select:
       std::string m = id(panel_cards).update_mode();
       if (m.empty())
         return {};
-      return m;
+      return tsx_cards::option_if_changed(id(panel_update_mode), m);
     set_action:
       - lambda: id(panel_cards).set_update_mode(x.c_str());
