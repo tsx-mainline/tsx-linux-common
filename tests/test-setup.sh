@@ -415,6 +415,10 @@ echo "== tsx-setup-helper rejects anything outside its command set =="
 # few seconds: two readers on one reply FIFO can each get the reply of the
 # other.
 mkdir -p "$T/h2"
+# sha256sum in front of PATH counts the hashes of "rev" (made before the start,
+# so the helper finds it at its first lookup)
+REAL_SHA=$(command -v sha256sum)
+printf '#!/bin/sh\necho x >> "%s/sha.calls"\nexec "%s" "$@"\n' "$T" "$REAL_SHA" > "$T/bin/sha256sum"; chmod 755 "$T/bin/sha256sum"
 start_helper "$T/helper2.log" "$T/h2/req" "$T/h2/resp" || bad "a second tsx-setup-helper did not start: $(cat "$T/helper2.log")"
 HELPER2_PID=$HPID
 : > "$FAKE_CMD_LOG"
@@ -427,6 +431,26 @@ r=$(helper_send "rootpw short"); echo "$r" | grep -q '^err' && ok "a too-short r
 grep -q '^ok' <(helper_send "show") && ok "the allowed 'show' command still works after the rejected batch" || bad "helper stopped answering after rejections"
 r=$(helper_send "rev"); echo "$r" | grep -Eq '^ok [0-9a-f]{64}$' && ok "rev gives a sha256 revision: $r" || bad "rev: $r"
 [ "${r#ok }" = "$(rev_now)" ] && ok "two helper processes give the same revision (the salt is in the run directory)" || bad "the second helper gives another revision: $r / $(rev_now)"
+shas() { wc -l < "$T/sha.calls" 2>/dev/null | tr -d ' ' || echo 0; }
+s0=$(shas); r2=$(helper_send "rev")
+[ "$r2" = "$r" ] && [ "$(shas)" = "$s0" ] && ok "rev with no change gives the same revision and runs no sha256sum" || bad "rev with no change: '$r2' (was '$r'), sha256sum $s0 -> $(shas)"
+had_conf=0; [ -e "$CONF" ] && { had_conf=1; cp -p "$CONF" "$T/conf.revtest"; }
+printf 'KIOSK_URL=http://192.0.2.1/\n' > "$CONF"; ra=$(helper_send "rev")
+echo '# rev test' >> "$CONF"; rb=$(helper_send "rev")
+echo "$rb" | grep -Eq '^ok [0-9a-f]{64}$' && [ "$rb" != "$ra" ] && ok "a line added in place (same file) gives a new revision" || bad "in-place change: '$rb' (was '$ra')"
+printf 'KIOSK_URL=http://192.0.2.1/\n' > "$CONF"; [ "$(helper_send "rev")" = "$ra" ] && ok "the old text gives the old revision again" || bad "the old text gives another revision"
+printf 'KIOSK_URL=http://192.0.2.1/' > "$CONF"; rc=$(helper_send "rev")
+[ "$rc" != "$ra" ] && ok "a file with no final newline is a change too" || bad "no final newline: same revision"
+# A file written in the second of the last hash is not older than it: the
+# next rev hashes again. One second later the file is older.
+sleep 1.1; helper_send "rev" > /dev/null; s1=$(shas); i=0
+while [ $i -lt 14 ]; do helper_send "rev" > /dev/null; i=$((i + 1)); done
+[ "$(shas)" = "$s1" ] && ok "14 more revs of an older file run no sha256sum" || bad "14 revs ran sha256sum $(($(shas) - s1)) times"
+printf 'KIOSK_URL=http://192.0.2.9/\n' > "$T/conf.old"; touch -d '2020-01-01 00:00:00' "$T/conf.old"; cp -p "$T/conf.old" "$CONF"
+i=0; got=$rc; while [ $i -lt 16 ] && [ "$got" = "$rc" ]; do got=$(helper_send "rev"); i=$((i + 1)); done
+[ "$got" != "$rc" ] && ok "a file put back with an old time gives its revision within 16 revs ($i)" || bad "a file with an old time keeps the old revision"
+if [ "$had_conf" = 1 ]; then cat "$T/conf.revtest" > "$CONF"; else rm -f "$CONF"; fi
+[ "$(helper_send "rev")" = "$r" ] && ok "the revision is back after the rev test" || bad "panel.conf not restored after the rev test"
 [ "$(stat -c %a "$RUNDIR/setup-helper.salt" 2>/dev/null)" = 600 ] && ok "the salt file has mode 600" || bad "salt file: $(ls -l "$RUNDIR/setup-helper.salt" 2>&1)"
 r=$(helper_send "rev now"); echo "$r" | grep -q '^err' && ok "rev with an argument is refused" || bad "rev with an argument: $r"
 grep -q 'tsx-setup-helper: rev' "$T/helper.log" "$T/helper2.log" && bad "rev writes a log line (the page asks every 20 s)" || ok "rev writes no log line"

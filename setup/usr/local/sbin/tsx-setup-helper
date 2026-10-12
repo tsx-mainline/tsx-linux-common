@@ -40,7 +40,12 @@
 #                          does not let a client test a guess of a secret. A
 #                          missing file has a revision too. tsx-setupd sends
 #                          the revision to the page and refuses a save from a
-#                          page with an old revision.
+#                          page with an old revision. tsx-setupd asks about
+#                          every 4 s. This script keeps the last revision and
+#                          gives it again while the file is older than that
+#                          revision (a shell test, no process), for at most
+#                          15 requests. Then it hashes again: that also
+#                          covers a file put back with an old time.
 #   set KEY VALUE         tsx-config set KEY VALUE. VALUE can be empty. It
 #                          can contain anything, including shell
 #                          metacharacters. The per-key regex of tsx-config
@@ -123,6 +128,10 @@ HA_ENTITIES=${TSX_HA_ENTITIES_BIN:-tsx-ha-entities}
 # The salt of "rev" (see above). salt_init below reads or makes it.
 SALT_FILE=$R/setup-helper.salt
 SALT=
+# The cache of "rev" (see above): the last hash, the requests that reused
+# it, and a file that has the time of that hash.
+REV_HASH= REV_REUSED=0 REV_MISSING=0
+REV_REF=$R/setup-helper.revtime
 TAG=
 
 log() { echo "$(date '+%F %T') tsx-setup-helper: $*"; }
@@ -179,9 +188,21 @@ handle() {
 	rev)
 		[ -z "$rest" ] || { reply_err "rev takes no arguments"; return; }
 		[ -n "$SALT" ] || { reply_err "rev: no salt"; return; }
-		h=$({ printf '%s\n' "$SALT"; cat "$CONF" 2>/dev/null; } | sha256sum) \
-			|| { reply_err "rev failed"; return; }
-		reply_ok "${h%% *}"
+		# The last hash again while panel.conf is older than it (see "rev"
+		# above). The time file is written before the hash: a change in the
+		# same second leaves the file not older, and the next rev hashes.
+		if [ -n "$REV_HASH" ] && [ "$REV_REUSED" -lt 15 ] && {
+			if [ -e "$CONF" ]; then [ "$REV_MISSING" = 0 ] && [ "$REV_REF" -nt "$CONF" ]
+			else [ "$REV_MISSING" = 1 ]; fi; }; then
+			REV_REUSED=$((REV_REUSED + 1))
+		else
+			: > "$REV_REF" 2>/dev/null
+			REV_MISSING=0; [ -e "$CONF" ] || REV_MISSING=1
+			h=$({ printf '%s\n' "$SALT"; cat "$CONF" 2>/dev/null; } | sha256sum) \
+				|| { reply_err "rev failed"; return; }
+			REV_HASH=${h%% *} REV_REUSED=0
+		fi
+		reply_ok "$REV_HASH"
 		;;
 	set)
 		key=${rest%% *}
