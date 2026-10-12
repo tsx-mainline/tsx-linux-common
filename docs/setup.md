@@ -97,13 +97,27 @@ The *Panel* section has live controls. A control shows only when the panel has t
 | Volume, 0 to 100 % | A sound card | `tsx-panelctl send volume`. While the Sendspin player runs, it is the player volume, and a "Mute" box mutes the player (`tsx-panelctl send mute`). See [Sendspin](sendspin.md) "Audio and volume" |
 | Dim the screen after, dim level | Panel app | `tsx-config set DIM_TIMEOUT` or `DIM_LEVEL`, then `apply` |
 | Turn the screen off after | All | `tsx-config set BLANK_TIMEOUT`, then `apply` |
+| Update mode: auto or manual | A panel with `tsx-autoupdate` | `tsx-config set UPDATE_MODE`, then `apply` |
+| Automatic restart: on or off | A panel with `tsx-autoupdate` | `tsx-config set UPDATE_AUTO_RESTART`, then `apply` |
 | LED bar: on, color, brightness | A LED bar | `tsx-panelctl send ledbar` |
 | Key LEDs: on, level | Keys with LEDs | `tsx-panelctl send keypad led` |
 | Panel lights: on, color, brightness | Panel app with `panel_lights` | `tsx-panelctl send lights` |
 
 These are the backends of the overlay and of the Home Assistant entities. So the page, the overlay and Home Assistant show the same values. On a panel with the panel app, `tsx-panelctl` hands the screen, the brightness and the lights to the app (see "Control from the panel" in [panel-app.md](panel-app.md)).
 
-The times go to `panel.conf` and stay after a reboot. The brightness, the volume and the lights act at once, as the overlay does. The page reads the values every 5 s.
+The times and the two update settings go to `panel.conf` and stay after a reboot. The brightness, the volume and the lights act at once, as the overlay does. The page reads the values every 5 s.
+
+### Update settings
+
+The *Update mode* select and the *Automatic restart* box set how the panel installs updates. The page shows them only when `tsx-panelctl state` has the lines `update-mode` and `auto-restart`. The Home Assistant entities with the same names, "Update mode" (a select) and "Automatic restart" (a switch), show and change the same two settings.
+
+- Update mode `auto`: the panel installs updates in the update window while the screen is idle. If an update needs a restart, the panel restarts after the install when Automatic restart is on.
+- Update mode `manual`: the panel checks for updates and shows them in Home Assistant, but it never installs them by itself.
+- Automatic restart: when it is off, the panel does not restart by itself. Home Assistant shows "Restart required" until you restart the panel.
+
+The *Install* button of the update entity in Home Assistant works in both modes. The page saves the settings as `UPDATE_MODE` (`auto` or `manual`) and `UPDATE_AUTO_RESTART` (`on` or `off`) in `panel.conf`. `tsx-config apply` writes them as `MODE` and `AUTO_RESTART` to `/run/tsx/autoupdate.conf`. `tsx-autoupdate` reads that file after `/etc/tsx/autoupdate.conf`, so the page value wins. See [autoupdate.md](autoupdate.md).
+
+### How the page reads and sends
 
 `tsx-setupd` gets the values with the helper command `panel-state` (`tsx-panelctl state` as root). It sends a change with the helper command `panel`. The helper passes only the exact forms of the table above, and `tsx-panelctl` checks the ranges again.
 

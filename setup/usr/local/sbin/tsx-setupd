@@ -1054,6 +1054,10 @@ def panel_state():
     n = _first_int(vals.get("dim-level"))
     if n is not None:
         c["dim_level"] = {"value": n}
+    if vals.get("update-mode") in ("auto", "manual"):
+        c["update_mode"] = {"value": vals["update-mode"]}
+    if vals.get("auto-restart") in ("on", "off"):
+        c["auto_restart"] = {"on": vals["auto-restart"] == "on"}
     n = _first_int(vals.get("volume"))
     if n is not None:
         c["volume"] = {"value": n}
@@ -1115,6 +1119,10 @@ def panel_set(control, value):
         return _panel_setting("DIM_TIMEOUT", _int(value, 0, 86400))
     if control == "dim_level" and _int(value, 1, 100) is not None:
         return _panel_setting("DIM_LEVEL", _int(value, 1, 100))
+    if control == "update_mode" and value in ("auto", "manual"):
+        return _panel_setting("UPDATE_MODE", value)
+    if control == "auto_restart" and isinstance(value, bool):
+        return _panel_setting("UPDATE_AUTO_RESTART", "on" if value else "off")
     if control in ("ledbar", "lights") and isinstance(value, dict) and isinstance(value.get("on"), bool):
         if not value["on"]:
             return _panel_send("%s off" % control)
@@ -1836,6 +1844,18 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
         <div class="row"><input type="number" id="p-blank_timeout" min="0" max="86400">
           <button type="button" class="secondary" id="p-blank_timeout-set">Set</button></div>
       </div>
+      <div class="ctl" id="ctl-update_mode" style="display:none">
+        <label for="p-update_mode">Update mode</label>
+        <select id="p-update_mode">
+          <option value="auto">auto</option>
+          <option value="manual">manual</option>
+        </select>
+        <p class="hint">Auto installs updates in the update window. Manual only shows the update in Home Assistant. Install in Home Assistant works in both modes.</p>
+      </div>
+      <div class="ctl" id="ctl-auto_restart" style="display:none">
+        <div class="toggle"><input type="checkbox" id="p-auto_restart"><label for="p-auto_restart" style="margin:0">Automatic restart</label></div>
+        <p class="hint">When an update needs a restart, the panel restarts after the install.</p>
+      </div>
       <div class="ctl" id="ctl-ledbar" style="display:none">
         <div class="toggle"><input type="checkbox" id="p-ledbar-on"><label for="p-ledbar-on" style="margin:0">LED bar</label></div>
         <div class="row" style="margin-top:8px"><input type="color" id="p-ledbar-color" value="#ffffff">
@@ -1850,7 +1870,7 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
         <div class="row" style="margin-top:8px"><input type="color" id="p-lights-color" value="#ffffff">
           <input type="range" id="p-lights-bri" min="1" max="100" step="1" style="flex:1"></div>
       </div>
-      <div class="hint">These controls act at once, like the overlay of the panel and the Home Assistant entities. The times are saved in the settings of the panel.</div>
+      <div class="hint">These controls act at once, like the overlay of the panel and the Home Assistant entities. The times and the update settings are saved in the settings of the panel.</div>
       <div id="panel-status" class="status"></div>
     </div>
   </div>
@@ -2182,7 +2202,7 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
   function showCtl(name, on){ var el = $("ctl-" + name); if (el) el.style.display = on ? "block" : "none"; }
   function fillPanel(p){
     var c = (p && p.controls) || {};
-    ["screen", "backlight", "volume", "dim_timeout", "dim_level", "blank_timeout", "ledbar", "key_leds", "lights"].forEach(function(n){ showCtl(n, !!c[n]); });
+    ["screen", "backlight", "volume", "dim_timeout", "dim_level", "blank_timeout", "update_mode", "auto_restart", "ledbar", "key_leds", "lights"].forEach(function(n){ showCtl(n, !!c[n]); });
     if (c.screen) $("p-screen-state").textContent = c.screen.on ? "The screen is on." : "The screen is off.";
     if (c.backlight) { $("p-backlight").value = c.backlight.value; $("p-backlight-v").textContent = c.backlight.value; }
     if (c.volume) {
@@ -2196,6 +2216,8 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
       var el = $("p-" + n);
       if (c[n] && document.activeElement !== el) el.value = c[n].value;
     });
+    if (c.update_mode && document.activeElement !== $("p-update_mode")) $("p-update_mode").value = c.update_mode.value;
+    if (c.auto_restart) $("p-auto_restart").checked = c.auto_restart.on;
     ["ledbar", "lights"].forEach(function(n){
       if (!c[n]) return;
       $("p-" + n + "-on").checked = c[n].on;
@@ -2242,6 +2264,8 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
       setPanel(n, v);
     });
   });
+  $("p-update_mode").addEventListener("change", function(){ setPanel("update_mode", $("p-update_mode").value); });
+  $("p-auto_restart").addEventListener("change", function(){ setPanel("auto_restart", $("p-auto_restart").checked); });
   ["ledbar", "lights"].forEach(function(n){
     ["on", "bri", "color"].forEach(function(part){
       $("p-" + n + "-" + part).addEventListener("change", function(){ setPanel(n, lightValue(n)); });

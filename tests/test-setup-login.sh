@@ -19,7 +19,8 @@
 #  - the expiry of a session (idle and absolute)
 #  - the rate limit of the login
 #  - the Panel section: the controls of `tsx-panelctl state`, each change,
-#    the times through tsx-config, and the allowlist of the helper command
+#    the times and the update settings through tsx-config, a panel with no
+#    update lines in the state, and the allowlist of the helper command
 # No token of Home Assistant may appear in a log or an answer.
 set -uo pipefail
 export PYTHONDONTWRITEBYTECODE=1
@@ -71,11 +72,12 @@ echo "rc-service \$*" >> "$T/rc-service.log"
 case "\$2" in status) exit 1;; *) exit 0;; esac
 EOF
 # tsx-panelctl: "state" prints the controls of a kiosk panel with the
-# lights of a panel app, "send" logs the command.
+# lights of a panel app, "send" logs the command. The two update lines
+# show only when the file update.lines exists.
 cat > "$T/bin/tsx-panelctl" <<EOF
 #!/bin/sh
 case "\$1" in
-state) printf 'owner kiosk\nscreen on\nbacklight-pct 40\nblank-timeout 300\nvolume 55\nmute off\nledbar 100 50 0\nkeypad-led 128 unknown\nlights off 40 1 2 3\n';;
+state) printf 'owner kiosk\nscreen on\nbacklight-pct 40\nblank-timeout 300\nvolume 55\nmute off\nledbar 100 50 0\nkeypad-led 128 unknown\nlights off 40 1 2 3\n'; [ ! -f "$T/update.lines" ] || cat "$T/update.lines";;
 send) shift; echo "send \$*" >> "$T/panelctl.log";;
 *) exit 2;;
 esac
@@ -350,7 +352,17 @@ ok(p.get("owner") == "kiosk" and c.get("screen") == {"on": True} and c.get("back
 ok(c.get("ledbar") == {"on": True, "brightness": 100, "color": "#ff8000"} and c.get("key_leds") == {"on": True, "level": 128},
    "the LED bar (R G B 0..100 as a color and a brightness) and the key LEDs: %s %s" % (c.get("ledbar"), c.get("key_leds")))
 ok(c.get("lights") == {"on": False, "brightness": 40, "color": "#010203"} and "dim_timeout" not in c, "the lights of the panel app; no dim time: %s" % c.get("lights"))
+ok("update_mode" not in c and "auto_restart" not in c, "a panel without the update lines of the state has no update controls: %s" % c)
 ok(req("GET", "/setup/api/panel").status == 403, "without a session: 403")
+open(T + "/update.lines", "w").write("update-mode manual\nauto-restart off\n")
+c = req("GET", "/setup/api/panel", cookies=E).json().get("controls", {})
+ok(c.get("update_mode") == {"value": "manual"} and c.get("auto_restart") == {"on": False}, "the update mode and the automatic restart from the state: %s %s" % (c.get("update_mode"), c.get("auto_restart")))
+open(T + "/update.lines", "w").write("update-mode auto\nauto-restart on\n")
+c = req("GET", "/setup/api/panel", cookies=E).json().get("controls", {})
+ok(c.get("update_mode") == {"value": "auto"} and c.get("auto_restart") == {"on": True}, "auto and on: %s %s" % (c.get("update_mode"), c.get("auto_restart")))
+open(T + "/update.lines", "w").write("update-mode sometimes\nauto-restart maybe\n")
+c = req("GET", "/setup/api/panel", cookies=E).json().get("controls", {})
+ok("update_mode" not in c and "auto_restart" not in c, "a value outside the list hides the control: %s" % c)
 open(T + "/panelctl.log", "w").close()
 for control, value, want in (("backlight", 70, "send brightness-pct 70"), ("screen", False, "send blank on"), ("screen", True, "send blank off"),
                              ("volume", 0, "send volume 0"), ("mute", True, "send mute on"), ("mute", False, "send mute off"),
@@ -374,6 +386,22 @@ j = r.json()
 ok(r.status == 200 and j.get("revision_before") == s.get("revision") and j.get("revision") != j.get("revision_before"),
    "a time goes to panel.conf and gives the new revision: %s" % r.body)
 ok('BLANK_TIMEOUT="120"' in open(CONF).read(), "BLANK_TIMEOUT=120 in panel.conf")
+for control, value, want in (("update_mode", "manual", 'UPDATE_MODE="manual"'), ("update_mode", "auto", 'UPDATE_MODE="auto"'),
+                             ("auto_restart", False, 'UPDATE_AUTO_RESTART="off"'), ("auto_restart", True, 'UPDATE_AUTO_RESTART="on"')):
+    s = req("GET", "/setup/api/state", cookies=E).json()
+    r = post("/setup/api/panel", {"control": control, "value": value}, E)
+    j = r.json()
+    ok(r.status == 200 and j.get("revision_before") == s.get("revision") and j.get("revision") != j.get("revision_before"),
+       "%s %s: 200, the revision moves: %s" % (control, json.dumps(value), r.body))
+    ok(want in open(CONF).read().split("\n"), "%s in panel.conf" % want)
+conf = open(CONF).read()
+ok("autoupdate" not in open(T + "/panelctl.log").read(), "the update settings do not go through tsx-panelctl send")
+for control, value in (("update_mode", "sometimes"), ("update_mode", "Auto"), ("update_mode", ""), ("update_mode", True), ("update_mode", 1),
+                       ("update_mode", None), ("auto_restart", "on"), ("auto_restart", "off"), ("auto_restart", 1), ("auto_restart", 0),
+                       ("auto_restart", None), ("auto_restart", {"on": True})):
+    r = post("/setup/api/panel", {"control": control, "value": value}, E)
+    ok(r.status == 400, "refused: %s %s (%d)" % (control, json.dumps(value), r.status))
+ok(open(CONF).read() == conf, "the refused update values changed nothing in panel.conf")
 
 print("== the helper command panel: the allowlist ==")
 def helper2(line):

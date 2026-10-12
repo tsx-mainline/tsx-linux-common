@@ -10,6 +10,7 @@
 #  - the refresh every 20 s reads only /setup/api/status and never changes a
 #    field, also a field that the user changed and did not save
 #  - a new revision in the refresh, or a 409 reply, shows the reload notice
+#  - the Panel section, with the update mode and the automatic restart
 #  - a panel with no kiosk hides the page URL and the blank timeout, and the
 #    first save sends the time zone
 # It needs node. Without node it prints SKIPPED.
@@ -412,6 +413,7 @@ const STORED = {
   ok(p.$("ctl-backlight").style.display === "block" && p.$("p-backlight").value == 40 && p.$("p-backlight-v").textContent == "40", "the brightness shows (40 %)");
   ok(p.$("ctl-volume").style.display === "block" && p.$("ctl-blank_timeout").style.display === "block", "the volume and the screen-off time show");
   ok(p.$("ctl-dim_timeout").style.display === "none" && p.$("ctl-lights").style.display === "none" && p.$("ctl-key_leds").style.display === "none", "the controls that the panel lacks are hidden");
+  ok(p.$("ctl-update_mode").style.display === "none" && p.$("ctl-auto_restart").style.display === "none", "a state with no update lines: no update controls");
   ok(p.$("p-ledbar-on").checked && p.$("p-ledbar-color").value === "#ff8000", "the LED bar shows on, with its color");
   const posts = () => p.calls.filter(c => c.path === "/setup/api/panel" && c.method === "POST").map(c => c.body);
   p.$("p-backlight").value = "70"; p.$("p-backlight").fire("change"); await flush();
@@ -439,6 +441,27 @@ const STORED = {
   p.$("p-mute").checked = false; p.$("p-mute").fire("change"); await flush();
   ok(same(p.calls.filter(c => c.path === "/setup/api/panel" && c.method === "POST").map(c => c.body).pop(), { control: "mute", value: false }),
      "the Mute box sends mute false");
+  p = load({ state: stateWith(STORED, { revision: "rev-1" }), status: {}, panel: { owner: "kiosk", controls: { screen: { on: true }, blank_timeout: { value: 300 },
+    update_mode: { value: "manual" }, auto_restart: { on: false } } } });
+  await flush();
+  const ups = () => p.calls.filter(c => c.path === "/setup/api/panel" && c.method === "POST").map(c => c.body);
+  ok(p.$("ctl-update_mode").style.display === "block" && p.$("ctl-auto_restart").style.display === "block", "the update mode and the automatic restart show");
+  ok(p.$("p-update_mode").value === "manual" && p.$("p-auto_restart").checked === false, "they show manual and off");
+  ok(/update window/.test(p.$("ctl-update_mode").textContent) && /Home Assistant/.test(p.$("ctl-update_mode").textContent), "the hint of the update mode shows");
+  p.$("p-update_mode").value = "auto"; p.$("p-update_mode").fire("change"); await flush();
+  ok(same(ups().pop(), { control: "update_mode", value: "auto" }), "the select sends update_mode auto");
+  p.$("p-auto_restart").checked = true; p.$("p-auto_restart").fire("change"); await flush();
+  ok(same(ups().pop(), { control: "auto_restart", value: true }), "the box sends auto_restart true");
+  p.$("p-auto_restart").checked = false; p.$("p-auto_restart").fire("change"); await flush();
+  ok(same(ups().pop(), { control: "auto_restart", value: false }), "the box sends auto_restart false");
+  p.server.panelPost = { status: 400, body: { error: "this panel does not take UPDATE_MODE=auto" } };
+  p.$("p-update_mode").value = "manual"; p.$("p-update_mode").fire("change"); await flush();
+  ok(p.$("panel-status").textContent === "this panel does not take UPDATE_MODE=auto", "a refusal of the update mode shows");
+  p.server.panelPost = { status: 200, body: { ok: true } };
+  p.server.panel = { owner: "kiosk", controls: { screen: { on: true }, update_mode: { value: "auto" }, auto_restart: { on: true } } };
+  p.$("p-update_mode").value = "manual"; p.$("p-update_mode").fire("change"); await flush();
+  await new Promise(r => setTimeout(r, 1000)); await flush();
+  ok(p.$("p-update_mode").value === "auto" && p.$("p-auto_restart").checked === true, "the read after a change shows the state of both controls");
   p = load({ state: stateWith(STORED), status: {}, panel: { owner: "none", controls: {} } });
   await flush();
   ok(p.$("panel-wrap").style.display !== "block", "a panel with no control: no Panel section");
