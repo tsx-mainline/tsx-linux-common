@@ -118,6 +118,16 @@ def _field(path, key) -> Optional[str]:
     return None
 
 
+def _stat_sig(path):
+    """What tells that a file changed: inode, size and modification time in ns.
+    None when the file is missing."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
 def board_value(name) -> str:
     """A value of the board file (board.sh): the environment first, else
     `tsx-board get NAME`. Empty if the board does not define it."""
@@ -179,6 +189,13 @@ class PanelBackend:
         self.panelctl = Path(_env("TSX_PANELCTL", str(self.run_dir / "panelctl")))
         self.boot_verbose_flag = Path(_env("TSX_BOOT_VERBOSE_FLAG", "/etc/tsx/boot-verbose"))
         self.panelctl_bin = _env("TSX_PANELCTL_BIN", "tsx-panelctl")
+        # The files that tsx-autoupdate reads for update-mode and auto-restart
+        # (the same names as in that script), and the volume file of the Sendspin
+        # player (as in tsx-panelctl).
+        self.autoupdate_conf = Path(_env("TSX_AUTOUPDATE_CONF", "/etc/tsx/autoupdate.conf"))
+        self.autoupdate_override = Path(_env("TSX_AUTOUPDATE_OVERRIDE", str(self.run_dir / "autoupdate.conf")))
+        self.sendspin_volume_file = Path(_env("TSX_SENDSPIN_VOLUME_FILE", "/run/sendspin-cli/volume"))
+        self._setting_cache = {}
         self._usb_pending: Optional[Tuple[bool, float]] = None
         self._last_tag: Optional[Tuple[str, str]] = None
         self._orientation_pending: Optional[Tuple[str, float]] = None
@@ -198,6 +215,23 @@ class PanelBackend:
         except Exception:  # noqa: BLE001
             return False, ""
         return res.returncode == 0, res.stdout.strip()
+
+    def _panelctl_setting(self, name):
+        """`tsx-panelctl get NAME` for an update setting, as _panelctl. A good
+        answer stays until tsx-autoupdate reads another file: the settings are the
+        shell variables of its two settings files, so the answer changes only when
+        one of them changes. The poll then starts no process (it started one for
+        each of the two settings every second). A failed call is not kept."""
+        sig = (_stat_sig(self.autoupdate_conf), _stat_sig(self.autoupdate_override))
+        hit = self._setting_cache.get(name)
+        if hit is not None and hit[0] == sig:
+            return hit[1]
+        res = self._panelctl("get", name)
+        if res[0]:
+            self._setting_cache[name] = (sig, res)
+        else:
+            self._setting_cache.pop(name, None)
+        return res
 
     def _ctl(self, *words) -> bool:
         """Hand one command to the tsx-panelctl FIFO (one whitespace-separated
@@ -709,7 +743,21 @@ class PanelBackend:
         return self._panelctl("has", "sound")[0]
 
     def get_volume(self) -> float:
-        """The speaker level in percent, from `tsx-panelctl get volume`."""
+        """The speaker level in percent, from `tsx-panelctl get volume`. While the
+        Sendspin player owns the volume (its volume file exists, as in
+        tsx-panelctl), the value is read from that file: no process starts."""
+        try:
+            with open(self.sendspin_volume_file, "r", encoding="utf-8", errors="replace") as fobj:
+                text = fobj.read(4096)
+        except OSError:
+            text = None
+        if text is not None:
+            # the first line "volume = N", N from 0 to 100 (the rule of tsx-panelctl)
+            match = re.search(r"^volume[ \t]*=[ \t]*(.*)$", text, re.MULTILINE)
+            word = match.group(1) if match else ""
+            if word.isascii() and word.isdigit() and len(word) <= 6 and int(word) <= 100:
+                return float(int(word))
+            return 0.0
         ok, out = self._panelctl("get", "volume")
         if not ok:
             return 0.0
@@ -1006,7 +1054,7 @@ class PanelBackend:
         set is reported until the state shows it (a few seconds at most), so
         the Home Assistant select does not jump back meanwhile. Without an
         answer it uses the "mode" key of the update state file, else auto."""
-        ok, out = self._panelctl("get", "update-mode")
+        ok, out = self._panelctl_setting("update-mode")
         value = out.split()[0] if ok and out.split() else ""
         if value not in self.UPDATE_MODES:
             value = str(self.get_update_status().get("mode") or "")
@@ -1028,7 +1076,7 @@ class PanelBackend:
     def get_auto_restart(self) -> bool:
         """True while the panel restarts by itself after an update that needs
         a restart, from `tsx-panelctl get auto-restart` (as get_update_mode)."""
-        ok, out = self._panelctl("get", "auto-restart")
+        ok, out = self._panelctl_setting("auto-restart")
         word = out.split()[0] if ok and out.split() else ""
         if word in ("on", "off"):
             value = word == "on"

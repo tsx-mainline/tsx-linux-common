@@ -58,6 +58,7 @@ PY
 # the fake tsx-panelctl: `get NAME` prints the file $T/pc/NAME, and fails without it. `has` says no.
 cat > "$T/panelctl" <<EOF
 #!/bin/sh
+echo "\$*" >> "$T/pc-calls"
 [ "\$1" = get ] && [ -r "$T/pc/\$2" ] && exec cat "$T/pc/\$2"
 exit 1
 EOF
@@ -70,7 +71,9 @@ sys.path[:0] = [t + "/stub", shim]
 os.environ.update(TSX_RUN_DIR=t + "/run", TSX_STATE_DIR=t + "/state", TSX_BACKLIGHT_DIR=t + "/bl",
                   TSX_KIOSK_CONF=t + "/none", TSX_BUTTONS_CONF=t + "/none", TSX_BUTTONS_BOARD_CONF=t + "/none",
                   TSX_ALS_CONF=t + "/none", TSX_ASOUND_DIR=t + "/none", TSX_IDLED_STATE=t + "/none",
-                  TSX_THERMAL_ZONE=t + "/none", TSX_PANELCTL_BIN=t + "/panelctl", TSX_PANELCTL=t + "/fifo")
+                  TSX_THERMAL_ZONE=t + "/none", TSX_PANELCTL_BIN=t + "/panelctl", TSX_PANELCTL=t + "/fifo",
+                  TSX_AUTOUPDATE_CONF=t + "/au.conf", TSX_AUTOUPDATE_OVERRIDE=t + "/au-override.conf",
+                  TSX_SENDSPIN_VOLUME_FILE=t + "/vol")
 from aioesphomeapi import api_pb2 as pb
 from tsx_panel.backend import PanelBackend
 from tsx_panel import device as dev
@@ -94,13 +97,23 @@ def sent():
         return []
 
 def pc(name, value=None):
-    """What `tsx-panelctl get NAME` prints. None: no answer."""
+    """What `tsx-panelctl get NAME` prints. None: no answer. The backend keeps an
+    answer until a settings file of tsx-autoupdate changes, so a new value also
+    changes the settings file (the real tsx-panelctl reads the files)."""
     path = f"{t}/pc/{name}"
     if value is None:
         if os.path.exists(path):
             os.remove(path)
     else:
         open(path, "w").write(value + "\n")
+    open(t + "/au.conf", "a").write("# " + name + " " + str(value) + "\n")
+
+def calls(word):
+    """How many times the fake tsx-panelctl was called with WORD (for example "get update-mode")."""
+    try:
+        return sum(1 for line in open(t + "/pc-calls") if line.strip() == word)
+    except OSError:
+        return 0
 
 def state_file(**kw):
     base = {"installed_version": "0.3.5", "latest_version": "0.3.6", "title": "TSX HOST packages",
@@ -137,6 +150,48 @@ check("tsx-panelctl: automatic restart", b.get_auto_restart(), False)
 pc("update-mode", "weekly"); pc("auto-restart", "maybe")
 check("tsx-panelctl: a bad answer falls back to the state file", (b.get_update_mode(), b.get_auto_restart()), ("manual", True))
 pc("update-mode"); pc("auto-restart")
+
+# ---- the backend: the settings are asked for once, not at every poll ----------------------
+pc("update-mode", "manual"); pc("auto-restart", "on")
+b = PanelBackend()
+n0, n1 = calls("get update-mode"), calls("get auto-restart")
+for _ in range(20):
+    b.get_update_mode(); b.get_auto_restart()
+check("20 polls with no change: one call for each setting", (calls("get update-mode") - n0, calls("get auto-restart") - n1), (1, 1))
+check("the cached values are right", (b.get_update_mode(), b.get_auto_restart()), ("manual", True))
+pc("update-mode", "auto")
+check("a changed settings file: the next poll asks again and shows the new value", b.get_update_mode(), "auto")
+check("only the changed file costs a call for each setting", (calls("get update-mode") - n0, calls("get auto-restart") - n1), (2, 1))
+open(t + "/au-override.conf", "w").write("MODE=manual\n")   # the override file of tsx-config apply appears
+check("a new override file: asked again", (b.get_update_mode(), calls("get update-mode") - n0), ("auto", 3))
+pc("update-mode")   # no answer: not kept
+n2 = calls("get update-mode")
+for _ in range(3):
+    b.get_update_mode()
+check("a failed call is not kept: asked at each poll", calls("get update-mode") - n2, 3)
+pc("update-mode", "manual")
+check("after a failure the answer comes back at once", b.get_update_mode(), "manual")
+os.remove(t + "/au-override.conf")
+pc("update-mode"); pc("auto-restart")
+
+# ---- the backend: the volume from the file of the Sendspin player -------------------------
+b = PanelBackend()
+vol_calls = lambda: calls("get volume")
+pc("volume", "33")
+check("no player file: the volume comes from tsx-panelctl", (b.get_volume(), vol_calls()), (33.0, 1))
+open(t + "/vol", "w").write("# Written by sendspin-cli. Edits are overwritten.\nvolume = 42\nmuted = false\n")
+check("player file: volume = 42", (b.get_volume(), vol_calls()), (42.0, 1))
+open(t + "/vol", "w").write("muted = false\nvolume=7\n")
+check("player file without spaces around =", b.get_volume(), 7.0)
+open(t + "/vol", "w").write("volume = 101\n")
+check("player file: 101 is no volume (0, as tsx-panelctl)", (b.get_volume(), vol_calls()), (0.0, 1))
+open(t + "/vol", "w").write("volume = abc\n")
+check("player file: a word is no volume", b.get_volume(), 0.0)
+open(t + "/vol", "w").write("muted = true\n")
+check("player file without a volume line", (b.get_volume(), vol_calls()), (0.0, 1))
+os.remove(t + "/vol")
+check("the player file is gone: tsx-panelctl again", (b.get_volume(), vol_calls()), (33.0, 2))
+pc("volume")
 
 # ---- the backend: commands to the FIFO ---------------------------------------------------
 sent()

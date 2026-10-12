@@ -83,6 +83,8 @@ Five entities show and control the updates of the panel. They are the same on th
 - The Restart button sends the command `reboot` to `tsx-panelctl`. Its name is Restart. On a kiosk panel its object id stays `reboot`, because an object id must not change (see "Add an entity"). In MQTT, the button payload is `PRESS`.
 - Update mode has the options `auto` and `manual`, in lower case. A selection sends `update-mode auto` or `update-mode manual`. `tsx-panelctl get update-mode` reads the value.
 - Automatic restart sends `auto-restart on` or `auto-restart off`. `tsx-panelctl get auto-restart` reads the value. In MQTT, the payload is `ON` or `OFF`.
+- The shim asks `tsx-panelctl` for these two values again only when `/etc/tsx/autoupdate.conf` or `/run/tsx/autoupdate.conf` changed (the inode, the size or the time). A poll with no change starts no process.
+- The Volume value comes from the volume file of the Sendspin player (`/run/sendspin-cli/volume`) while it exists. The shim reads the file itself. Without the file, it asks `tsx-panelctl get volume` at each poll.
 
 `tsx-panelctl` saves `UPDATE_MODE` and `UPDATE_AUTO_RESTART` with `tsx-config set` and `tsx-config apply`, so both settings stay after a restart. The setup page shows the same two settings. A value that Home Assistant sets shows at once. The shim and `tsx-mqtt` hold it for 10 seconds, until the state of `tsx-autoupdate` has the value. Without this hold, the next poll would show the old value for a moment.
 
