@@ -277,10 +277,17 @@ t0=$(date +%s%N); kill "$DPID"; wait "$DPID" 2>/dev/null; DPID=; t1=$(date +%s%N
 [ -z "$(ls -A "$T/run" | grep nap)" ] && ok "service: no FIFO is left" || bad "service: FIFO left: $(ls -A "$T/run")"
 # without mkfifo the service waits with sleep and works
 mkdir -p "$T/nofifo"; printf '#!/bin/sh\nexit 1\n' > "$T/nofifo/mkfifo"; chmod +x "$T/nofifo/mkfifo"
+# Some busybox builds (Debian, Ubuntu) run sleep as a built-in applet and never search PATH for it,
+# so the wrapper in front of PATH cannot count it. Find out which kind this busybox is.
+: > "$T/cnt.log"; PATH=$T/cnt:$PATH $SH -c 'sleep 0'; [ -s "$T/cnt.log" ] && SEES_SLEEP=1 || SEES_SLEEP=
 reset 0; plug 5; : > "$T/cnt.log"
 PATH=$T/nofifo:$T/cnt:$PATH $SH "$D" > "$T/log" 2>&1 &
 DPID=$!
-waitfor 'grep -qx boot "$T/calls"' && grep -qx sleep "$T/cnt.log" && ok "service without mkfifo: boot color set, sleep is the wait" || bad "service without mkfifo: calls $(cat "$T/calls") procs $(cat "$T/cnt.log")"
+if [ -n "$SEES_SLEEP" ]; then
+	waitfor 'grep -qx boot "$T/calls"' && grep -qx sleep "$T/cnt.log" && ok "service without mkfifo: boot color set, sleep is the wait" || bad "service without mkfifo: calls $(cat "$T/calls") procs $(cat "$T/cnt.log")"
+else
+	waitfor 'grep -qx boot "$T/calls"' && ok "service without mkfifo: boot color set (the sleep count is skipped: this busybox runs sleep as an applet)" || bad "service without mkfifo: calls $(cat "$T/calls")"
+fi
 kill "$DPID"; wait "$DPID" 2>/dev/null; DPID=
 unplug; plug 2
 

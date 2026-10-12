@@ -100,7 +100,9 @@ done
 # them (`get mode`, `get auto-restart`) and saves them with tsx-config (set
 # UPDATE_MODE, UPDATE_AUTO_RESTART). The fakes keep the two values in files, so
 # a value that the test sets comes back. Without a file there is no answer, and
-# the entities use the update state file.
+# the entities use the update state file. The shim keeps an answer until
+# /etc/tsx/autoupdate.conf or $RUN/autoupdate.conf changes, so the fake
+# "tsx-config apply" writes the second file, as the real one does.
 cat > "$F/bin/tsx-autoupdate" <<EOF
 #!/bin/sh
 if [ "\$1" = get ]; then cat "$F/ua-\$2" 2>/dev/null; exit 0; fi
@@ -112,6 +114,7 @@ echo "tsx-config \$*" >> "$F/cmds.log"
 case "\$1 \$2" in
 "set UPDATE_MODE") echo "\$3" > "$F/ua-mode";;
 "set UPDATE_AUTO_RESTART") echo "\$3" > "$F/ua-auto-restart";;
+"apply ") { echo "UPDATE_MODE=\$(cat "$F/ua-mode" 2>/dev/null)"; echo "UPDATE_AUTO_RESTART=\$(cat "$F/ua-auto-restart" 2>/dev/null)"; } > "$F/run/tsx/autoupdate.conf";;
 esac
 EOF
 chmod +x "$F/bin/tsx-autoupdate" "$F/bin/tsx-config"
