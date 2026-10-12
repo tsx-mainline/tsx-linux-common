@@ -596,6 +596,16 @@ env -u TSX_VOLUME_CMD PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_PANELCTL_ONES
 OP=$!; sleep 0.5; echo "volume 42" > "$T/fifo3"; wait $OP 2>/dev/null
 grep -qxF 'amixer -q -c FakeCard sset Master 42%' "$T/cmds.log" && ok "volume 42 -> amixer sset Master 42%" || bad "volume (amixer): $(cat "$T/cmds.log") $(cat "$T/oneshot.log")"
 
+echo "== a client call (get, has, state) starts no date process; the daemon uses date once, at the first command for the panel app =="
+mkdir -p "$T/cnt"
+rd=$(command -v date)
+printf '#!/bin/sh\necho date >> "%s/date.log"\nexec "%s" "$@"\n' "$T" "$rd" > "$T/cnt/date"; chmod +x "$T/cnt/date"
+: > "$T/date.log"
+for a in "get lux" "get volume" "get screen" "has als" "has ledbar" "state"; do
+	env PATH="$T/cnt:$T/bin:$PATH" TSX_RUN_DIR="$T/run" busybox sh "$SCRIPT" $a > /dev/null 2>&1
+done
+[ ! -s "$T/date.log" ] && ok "client calls: no date process" || bad "client calls started date $(wc -l < "$T/date.log") times"
+
 echo "== $N ok, $F failed =="
 [ $F = 0 ] && echo PASS test-panelctl || echo FAIL test-panelctl
 exit $F

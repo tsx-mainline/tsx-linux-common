@@ -249,8 +249,10 @@ PROC=${TSX_PROC_DIR:-/proc}
 LAYOUT_CHECK=${TSX_LAYOUT_CHECK_BIN:-tsx-layout-check}
 LAYOUT_FILE=${TSX_PANEL_LAYOUT_FILE:-/var/lib/tsx/panel-layout.json}
 PA_SEQ=0
-PA_START=$(date +%s 2>/dev/null)
-case "$PA_START" in ''|*[!0-9]*) PA_START=0;; esac
+# PA_START: the seconds at the first pa_send of this process (file names of
+# control.d sort by it). Only the daemon sends, so a client (get, has, state)
+# starts no date process.
+PA_START=
 
 log() { echo "$(date '+%F %T') tsx-panelctl: $*"; }
 
@@ -325,6 +327,10 @@ panel_app_up() {
 # control.d, which the app can own.
 pa_send() {
 	[ -d "$PA_RUN/control.d" ] || mkdir -p "$PA_RUN/control.d" || return 1
+	if [ -z "$PA_START" ]; then
+		PA_START=$(date +%s 2>/dev/null)
+		case "$PA_START" in ''|*[!0-9]*) PA_START=0;; esac
+	fi
 	PA_SEQ=$((PA_SEQ + 1))
 	pa_name=$(printf '%010d.%06d' "$PA_START" "$PA_SEQ")
 	pa_tmp="$R/.panel-app-cmd.$$"
