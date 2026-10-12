@@ -12,7 +12,7 @@ One program serves all panels of a family. The program holds no value of one pan
 
 | Path | Contents |
 |---|---|
-| `panel-app/esphome/components/tsx_cards/` | The ESPHome component `tsx_cards` (C++). It reads the layout, makes the pages and cards, subscribes to the states and sends the actions. It also shows the setup banner and writes the entity list. It runs the screen (`screen.cpp`), the settings overlay (`overlay.cpp`), the detail popups (`popup.cpp`) and the slider cards (`slider.cpp`, with the numbers in `slider_logic.h`). |
+| `panel-app/esphome/components/tsx_cards/` | The ESPHome component `tsx_cards` (C++). It reads the layout, makes the pages and cards, subscribes to the states and sends the actions. It also shows the setup banner and writes the entity list. It runs the screen (`screen.cpp`), the settings overlay (`overlay.cpp`), the detail popups (`popup.cpp`) and the slider cards (`slider.cpp`, with the numbers in `slider_logic.h`) and the update entities (`update.cpp`, `update.py` and `update_logic.h`, see "Updates"). |
 | `panel-app/esphome/components/tsx_leds/` | The ESPHome light platform `tsx_leds` (C++): a light on a Linux LED device (see "Panel lights"). |
 | `panel-app/usr/local/lib/tsx/config.d/panel_app.sh` | The plugin of `tsx-config` with the keys `DIM_TIMEOUT` and `DIM_LEVEL` (see "Screen"). |
 | `panel-app/esphome/components/tsx_runtime/` | The ESPHome component `tsx_runtime` (C++). It sets the device name and the API encryption key at run time. |
@@ -397,7 +397,7 @@ The app has these Home Assistant entities for the screen. Home Assistant can cha
 | Volume | number, 0 to 100 % | The volume of the panel (see "Volume"). Unknown on a panel with no sound card. |
 | Layout hash | text sensor | The SHA-256 of the layout file in use (see "Layout from Home Assistant"). |
 
-The names and the units are the same as on the kiosk panels. See "Panel settings" in [esphome.md](esphome.md).
+The names and the units are the same as on the kiosk panels. See "Panel settings" in [esphome.md](esphome.md). The entities for the updates are in "Updates".
 
 ## Control from the panel
 
@@ -501,6 +501,44 @@ The app sends a change to `tsx-panelctl` (`volume N`, `mute on|off`), which sets
 Without that file, the volume of the panel is one mixer control of the sound card: `Master`, the softvol of the board in `/etc/asound.conf`. The app reads and writes the control with the control ioctls of the kernel, as a member of the group `audio`. It needs no alsa-lib. `tsx-panel-app-run` gives the app the card of the board (`TSX_SOUND_CARD` of `board.sh`) as `TSX_PANEL_APP_SOUND_CARD`. `TSX_PANEL_APP_VOLUME_CTL` names another control. The percent is the position in the range of the control: for the softvol of `Master` with 101 steps, the percent is the raw value.
 
 With no player, no card and no control, the Volume number is unknown and the overlay has no volume slider. The app tries to open the control again every 10 s, because the board makes the softvol at boot.
+
+## Updates
+
+The app shows the state of `tsx-autoupdate` as Home Assistant entities. They are the same as on the kiosk panels (see [autoupdate.md](autoupdate.md)).
+
+| Entity | Type | Function |
+|---|---|---|
+| Update | update | The running release (installed) and the release in the index (latest), with the title and the summary. Install updates the panel at once. |
+| Restart required | binary sensor | On after an install that needs a restart, until the panel restarts. |
+| Restart | button | Restarts the panel. The class of the button is `restart`. |
+| Update mode | select | `auto` or `manual`. In `auto`, the panel installs updates by itself. In `manual`, it only shows that an update is available. |
+| Automatic restart | switch | On: the panel restarts after an install that needs a restart. Off: Home Assistant shows "Restart required". |
+
+The select and the switch are in the entity category `config`.
+
+The state comes from the file `/run/tsx/update.state` that `tsx-autoupdate` writes (`TSX_PANEL_APP_UPDATE_STATE` names another file). The file has one `key value` pair on each line: `installed`, `latest`, `title`, `summary`, `in-progress`, `restart-required`, `mode` and `auto-restart`. The summary is the text to the end of the line. The app reads the file at most every 3 s. While a change waits for the file, the app reads it every second.
+
+The entity "Update" has one of these states:
+
+| State | When |
+|---|---|
+| Unknown | The file does not exist, or `installed` is `unknown`. |
+| Installing | `in-progress` is `yes`. |
+| Update available | `latest` is not the same as `installed`. |
+| No update | In all other cases. |
+
+After an install that needs a restart, `installed` stays the running release and `latest` is the new release. So the entity stays in the list of updates, and Install restarts the panel.
+
+The app does not run as root. Each action is one line on the FIFO of `tsx-panelctl`:
+
+| Entity | Line |
+|---|---|
+| Update, Install | `update-install` |
+| Restart | `reboot` |
+| Update mode | `update-mode auto` or `update-mode manual` |
+| Automatic restart | `auto-restart on` or `auto-restart off` |
+
+`tsx-panelctl` keeps the two settings in `panel.conf` (`UPDATE_MODE` and `UPDATE_AUTO_RESTART`) with `tsx-config`. After a set, the app shows the new value at once. It holds the value until the file shows it, for at most 10 s. The file changes about 3 s after a set, because `tsx-config apply` runs first. After an Install, the entity shows "Installing" in the same way. The app never taps the screen for these actions.
 
 ## Panel lights
 
@@ -618,7 +656,7 @@ Before each start, the service runs `tsx-panel-app-run --prepare` as root. It do
 5. It gives the folders of `PANEL_APP_DIRS` to the user.
 6. For a user that is not root: it gives the group of the user write access to `scaling_min_freq` and `scaling_max_freq` of each CPU policy, and to `brightness` and `multi_intensity` of the LEDs of `PANEL_APP_LEDS` (shell patterns of names in `/sys/class/leds`, the board sets them).
 
-A program that does not run as root gets `TSX_PANEL_APP_PANELCTL`, the FIFO of `tsx-panelctl`. It sends the actions that need root there: `reboot`, `setup`, `blank-timeout`, `dim-timeout`, `dim-level` and `layout-install`.
+A program that does not run as root gets `TSX_PANEL_APP_PANELCTL`, the FIFO of `tsx-panelctl`. It sends the actions that need root there: `reboot`, `setup`, `blank-timeout`, `dim-timeout`, `dim-level`, `layout-install`, `update-install`, `update-mode` and `auto-restart`.
 
 ## Setup banner
 

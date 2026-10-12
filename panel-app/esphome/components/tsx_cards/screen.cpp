@@ -157,6 +157,11 @@ void TsxCards::screen_setup_() {
   const char *pv = getenv("TSX_PANEL_APP_SENDSPIN_VOLUME");
   if (pv != nullptr && pv[0] != '\0')
     this->player_vol_file_ = pv;
+  // The state of tsx-autoupdate (update.cpp).
+  this->update_file_ = this->run_dir_ + "/update.state";
+  const char *us = getenv("TSX_PANEL_APP_UPDATE_STATE");
+  if (us != nullptr && us[0] != '\0')
+    this->update_file_ = us;
   this->started_at_ = (long) ::time(nullptr);
   this->state_files_ready_ = true;
   this->write_app_state_();

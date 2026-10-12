@@ -115,6 +115,24 @@ switch:
       - lambda: id(panel_cards).wake("Home Assistant");
     turn_off_action:
       - lambda: id(panel_cards).screen_off("Home Assistant");
+  # Updates (docs/panel-app.md, "Updates"): the automatic restart after an
+  # install. The setting goes through tsx-panelctl (root) to panel.conf
+  # (UPDATE_AUTO_RESTART).
+  - platform: template
+    name: Automatic restart
+    id: panel_auto_restart
+    icon: mdi:restart
+    entity_category: config
+    restore_mode: DISABLED
+    lambda: |-
+      int on = id(panel_cards).auto_restart();
+      if (on < 0)
+        return {};
+      return on == 1;
+    turn_on_action:
+      - lambda: id(panel_cards).set_auto_restart(true);
+    turn_off_action:
+      - lambda: id(panel_cards).set_auto_restart(false);
 
 number:
   - platform: template
@@ -197,3 +215,54 @@ text_sensor:
     entity_category: diagnostic
     update_interval: 10s
     lambda: return id(panel_cards).layout_hash();
+
+# Updates (docs/panel-app.md, "Updates"). The state is the file
+# /run/tsx/update.state of tsx-autoupdate. Every action goes through the
+# FIFO of tsx-panelctl: the app never runs as root.
+update:
+  # ESPHome has no template update platform: tsx_cards/update.py.
+  - platform: tsx_cards
+    name: Update
+    id: panel_update
+    icon: mdi:package-up
+    device_class: firmware
+    # No category, as on the kiosk panels: the entity shows with the controls.
+    entity_category: ""
+
+binary_sensor:
+  - platform: template
+    name: Restart required
+    id: panel_restart_required
+    icon: mdi:restart-alert
+    lambda: |-
+      int r = id(panel_cards).restart_required();
+      if (r < 0)
+        return {};
+      return r == 1;
+
+button:
+  - platform: template
+    name: Restart
+    id: panel_restart
+    icon: mdi:restart
+    device_class: restart
+    on_press:
+      - lambda: id(panel_cards).restart();
+
+select:
+  - platform: template
+    name: Update mode
+    id: panel_update_mode
+    icon: mdi:update
+    entity_category: config
+    options:
+      - auto
+      - manual
+    update_interval: 1s
+    lambda: |-
+      std::string m = id(panel_cards).update_mode();
+      if (m.empty())
+        return {};
+      return m;
+    set_action:
+      - lambda: id(panel_cards).set_update_mode(x.c_str());

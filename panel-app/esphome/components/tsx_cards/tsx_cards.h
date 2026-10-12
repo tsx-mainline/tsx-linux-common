@@ -26,6 +26,7 @@
 #include "layout.h"
 #include "slider_logic.h"
 #include "volume_logic.h"
+#include "update_logic.h"
 
 #ifdef USE_FONT
 #include "esphome/components/font/font.h"
@@ -229,6 +230,25 @@ class TsxCards : public Component {
   int volume_muted();
   void set_volume_muted(bool muted);
 
+  // ---- the updates (update.cpp) ----
+  /// The state of tsx-autoupdate (the file update.state, read at most every
+  /// few seconds).
+  const UpdateStatus &update_status();
+  /// The state of the update entity: with the hold after an install.
+  UpdState update_state();
+  /// Restart required: 1 yes, 0 no, -1 not known.
+  int restart_required();
+  /// The update mode, "auto" or "manual", or "" when not known.
+  std::string update_mode();
+  /// The automatic restart: 1 on, 0 off, -1 not known.
+  int auto_restart();
+  /// The commands for tsx-panelctl. A set shows at once and is held until
+  /// the file shows it, at most 3 s.
+  void update_install();
+  void restart();
+  void set_update_mode(const std::string &mode);
+  void set_auto_restart(bool on);
+
   // ---- the settings overlay (overlay.cpp) ----
   void set_overlay_timeout(uint32_t ms) { this->overlay_timeout_ = ms; }
   void open_overlay(const char *origin);
@@ -334,6 +354,9 @@ class TsxCards : public Component {
   bool player_volume_() const;
   void player_send_(const std::string &line);
   void volume_loop_();
+  // update.cpp
+  void update_refresh_(bool force);
+  bool update_send_(const std::string &line);
   // control.cpp: the commands of tsx-panelctl and screen.state (control.h)
   void control_loop_();
   void apply_control_(const std::string &line);
@@ -503,6 +526,12 @@ class TsxCards : public Component {
   std::string player_vol_file_{"/run/sendspin-cli/volume"};
   PlayerSetting vol_set_;
   PlayerSetting mute_set_;
+  // The updates (update_logic.h).
+  std::string update_file_{"/run/tsx/update.state"};
+  UpdateStatus upd_;
+  uint32_t upd_read_at_{0};
+  bool upd_read_once_{false};
+  HeldValue upd_mode_hold_, upd_auto_hold_, upd_install_hold_;
   Trigger<bool> screen_trigger_;
   std::vector<int> children_;
   std::map<std::string, std::string> config_pending_;
