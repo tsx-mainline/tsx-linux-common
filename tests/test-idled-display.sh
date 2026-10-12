@@ -135,6 +135,31 @@ mksock $T/ru/$(id -u)/sway-ipc.1.0.sock; echo sway-ipc.1.0.sock > $T/stale
 dp off && pass "stale socket skipped (off)" || no "stale socket: off failed"
 dp on 2>/dev/null && pass "stale socket skipped (on)" || no "stale socket: on failed"
 rm -f $T/ru/$(id -u)/sway-ipc.*.sock
+# process starts: "off" with the output off already sends no request and starts no
+# tr, grep or id (tsx-idled runs "off" every 30 s while blank). The passwd file
+# gives the user ID, and id is the fallback.
+mksock $T/ru/$(id -u)/sway-ipc.1.1.sock
+mkdir -p $T/cnt
+ME=$(id -un)
+for u in tr grep id sed head; do
+	r=$(command -v $u); printf '#!/bin/sh\necho %s >> %s/cnt.log\nexec %s "$@"\n' $u $T $r > $T/cnt/$u; chmod +x $T/cnt/$u
+done
+printf '#!/bin/sh\necho "$*" >> %s/sway-all\nexec %s/swaymsg "$@"\n' $T $T > $T/swaymsg2; chmod +x $T/swaymsg2
+dpc() { PATH=$T/cnt:$PATH TSX_SWAYMSG=$T/swaymsg2 TSX_RUN_USER_DIR=$T/ru TSX_KIOSK_USER=$ME TSX_PASSWD_FILE=${PW:-$T/passwd} TSX_FB_DIR=$T/fb sh $DP "$@"; }
+printf 'root:x:0:0::/root:/bin/sh\n%s:x:%s:%s::/:/bin/sh\n' "$(id -un)" "$(id -u)" "$(id -g)" > $T/passwd
+dp on 2>/dev/null; : > $T/sway-all; : > $T/cnt.log
+dpc off && [ "$(dp status)" = "sway off" ] && pass "display-power off (passwd file)" || no "display-power off with the passwd file"
+n1=$(grep -c 'power off' $T/sway-all || true)
+: > $T/sway-all; : > $T/cnt.log
+dpc off && pass "off when off already: success" || no "off when off already failed"
+[ ! -s $T/sway-all ] || [ "$(grep -c 'output \* power off' $T/sway-all)" = 0 ] && pass "off when off already: no power request" || no "off sent a request: $(cat $T/sway-all)"
+[ ! -s $T/cnt.log ] && pass "off when off already: no tr, grep, id, sed or head" || no "off started: $(sort $T/cnt.log | uniq -c | tr '\n' ' ')"
+: > $T/cnt.log; dpc status > /dev/null
+[ ! -s $T/cnt.log ] && pass "status: no tr, grep, id, sed or head" || no "status started: $(sort $T/cnt.log | uniq -c | tr '\n' ' ')"
+PW=$T/nopasswd; : > $T/cnt.log
+dpc status | grep -q 'sway off' && grep -qx id $T/cnt.log && pass "user not in the passwd file: id is the fallback" || no "id fallback: $(dpc status) $(cat $T/cnt.log)"
+unset PW
+dp on 2>/dev/null; rm -f $T/ru/$(id -u)/sway-ipc.*.sock
 # no sway: framebuffer
 dp off && [ "$(cat $T/fb/fb0/blank)" = 4 ] && pass "no sway: fb blank 4" || no "no sway: fb blank $(cat $T/fb/fb0/blank)"
 dp on && [ "$(cat $T/fb/fb0/blank)" = 0 ] && pass "no sway: fb blank 0" || no "no sway: fb blank $(cat $T/fb/fb0/blank)"

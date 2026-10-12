@@ -21,9 +21,14 @@
 #
 # Exit status: 0 = the outputs are in the requested state (or the framebuffer
 # took the request), 1 = no output took the request, 2 = usage error.
+# tsx-idled runs "off" every 30 s while the screen is blank. So the script
+# starts as few processes as it can: it reads the user ID from the passwd file,
+# reads the power state from the answer of one swaymsg, and "off" asks first
+# and sends nothing when the output is off already. "on" sends first (the wake
+# must not wait).
 # Env for tests: TSX_SWAYMSG (swaymsg), TSX_RUN_USER_DIR (/run/user),
 # TSX_KIOSK_USER (kiosk), TSX_FB_DIR (/sys/class/graphics),
-# TSX_DISPLAY_TRIES (3).
+# TSX_DISPLAY_TRIES (3), TSX_PASSWD_FILE (/etc/passwd).
 set -u
 cmd=${1:-status}
 case "$cmd" in
@@ -33,19 +38,43 @@ esac
 SWAYMSG=${TSX_SWAYMSG:-swaymsg}
 tries=${TSX_DISPLAY_TRIES:-3}
 
-# power SOCKET: "on", "off" or "mixed" for the outputs of one sway
+# power SOCKET: sets POWER to "on", "off" or "mixed" for the outputs of one
+# sway, or "none" (no answer). The answer of swaymsg is JSON. The shell splits
+# it into words: "power": is followed by true or false (or "power":true in
+# one word).
+POWER=none
 power() {
-	p=$(SWAYSOCK=$1 "$SWAYMSG" -t get_outputs -r 2>/dev/null | tr -d ' \t\n' | grep -o '"power":[a-z]*')
-	case "$p" in
-	'') echo none;;
-	*false*) case "$p" in *true*) echo mixed;; *) echo off;; esac;;
-	*) echo on;;
-	esac
+	pw_out=$(SWAYSOCK=$1 "$SWAYMSG" -t get_outputs -r 2>/dev/null)
+	pw_seen= pw_t= pw_f= pw_next=
+	set -f
+	for pw_w in $pw_out; do
+		if [ -n "$pw_next" ]; then
+			pw_next=
+			case $pw_w in true*) pw_t=1;; false*) pw_f=1;; esac
+			continue
+		fi
+		case $pw_w in
+		'"power":') pw_seen=1 pw_next=1;;
+		'"power":true'*) pw_seen=1 pw_t=1;;
+		'"power":false'*) pw_seen=1 pw_f=1;;
+		'"power":'*) pw_seen=1;;
+		esac
+	done
+	set +f
+	if [ -z "$pw_seen" ]; then POWER=none
+	elif [ -n "$pw_f" ]; then if [ -n "$pw_t" ]; then POWER=mixed; else POWER=off; fi
+	else POWER=on; fi
 }
 
 socks=
 u=${TSX_KIOSK_USER:-kiosk}
-if uid=$(id -u "$u" 2>/dev/null); then
+# the user ID: the passwd file first (no process), else id
+uid=
+while IFS=: read -r pw_n _ pw_u _; do
+	[ "$pw_n" = "$u" ] && { uid=$pw_u; break; }
+done 2>/dev/null < "${TSX_PASSWD_FILE:-/etc/passwd}"
+case $uid in ''|*[!0-9]*) uid=$(id -u "$u" 2>/dev/null) || uid=;; esac
+if [ -n "$uid" ]; then
 	for s in "${TSX_RUN_USER_DIR:-/run/user}/$uid"/sway-ipc.*.sock; do
 		[ -S "$s" ] && socks="$socks $s"
 	done
@@ -55,9 +84,15 @@ if [ -n "$socks" ]; then
 	rc=1
 	for s in $socks; do
 		if [ "$cmd" = status ]; then
-			echo "sway $(power "$s")"
+			power "$s"
+			echo "sway $POWER"
 			rc=0
 			continue
+		fi
+		# off: ask first, and send nothing when the output is off already
+		if [ "$cmd" = off ]; then
+			power "$s"
+			if [ "$POWER" = off ]; then rc=0; continue; fi
 		fi
 		i=0 ok=0
 		while [ $i -lt "$tries" ]; do
@@ -66,7 +101,8 @@ if [ -n "$socks" ]; then
 			# cannot connect (a stale socket of a crashed session: skip it).
 			SWAYSOCK=$s "$SWAYMSG" "output * power $cmd" >/dev/null 2>&1
 			[ $? = 1 ] && { i=0; break; }
-			if [ "$(power "$s")" = "$cmd" ]; then
+			power "$s"
+			if [ "$POWER" = "$cmd" ]; then
 				ok=1
 				break
 			fi
