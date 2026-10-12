@@ -24,7 +24,10 @@
 #                                     dim-level (seconds, percent), lights
 #                                     (the lights of the panel app: on or
 #                                     off, the brightness 1 to 100 and R G B
-#                                     0 to 255).
+#                                     0 to 255), update-mode (auto or manual),
+#                                     auto-restart (on or off) and
+#                                     restart-required (yes or no), see
+#                                     "Updates" below.
 #                                     It prints nothing and fails when the panel
 #                                     has no value (no sound card, no sensor).
 #   tsx-panelctl has NAME             exit 0 when the panel has that hardware:
@@ -54,7 +57,8 @@
 #                                     backlight-pct, blank-timeout, and
 #                                     where the panel has the part:
 #                                     dim-timeout, dim-level, als-auto,
-#                                     volume, mute, ledbar, keypad-led, lights.
+#                                     volume, mute, update-mode, auto-restart,
+#                                     ledbar, keypad-led, lights.
 #   tsx-panelctl events               print a line when a value changes, until it
 #                                     is stopped: "button NAME short|long|hold",
 #                                     "lux N", "als-auto on|off", "screen ...",
@@ -98,12 +102,23 @@
 # control.d. A rename never follows a link that the app put there, and the
 # app cannot replace control.d itself.
 # The app asks for root actions with the commands of the FIFO: reboot,
-# setup, blank-timeout, dim-timeout, dim-level and layout-install. The
+# setup, blank-timeout, dim-timeout, dim-level, update-install, update-mode,
+# auto-restart and layout-install. The
 # command "layout-install ID" runs tsx-layout-check --install on the fixed
 # file $TSX_RUN_DIR/panel-app/app/layout.ha (the app wrote it) with the
 # target /var/lib/tsx/panel-layout.json. The result goes to
 # $TSX_RUN_DIR/panel-app/layout.result (root owns it, mode 644): "id ID",
 # "rc N" and the first lines of the output of the check.
+#
+# Updates: tsx-autoupdate (docs/autoupdate.md) owns the update state. "get
+# update-mode" and "get auto-restart" print the values that it uses (it reads
+# /etc/tsx/autoupdate.conf and the override /run/tsx/autoupdate.conf that
+# tsx-config apply writes). "get restart-required" reads $TSX_RUN_DIR/update.state.
+# The commands "update-mode auto|manual" and "auto-restart on|off" save
+# UPDATE_MODE and UPDATE_AUTO_RESTART in panel.conf (tsx-config set and apply).
+# "update-install" runs "tsx-autoupdate now": it installs at once, in both
+# modes, and restarts the panel when the install needs it and auto-restart is
+# on. With nothing to install and a restart required, it restarts the panel.
 #
 # LED bar attached: tsx-ledbard (root) writes /run/tsx/ledbar.usb. It holds
 # one word: "app" (the bar runs its application) or "bootloader" (the bar is
@@ -408,6 +423,13 @@ player_send() {
 		log "$1 $2: sendspin-cli failed (exit $?)"
 }
 
+# update_get NAME: a setting of tsx-autoupdate (mode or auto-restart). Nothing
+# when the panel has no tsx-autoupdate.
+update_get() {
+	command -v "$UPDATE_BIN" >/dev/null 2>&1 || return 0
+	"$UPDATE_BIN" get "$1" 2>/dev/null | head -n 1
+}
+
 # get_value NAME: print the value. Fail with nothing printed when the panel has none.
 get_value() {
 	v=
@@ -456,6 +478,9 @@ get_value() {
 		panel_app_up && v=$(field "$PA_RUN/screen.state" "$1");;
 	lights)
 		panel_app_up && v=$(field "$PA_RUN/screen.state" lights);;
+	update-mode) v=$(update_get mode);;
+	auto-restart) v=$(update_get auto-restart);;
+	restart-required) v=$(field "$R/update.state" restart-required);;
 	*) echo "tsx-panelctl: unknown value '$1'" >&2; return 2;;
 	esac
 	[ -n "$v" ] || return 1
@@ -529,6 +554,9 @@ cmd_state() {
 	if has_hw ledbar; then v=$(get_value ledbar 2>/dev/null) || v="0 0 0"; echo "ledbar $v"; fi
 	if has_hw keyleds; then v=$(get_value keypad-led 2>/dev/null) || v=0; echo "keypad-led $v"; fi
 	v=$(get_value lights 2>/dev/null) && echo "lights $v"
+	for n in update-mode auto-restart; do
+		v=$(get_value "$n" 2>/dev/null) && echo "$n $v"
+	done
 	return 0
 }
 
@@ -759,6 +787,16 @@ handle() {
 		if in_range "$a1" 0 999999 && [ -z "$a2$a3$a4$rest" ]; then
 			layout_install "$a1"
 		else reject "layout-install $a1 $a2 $a3 $a4 $rest"; fi;;
+	update-mode)
+		# When tsx-autoupdate installs (see "Updates" at the top). panel.conf
+		# stores it, and tsx-config apply hands it to tsx-autoupdate.
+		if { [ "$a1" = auto ] || [ "$a1" = manual ]; } && [ -z "$a2$a3$a4$rest" ]; then
+			log "update-mode $a1"; "$CONFIG" set UPDATE_MODE "$a1" && "$CONFIG" apply
+		else reject "update-mode $a1 $a2 $a3 $a4 $rest"; fi;;
+	auto-restart)
+		if { [ "$a1" = on ] || [ "$a1" = off ]; } && [ -z "$a2$a3$a4$rest" ]; then
+			log "auto-restart $a1"; "$CONFIG" set UPDATE_AUTO_RESTART "$a1" && "$CONFIG" apply
+		else reject "auto-restart $a1 $a2 $a3 $a4 $rest"; fi;;
 	update-install)
 		if [ -z "$a1$a2$a3$a4$rest" ]; then
 			log "update-install requested"; "$UPDATE_BIN" now &

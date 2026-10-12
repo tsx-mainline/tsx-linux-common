@@ -1,15 +1,31 @@
 #!/bin/sh
 # tsx-autoupdate: automatic Alpine package updates for the panel.
 #
-# Daily: run `apk update` and compute the pending upgrades. It installs only
-# inside the night window (/etc/tsx/autoupdate.conf WINDOW) and only while the
-# screen is idle. The screen state comes from /run/tsx-idled.state: tsx-idled
-# writes it on a kiosk panel, the panel app writes it on a panel with no
-# kiosk ("blank" = the screen is off). With no state file, the screen is idle
-# when every backlight is at 0. It reboots only if the upgrade changed or
-# added the kernel, musl, openrc or busybox or the init system, or a tsx-*
-# package (the services and shared code of the panel), and only inside the
-# window.
+# Both modes check on the schedule: `apk update`, then the pending upgrades.
+#   MODE=auto    installs inside the night window (WINDOW) while the screen is
+#                idle. The screen state comes from /run/tsx-idled.state:
+#                tsx-idled writes it on a kiosk panel, the panel app writes
+#                it on a panel with no kiosk ("blank" = the screen is off).
+#                With no state file, the screen is idle when every backlight
+#                is at 0.
+#   MODE=manual  never installs by itself. Home Assistant shows the update.
+# An install from Home Assistant (`tsx-autoupdate now`) installs at once, in
+# both modes, outside the window and with the screen on.
+#
+# The restart rule: after an install, the panel needs a restart if the
+# upgrade changed or added the kernel, musl, openrc or busybox, or a tsx-*
+# package (the services and shared code of the panel). With AUTO_RESTART=on
+# the panel restarts right after the install. An automatic install restarts
+# only inside the window, and an install from Home Assistant also outside it.
+# With AUTO_RESTART=off the state "restart required" stays until the next
+# boot. Then the install button of Home Assistant restarts the panel.
+#
+# Versions: Home Assistant shows release numbers, not the package hash. The
+# release is the version of the board package tsx-<family>-board (tsx-base if
+# the panel has no board package). The installed version is the release that
+# RUNS: tsx-autoupdate records it at each boot. After an install that needs a
+# restart, the latest version is the installed release. If only other
+# packages are pending, the latest version is "<release> + N packages".
 #
 # Repositories: apk refuses to upgrade anything while a listed repository is
 # unavailable. Sometimes only the own repositories of this project cannot be
@@ -22,10 +38,16 @@
 #
 # Usage:
 #   tsx-autoupdate            the scheduled tick (cron): check, and install if
-#                              the window and idle gate allows it
-#   tsx-autoupdate now         check + install right away (the window still
-#                              gates the reboot itself, never the install)
+#                              the mode, the window and the idle gate allow it
+#   tsx-autoupdate now         check + install right away (any mode, any time).
+#                              With nothing to install and a restart required,
+#                              it restarts the panel
 #   tsx-autoupdate check       refresh the status only, never installs
+#   tsx-autoupdate refresh     write the status files again from the saved
+#                              state and the settings (no apk call)
+#   tsx-autoupdate boot        record the running release (the init script
+#                              calls it at each boot)
+#   tsx-autoupdate get NAME    print a setting: mode or auto-restart
 #   tsx-autoupdate status      print the current state. "health" shows "none
 #                              yet" until a healthcheck has run, and "last
 #                              install" shows "never" until an install ran
@@ -45,13 +67,19 @@
 #     package but does not start the service (a kiosk panel) skips this check.
 #   - neither: OK.
 #
-# Status: $TSX_RUN_DIR/update.json (+ update-ha-state.json for tsx-mqtt),
+# Status: $TSX_RUN_DIR/update.json (+ update-ha-state.json for tsx-mqtt and the
+# ESPHome shim, and update.state for the panel app and tsx-panelctl),
 # refreshed at every run. A persistent copy lives under $TSX_STATE_DIR
 # (default /var/lib/tsx/autoupdate, moved onto /data by tsx-data). So
 # "status" and the HA entity have something to show right after the boot.
 #
+# Settings: /etc/tsx/autoupdate.conf, then the override that tsx-config apply
+# writes from panel.conf (UPDATE_MODE, UPDATE_AUTO_RESTART): $RUN/autoupdate.conf.
+# The old keys ENABLED=0 (manual) and REBOOT=never (AUTO_RESTART=off) still
+# work when the new keys are not set.
+#
 # Env overrides (for host tests only. See tests/test-autoupdate*.sh):
-#   TSX_AUTOUPDATE_CONF TSX_RUN_DIR TSX_STATE_DIR TSX_LOG TSX_IDLED_STATE
+#   TSX_AUTOUPDATE_CONF TSX_AUTOUPDATE_OVERRIDE TSX_BOOT_ID_FILE TSX_RUN_DIR TSX_STATE_DIR TSX_LOG TSX_IDLED_STATE
 #   TSX_KIOSK_CONF TSX_BUILD_ID_FILE TSX_INITD TSX_BACKLIGHT_CLASS
 #   TSX_PANEL_APP_STATE TSX_HEALTH_POLL TSX_RUNLEVELS
 #
@@ -64,6 +92,8 @@ set -u
 
 CONF=${TSX_AUTOUPDATE_CONF:-/etc/tsx/autoupdate.conf}
 RUN=${TSX_RUN_DIR:-/run/tsx}
+OVERRIDE=${TSX_AUTOUPDATE_OVERRIDE:-$RUN/autoupdate.conf}
+BOOT_ID_FILE=${TSX_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
 STATE=${TSX_STATE_DIR:-/var/lib/tsx/autoupdate}
 LOG=${TSX_LOG:-/var/log/tsx-autoupdate.log}
 IDLED_STATE=${TSX_IDLED_STATE:-/run/tsx-idled.state}
@@ -74,15 +104,29 @@ APP_STATE=${TSX_PANEL_APP_STATE:-$RUN/panel-app.state}
 INITD=${TSX_INITD:-/etc/init.d}
 RUNLEVELS=${TSX_RUNLEVELS:-/etc/runlevels}
 
-STATUS_FIELDS="installed_hash pending_count pending_list reboot_pending in_progress last_check last_install last_result health repo_warning repo_blocked"
+STATUS_FIELDS="installed_hash pending_count pending_list reboot_pending in_progress last_check last_install last_result health repo_warning repo_blocked running_version installed_release pending_release boot_id restart_required"
 
-log() { mkdir -p "$(dirname "$LOG")" 2>/dev/null; printf '%s tsx-autoupdate: %s\n' "$(now_iso)" "$*" >>"$LOG"; }
+log() { { mkdir -p "$(dirname "$LOG")"; printf '%s tsx-autoupdate: %s\n' "$(now_iso)" "$*" >>"$LOG"; } 2>/dev/null; return 0; }
 now_iso() { date '+%Y-%m-%dT%H:%M:%S'; }
 nowhhmm() { date '+%H:%M'; }
 
+# load_conf: MODE (auto|manual) and AUTO_RESTART (on|off). The override of
+# panel.conf wins over autoupdate.conf. A file with only the old keys works:
+# ENABLED=0 is manual, REBOOT=never is AUTO_RESTART=off.
 load_conf() {
-	ENABLED=1 WINDOW=03:00-05:00 REBOOT=auto HEALTH_TIMEOUT=180
+	MODE= AUTO_RESTART= ENABLED= REBOOT= WINDOW=03:00-05:00 HEALTH_TIMEOUT=180
 	[ -r "$CONF" ] && . "$CONF"
+	[ -r "$OVERRIDE" ] && . "$OVERRIDE"
+	case $MODE in
+	auto|manual) ;;
+	'') case $ENABLED in 0) MODE=manual;; *) MODE=auto;; esac;;
+	*) log "WARNING: MODE='$MODE' is not auto or manual: using auto"; MODE=auto;;
+	esac
+	case $AUTO_RESTART in
+	on|off) ;;
+	'') case $REBOOT in never) AUTO_RESTART=off;; *) AUTO_RESTART=on;; esac;;
+	*) log "WARNING: AUTO_RESTART='$AUTO_RESTART' is not on or off: using on"; AUTO_RESTART=on;;
+	esac
 }
 
 # ---- pure logic (host-tested directly via __in_window etc.) ---------------
@@ -150,13 +194,53 @@ set_fields() {  # set_fields FILE "k1=v1" "k2=v2" ...
 
 jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
+# compute_view: what Home Assistant shows. It sets V_INSTALLED (the running
+# release), V_LATEST, V_SUMMARY and V_RESTART (1 = a restart is required).
+compute_view() {
+	f=$STATE/fields
+	run=$(get_field "$f" running_version)
+	inst=$(get_field "$f" installed_release)
+	[ -n "$run" ] || run=$inst
+	[ -n "$run" ] || run=unknown
+	[ -n "$inst" ] || inst=$run
+	pcount=$(get_field "$f" pending_count); [ -n "$pcount" ] || pcount=0
+	plist=$(get_field "$f" pending_list)
+	prel=$(get_field "$f" pending_release)
+	rb=$(get_field "$f" reboot_pending)
+	V_RESTART=0; [ "$(get_field "$f" restart_required)" = 1 ] && V_RESTART=1
+	V_INSTALLED=$run
+	V_SUMMARY=
+	if [ "$pcount" -gt 0 ] 2>/dev/null; then
+		if [ -n "$prel" ] && [ "$prel" != "$run" ]; then
+			V_LATEST=$prel
+		else
+			noun=packages; [ "$pcount" = 1 ] && noun=package
+			V_LATEST="$run + $pcount $noun"
+		fi
+		[ "$V_RESTART" = 1 ] && V_SUMMARY="installed, restart required; also pending: "
+		V_SUMMARY="$V_SUMMARY$plist"
+		[ "$rb" = 1 ] && V_SUMMARY="$V_SUMMARY; restart needed after install"
+	elif [ "$V_RESTART" = 1 ]; then
+		if [ "$inst" != "$run" ]; then V_LATEST=$inst; else V_LATEST="$run + restart"; fi
+		V_SUMMARY="installed, restart required"
+	else
+		V_LATEST=$run
+	fi
+	rw=$(get_field "$f" repo_warning)
+	[ -n "$rw" ] && V_SUMMARY="${V_SUMMARY:+$V_SUMMARY; }WARNING: $rw"
+	[ -n "$V_SUMMARY" ] || V_SUMMARY="up to date"
+	return 0
+}
+
 write_update_json() {
 	f=$STATE/fields
+	compute_view
 	installed=$(get_field "$f" installed_hash)
 	pcount=$(get_field "$f" pending_count); [ -n "$pcount" ] || pcount=0
 	plist=$(get_field "$f" pending_list)
 	rb=$(get_field "$f" reboot_pending); [ "$rb" = 1 ] && rbj=true || rbj=false
 	ip=$(get_field "$f" in_progress); [ "$ip" = 1 ] && ipj=true || ipj=false
+	[ "$V_RESTART" = 1 ] && rrj=true || rrj=false
 	items=
 	oldifs=$IFS; IFS=';'
 	for it in $plist; do
@@ -169,10 +253,15 @@ write_update_json() {
 	out="$RUN/update.json"
 	{
 		printf '{'
-		printf '"installed_version":"%s",' "$(jesc "$installed")"
+		printf '"installed_version":"%s",' "$(jesc "$V_INSTALLED")"
+		printf '"latest_version":"%s",' "$(jesc "$V_LATEST")"
+		printf '"package_hash":"%s",' "$(jesc "$installed")"
+		printf '"mode":"%s",' "$MODE"
+		printf '"auto_restart":%s,' "$([ "$AUTO_RESTART" = on ] && echo true || echo false)"
 		printf '"pending_count":%s,' "$pcount"
 		printf '"pending":[%s],' "$items"
 		printf '"reboot_pending":%s,' "$rbj"
+		printf '"restart_required":%s,' "$rrj"
 		printf '"in_progress":%s,' "$ipj"
 		printf '"last_check":"%s",' "$(jesc "$(get_field "$f" last_check)")"
 		printf '"last_install":"%s",' "$(jesc "$(get_field "$f" last_install)")"
@@ -184,30 +273,39 @@ write_update_json() {
 	cp -f "$out" "$STATE/update.json" 2>/dev/null
 }
 
+# update-ha-state.json (tsx-mqtt, the ESPHome shim) and update.state (the
+# panel app, tsx-panelctl). Both say the same. The summary in update.state is
+# raw text to the end of the line.
 write_ha_json() {
 	f=$STATE/fields
-	installed=$(get_field "$f" installed_hash)
-	pcount=$(get_field "$f" pending_count); [ -n "$pcount" ] || pcount=0
-	plist=$(get_field "$f" pending_list)
-	rb=$(get_field "$f" reboot_pending)
+	compute_view
 	ip=$(get_field "$f" in_progress); [ "$ip" = 1 ] && ipj=true || ipj=false
-	latest=$installed; [ "$pcount" -gt 0 ] 2>/dev/null && latest="$installed+${pcount}pending"
-	summary=$plist
-	[ "$rb" = 1 ] && summary="${summary:+$summary; }reboot pending"
-	rw=$(get_field "$f" repo_warning)
-	[ -n "$rw" ] && summary="${summary:+$summary; }WARNING: $rw"
-	[ -n "$summary" ] || summary="up to date"
 	host=$(hostname 2>/dev/null); [ -n "$host" ] || host=tsx
 	mkdir -p "$RUN" 2>/dev/null
 	{
 		printf '{'
-		printf '"installed_version":"%s",' "$(jesc "$installed")"
-		printf '"latest_version":"%s",' "$(jesc "$latest")"
+		printf '"installed_version":"%s",' "$(jesc "$V_INSTALLED")"
+		printf '"latest_version":"%s",' "$(jesc "$V_LATEST")"
 		printf '"title":"TSX %s packages",' "$(jesc "$host")"
-		printf '"release_summary":"%s",' "$(jesc "$summary")"
-		printf '"in_progress":%s' "$ipj"
+		printf '"release_summary":"%s",' "$(jesc "$V_SUMMARY")"
+		printf '"in_progress":%s,' "$ipj"
+		printf '"restart_required":%s,' "$([ "$V_RESTART" = 1 ] && echo true || echo false)"
+		printf '"mode":"%s",' "$MODE"
+		printf '"auto_restart":%s' "$([ "$AUTO_RESTART" = on ] && echo true || echo false)"
 		printf '}\n'
 	} > "$RUN/update-ha-state.json"
+	{
+		printf 'installed %s\n' "$V_INSTALLED"
+		printf 'latest %s\n' "$V_LATEST"
+		printf 'title TSX %s packages\n' "$host"
+		printf 'summary %s\n' "$(printf '%s' "$V_SUMMARY" | tr '\n' ' ')"
+		printf 'in-progress %s\n' "$([ "$ip" = 1 ] && echo yes || echo no)"
+		printf 'restart-required %s\n' "$([ "$V_RESTART" = 1 ] && echo yes || echo no)"
+		printf 'mode %s\n' "$MODE"
+		printf 'auto-restart %s\n' "$AUTO_RESTART"
+	} > "$RUN/update.state.$$" && mv "$RUN/update.state.$$" "$RUN/update.state"
+	chmod 644 "$RUN/update-ha-state.json" "$RUN/update.state" 2>/dev/null
+	return 0
 }
 
 # ---- apk helpers -------------------------------------------------
@@ -235,6 +333,39 @@ classify_repos() {
 		REPO_BLOCKED=1 APK_FORCE=--force-missing-repositories
 	fi
 	return 0
+}
+
+# pkg_version PKG LIST: the version of PKG in the text of `apk info -v`, without
+# the revision (tsx-fam-board-0.3.5-r0 gives 0.3.5). A subpackage such as
+# tsx-fam-board-ha does not match: a digit must follow the name.
+pkg_version() {
+	printf '%s\n' "$2" | sed -n "s/^$1-\([0-9][^ ]*\)-r[0-9][0-9]*\$/\1/p" | head -n 1
+}
+
+# release_pkg APK_INFO_TEXT: the package that carries the release number: the
+# board package of the family, else tsx-base.
+release_pkg() {
+	if [ -n "$(pkg_version "tsx-$TSX_FAMILY-board" "$1")" ]; then echo "tsx-$TSX_FAMILY-board"; else echo tsx-base; fi
+}
+
+installed_release() {
+	iv=$(apk info -v 2>/dev/null)
+	v=$(pkg_version "$(release_pkg "$iv")" "$iv")
+	printf '%s\n' "${v:-unknown}"
+}
+
+# ensure_boot: record the running release once for each boot. The packages
+# that are installed at the boot are the ones that run. A new boot also ends
+# the state "restart required". boot_id comes from the kernel.
+ensure_boot() {
+	f=$STATE/fields
+	cur=$(tr -d '\n' < "$BOOT_ID_FILE" 2>/dev/null)
+	if [ -n "$(get_field "$f" running_version)" ] && { [ -z "$cur" ] || [ "$cur" = "$(get_field "$f" boot_id)" ]; }; then
+		return 0
+	fi
+	rel=$(installed_release)
+	set_fields "$f" boot_id="$cur" running_version="$rel" installed_release="$rel" restart_required=0
+	log "boot: running release $rel"
 }
 
 installed_hash() {
@@ -275,6 +406,7 @@ pending_packages() {
 
 do_check() {
 	mkdir -p "$RUN" "$STATE" 2>/dev/null
+	ensure_boot
 	log "apk update"
 	upd=$(apk update 2>&1) || log "WARNING: apk update reported errors"
 	printf '%s\n' "$upd" >>"$LOG"
@@ -286,9 +418,16 @@ do_check() {
 	pcount=0; [ -n "$pkglist" ] && pcount=$(printf '%s\n' "$pkglist" | grep -c .)
 	rb=0; needs_reboot "$names" && rb=1
 
+	iv=$(apk info -v 2>/dev/null)
+	rpkg=$(release_pkg "$iv")
+	irel=$(pkg_version "$rpkg" "$iv"); [ -n "$irel" ] || irel=unknown
+	prel=$(printf '%s\n' "$pkglist" | awk -v p="$rpkg" '$1 == p { print $3; exit }' | sed 's/-r[0-9]*$//')
+
 	plist=$(printf '%s\n' "$pkglist" | sed -n 's/^\([^ ]*\) \([^ ]*\) \([^ ]*\)$/\1 (\2 -> \3)/p' | tr '\n' ';' | sed 's/;$//; s/;/; /g')
 	set_fields "$STATE/fields" \
 		installed_hash="$(installed_hash)" \
+		installed_release="$irel" \
+		pending_release="$prel" \
 		pending_count="$pcount" \
 		pending_list="$plist" \
 		reboot_pending="$rb" \
@@ -296,15 +435,35 @@ do_check() {
 		repo_blocked="$REPO_BLOCKED" \
 		last_check="$(now_iso)"
 	write_update_json; write_ha_json
-	log "check: $pcount pending, reboot_pending=$rb${REPO_WARNING:+, repositories: $REPO_WARNING}"
+	log "check: $pcount pending, restart_needed=$rb, mode=$MODE${REPO_WARNING:+, repositories: $REPO_WARNING}"
 }
 
+# do_restart: restart the panel. The marker tells the health check after the
+# boot that an update restarted the panel, and if the panel app had Home
+# Assistant.
+do_restart() {
+	mkdir -p "$STATE" 2>/dev/null
+	printf 'panel_app_ha %s\n' "$(get_field "$APP_STATE" ha)" > "$STATE/reboot-marker"
+	sync
+	reboot
+}
+
+# do_install HOW: HOW is auto (the schedule, inside the window) or now (an
+# install from Home Assistant or the command line).
 do_install() {
+	how=$1
 	f=$STATE/fields
 	pcount=$(get_field "$f" pending_count); [ -n "$pcount" ] || pcount=0
-	rb=$(get_field "$f" reboot_pending)
+	need_rb=$(get_field "$f" reboot_pending)  # the writers below reuse rb
 	if [ "$pcount" = 0 ]; then
-		log "install: nothing pending"
+		# Nothing to install. An install from Home Assistant on the entry
+		# "restart required" restarts the panel.
+		if [ "$how" = now ] && [ "$(get_field "$f" restart_required)" = 1 ]; then
+			log "restart required: restarting on request"
+			do_restart
+		else
+			log "install: nothing pending"
+		fi
 		return 0
 	fi
 	if [ "$(get_field "$f" repo_blocked)" = 1 ]; then
@@ -314,33 +473,52 @@ do_install() {
 	# If only the repositories of this project are unavailable, install what the others offer.
 	[ -n "$(get_field "$f" repo_warning)" ] && APK_FORCE=--force-missing-repositories
 	set_fields "$f" in_progress=1; write_update_json; write_ha_json
-	log "installing (pending=$pcount reboot_needed=$rb)"
+	log "installing ($how, pending=$pcount restart_needed=$need_rb)"
 	apk upgrade ${APK_FORCE:-} >>"$LOG" 2>&1; rc=$?
 	[ $rc -eq 0 ] || log "apk upgrade FAILED rc=$rc"
-	set_fields "$f" in_progress=0 installed_hash="$(installed_hash)" last_install="$(now_iso)" \
-		last_result="$([ $rc -eq 0 ] && echo ok || echo "apk upgrade rc=$rc")"
+	if [ $rc -eq 0 ]; then
+		# Installed: nothing is pending now. The restart is what remains.
+		rr=$(get_field "$f" restart_required); [ "$need_rb" = 1 ] && rr=1
+		set_fields "$f" in_progress=0 installed_hash="$(installed_hash)" installed_release="$(installed_release)" \
+			pending_count=0 pending_list= pending_release= reboot_pending=0 \
+			restart_required="$rr" \
+			last_install="$(now_iso)" last_result=ok
+	else
+		set_fields "$f" in_progress=0 installed_hash="$(installed_hash)" last_install="$(now_iso)" \
+			last_result="apk upgrade rc=$rc"
+	fi
 	write_update_json; write_ha_json
-	if [ "$rb" = 1 ] && [ "${REBOOT:-auto}" != never ] && in_window "$(nowhhmm)" "${WINDOW:-03:00-05:00}"; then
-		log "rebooting for a kernel, musl, openrc, busybox or tsx package update"
-		# The marker tells the health check after the boot that this update
-		# rebooted the panel, and if the panel app had Home Assistant.
-		mkdir -p "$STATE" 2>/dev/null
-		printf 'panel_app_ha %s\n' "$(get_field "$APP_STATE" ha)" > "$STATE/reboot-marker"
-		sync
-		reboot
-	elif [ "$rb" = 1 ]; then
-		log "reboot needed but outside the window (or REBOOT=never), staying up"
+	[ $rc -eq 0 ] && [ "$need_rb" = 1 ] || return 0
+	if [ "${AUTO_RESTART:-on}" != on ]; then
+		log "restart required, but AUTO_RESTART=off: staying up"
+	elif [ "$how" = auto ] && ! in_window "$(nowhhmm)" "${WINDOW:-03:00-05:00}"; then
+		log "restart required, but outside the window: staying up"
+	else
+		log "restarting for a kernel, musl, openrc, busybox or tsx package update"
+		do_restart
 	fi
 }
 
 do_tick() {
 	load_conf
-	if [ "$ENABLED" != 1 ]; then log "disabled (ENABLED != 1)"; return 0; fi
 	do_check
+	if [ "$MODE" != auto ]; then
+		log "manual mode: not installing (install from Home Assistant, or run tsx-autoupdate now)"
+		return 0
+	fi
 	idle=0; is_idle && idle=1
 	inwin=0; in_window "$(nowhhmm)" "$WINDOW" && inwin=1
 	if [ "$inwin" = 1 ] && [ "$idle" = 1 ]; then
-		do_install
+		pc=$(get_field "$STATE/fields" pending_count)
+		if [ "${pc:-0}" -gt 0 ] 2>/dev/null; then
+			do_install auto
+		elif [ "$AUTO_RESTART" = on ] && [ "$(get_field "$STATE/fields" restart_required)" = 1 ]; then
+			# A restart that an earlier install left open, with AUTO_RESTART now on.
+			log "restart required from an earlier install: restarting"
+			do_restart
+		else
+			log "install: nothing pending"
+		fi
 	else
 		log "not installing now (in_window=$inwin idle=$idle)"
 	fi
@@ -349,17 +527,22 @@ do_tick() {
 cmd_status() {
 	f=$STATE/fields
 	if [ ! -r "$f" ]; then echo "tsx-autoupdate: no status yet (has it run since boot?)"; return 1; fi
-	echo "installed:      $(get_field "$f" installed_hash)"
+	compute_view
+	echo "mode:           $MODE (automatic restart $AUTO_RESTART)"
+	echo "installed:      $V_INSTALLED (the release that runs)"
+	echo "latest:         $V_LATEST"
+	echo "package hash:   $(get_field "$f" installed_hash)"
 	echo "pending:        $(get_field "$f" pending_count) package(s)"
 	pl=$(get_field "$f" pending_list); [ -n "$pl" ] && echo "  $pl"
-	rb=$(get_field "$f" reboot_pending); echo "reboot pending: $([ "$rb" = 1 ] && echo yes || echo no)"
+	rb=$(get_field "$f" reboot_pending); echo "restart needed: $([ "$rb" = 1 ] && echo yes || echo no) (after the install of the pending packages)"
+	echo "restart required: $([ "$V_RESTART" = 1 ] && echo yes || echo no)"
 	echo "last check:     $(get_field "$f" last_check)"
 	li=$(get_field "$f" last_install)
 	if [ -n "$li" ]; then echo "last install:   $li ($(get_field "$f" last_result))"; else echo "last install:   never"; fi
-	# The health field has a value only after the check that follows a reboot
-	# of an automatic update. A panel that never rebooted this way has none.
+	# The health field has a value only after the check that follows a restart
+	# of an automatic update. A panel that never restarted this way has none.
 	hl=$(get_field "$f" health)
-	echo "health:         ${hl:-none yet (the check runs after a reboot that an automatic update starts)}"
+	echo "health:         ${hl:-none yet (the check runs after a restart that an update starts)}"
 	rw=$(get_field "$f" repo_warning)
 	echo "repositories:   ${rw:-ok}"
 	return 0
@@ -448,13 +631,21 @@ main() {
 	__in_window) shift; in_window "$@";;
 	__needs_reboot) shift; needs_reboot "$@";;
 	__is_idle) is_idle;;
-	__write_status) write_update_json; write_ha_json;;
-	now) load_conf; do_check; do_install;;
+	__write_status) load_conf; write_update_json; write_ha_json;;
+	now) load_conf; do_check; do_install now;;
 	check) load_conf; do_check;;
-	status) cmd_status;;
+	refresh) load_conf; mkdir -p "$RUN" "$STATE" 2>/dev/null; ensure_boot; write_update_json; write_ha_json;;
+	boot) load_conf; mkdir -p "$RUN" "$STATE" 2>/dev/null; ensure_boot; write_update_json; write_ha_json;;
+	get) load_conf
+		case "${2:-}" in
+		mode) echo "$MODE";;
+		auto-restart) echo "$AUTO_RESTART";;
+		*) echo "usage: tsx-autoupdate get mode|auto-restart" >&2; return 2;;
+		esac;;
+	status) load_conf; cmd_status;;
 	healthcheck) load_conf; cmd_healthcheck;;
 	''|cron) do_tick;;
-	*) echo "usage: tsx-autoupdate [now|check|status|healthcheck]" >&2; return 2;;
+	*) echo "usage: tsx-autoupdate [now|check|refresh|boot|get NAME|status|healthcheck]" >&2; return 2;;
 	esac
 }
 main "$@"

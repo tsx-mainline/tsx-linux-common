@@ -53,11 +53,12 @@ The FIFO is `/run/tsx/panelctl`, mode 660. The group is `kiosk` on a panel with 
 | `mute on\|off` | `sendspin-cli player-mute on\|off` while the Sendspin player runs. Else it is refused (the mixer has no mute) |
 | `reload-page` | The page of the kiosk |
 | `reboot` | `reboot` |
-| `update-install` | `tsx-autoupdate now` |
+| `update-install` | `tsx-autoupdate now`: install at once, in both modes. See [Automatic update](autoupdate.md). |
+| `update-mode auto\|manual`, `auto-restart on\|off` | A key of `panel.conf` (`UPDATE_MODE`, `UPDATE_AUTO_RESTART`), then `tsx-config apply` |
 | `setup` | `tsx-config setup`: open the setup page for about 15 minutes |
 | `layout-install ID` | `tsx-layout-check --install` of the fixed file `/run/tsx/panel-app/app/layout.ha` to `/var/lib/tsx/panel-layout.json`. The result goes to `/run/tsx/panel-app/layout.result`. |
 
-The panel app as `tsx-panel-app` uses `reboot` (the overlay), `setup` (the overlay and the key action), `blank-timeout`, `dim-timeout` and `dim-level` (the overlay and Home Assistant), `layout-install` (the action `set_layout`) and, while the Sendspin player runs, `volume` and `mute` (the overlay and Home Assistant). The control socket of the player is mode 600 for the user `tsx-sendspin`. Only root (the daemon) opens it. The app reads the volume from the file `/run/sendspin-cli/volume` (mode 644).
+The panel app as `tsx-panel-app` uses `reboot` (the overlay and the Restart button), `setup` (the overlay and the key action), `blank-timeout`, `dim-timeout` and `dim-level` (the overlay and Home Assistant), `update-install`, `update-mode` and `auto-restart` (the entities Update, Update mode and Automatic restart), `layout-install` (the action `set_layout`) and, while the Sendspin player runs, `volume` and `mute` (the overlay and Home Assistant). The control socket of the player is mode 600 for the user `tsx-sendspin`. Only root (the daemon) opens it. The app reads the volume from the file `/run/sendspin-cli/volume` (mode 644).
 
 The daemon writes into the folder of the panel app only with a rename of a file that it made in `/run/tsx`. A rename never follows a link. Root owns the folder above, so the app cannot replace the folder with a link. `tsx-layout-check` opens the layout file with `O_NOFOLLOW` and refuses a file that is not a regular file.
 
@@ -76,6 +77,7 @@ The FIFOs are `/run/tsx/setup-helper` and `/run/tsx/setup-helper.resp`, group `t
 | `/run/tsx/panel-app/` | root | 755 | The entity list from Home Assistant (`ha-entities.json`) and `layout.result`. |
 | `/run/tsx/panel-app/app/` | `tsx-panel-app` | 755 | The state files of the app. The old paths `/run/tsx-idled.state`, `/run/tsx/panel-app.state`, `/run/tsx/panel-app/screen.state` and `/run/tsx/panel-app/entities.json` are links to it. |
 | `/run/tsx/panel-app/control.d/` | `tsx-panel-app` | 755 | The commands of `tsx-panelctl` for the app. |
+| `/run/tsx/update.state` | root | 644 | The update state for the panel app and `tsx-panelctl`: the versions, the summary, "restart required", the mode. |
 | `/var/lib/sendspin/` | `tsx-sendspin` | 755 | The state of the Sendspin player. |
 
 ## Services that stay root
@@ -85,7 +87,7 @@ The FIFOs are `/run/tsx/setup-helper` and `/run/tsx/setup-helper.resp`, group `t
 | `tsx-panelctl` | The root helper of the kiosk, the voice satellite and the panel app (see above). |
 | `tsx-setup-helper` | The root helper of the setup page: `panel.conf`, `chpasswd`. |
 | `tsx-config`, `tsx-data`, `tsx-hostname`, `tsx-setup` (boot) | They write `panel.conf`, the files of `/run/tsx`, the host name, the MAC, the time zone, the swap and the mounts. They run once at boot. |
-| `tsx-autoupdate` | `apk upgrade` and the reboot after an update. |
+| `tsx-autoupdate` | `apk upgrade` and the restart after an update. |
 | `tsx-esphome`, `tsx-mqtt`, `tsx-bt` | The Home Assistant layer of the kiosk panels: the root-only tools of the board, the Bluetooth controller. |
 | `tsx-ledbar` | The USB device of the LED bar. |
 | `tsx-buttons`, `tsx-idled` | The input devices and the backlight of the kiosk panels, and the files that only root may write. |

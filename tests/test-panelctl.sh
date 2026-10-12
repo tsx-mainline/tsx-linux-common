@@ -466,6 +466,34 @@ send "dim-timeout 45"; send "dim-level 30"
 send "dim-timeout 86401"; send "dim-level 0"; send "dim-level 101"; send "dim-timeout 5 x"
 [ ! -s "$T/cmds.log" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 4)) ] && ok "4 bad dim lines rejected" || bad "bad dim lines: $(cat "$T/cmds.log")"
 
+echo "== update-mode and auto-restart: panel.conf through tsx-config =="
+: > "$T/cmds.log"
+send "update-mode manual"; send "update-mode auto"; send "auto-restart off"; send "auto-restart on"
+[ "$(cat "$T/cmds.log")" = "$(printf 'tsx-config set UPDATE_MODE manual\ntsx-config apply\ntsx-config set UPDATE_MODE auto\ntsx-config apply\ntsx-config set UPDATE_AUTO_RESTART off\ntsx-config apply\ntsx-config set UPDATE_AUTO_RESTART on\ntsx-config apply')" ] \
+	&& ok "update-mode and auto-restart -> tsx-config set + apply" || bad "update modes: $(cat "$T/cmds.log")"
+: > "$T/cmds.log"; r0=$(grep -c 'rejected:' "$T/panelctl.log")
+send "update-mode"; send "update-mode semi"; send "update-mode auto x"; send "update-mode *"; send "auto-restart maybe"; send "auto-restart on extra"; send "auto-restart"
+[ ! -s "$T/cmds.log" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 7)) ] && ok "7 bad update-mode and auto-restart lines rejected" || bad "bad update lines: $(cat "$T/cmds.log")"
+# get and state: tsx-autoupdate tells the settings, update.state tells the restart
+cat > "$T/bin/au-get" <<EOF
+#!/bin/sh
+[ "\$1" = get ] || exit 1
+case "\$2" in mode) echo manual;; auto-restart) echo off;; *) exit 2;; esac
+EOF
+chmod +x "$T/bin/au-get"
+upd() { TSX_RUN_DIR="$T/run" TSX_UPDATE_BIN="$T/bin/au-get" busybox sh "$SCRIPT" "$@"; }
+[ "$(upd get update-mode)" = manual ] && [ "$(upd get auto-restart)" = off ] && ok "get update-mode and get auto-restart ask tsx-autoupdate" || bad "get update settings: $(upd get update-mode) $(upd get auto-restart)"
+upd get restart-required >/dev/null 2>&1 && bad "get restart-required without update.state" || ok "get restart-required fails without update.state"
+printf 'installed 0.3.5\nlatest 0.3.6\nrestart-required yes\n' > "$T/run/update.state"
+[ "$(upd get restart-required)" = yes ] && ok "get restart-required reads update.state" || bad "get restart-required: $(upd get restart-required)"
+rm -f "$T/run/update.state"
+st=$(upd state)
+for want in "update-mode manual" "auto-restart off"; do
+	printf '%s\n' "$st" | grep -qxF "$want" && ok "state: $want" || bad "state misses '$want': $st"
+done
+TSX_RUN_DIR="$T/run" TSX_UPDATE_BIN="$T/bin/none-here" busybox sh "$SCRIPT" state | grep -q '^update-mode' && bad "state lists update-mode without tsx-autoupdate" || ok "a panel without tsx-autoupdate: no update lines in state"
+TSX_RUN_DIR="$T/run" TSX_UPDATE_BIN="$T/bin/none-here" busybox sh "$SCRIPT" get update-mode >/dev/null 2>&1 && bad "get update-mode without tsx-autoupdate" || ok "get update-mode fails without tsx-autoupdate"
+
 echo "== the panel app owns the screen: blank, brightness-pct and lights go to control.d =="
 mkdir -p "$T/proc/4242" "$T/run/panel-app"
 printf 'pid 4242\nstarted 1\nfirst_frame 1\nha_connected 0\nha off\n' > "$T/run/panel-app.state"

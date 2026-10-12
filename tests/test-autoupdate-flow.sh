@@ -24,9 +24,14 @@ echo "APK \$*" >> "$T/apk.calls"
 case "\$1 \${2:-}" in
 "update ") cat "$T/update.txt" 2>/dev/null; exit "\${APK_UPDATE_RC:-0}";;
 "upgrade --simulate") cat "$T/sim.txt" 2>/dev/null; exit 0;;
-"upgrade ") exit "\${APK_UPGRADE_RC:-0}";;
-"upgrade --force-missing-repositories") exit "\${APK_UPGRADE_RC:-0}";;
-"info -v") printf 'libfoo-%s-r0\nmusl-1.2.5-r0\n' "\${LIBFOO_INSTALLED:-1.0.0}"; exit 0;;
+"upgrade "|"upgrade --force-missing-repositories")
+	# A good install makes the next board version the installed one.
+	if [ "\${APK_UPGRADE_RC:-0}" = 0 ] && [ -f "$T/board.next" ]; then mv "$T/board.next" "$T/board.ver"; fi
+	exit "\${APK_UPGRADE_RC:-0}";;
+"info -v") printf 'libfoo-%s-r0\nmusl-1.2.5-r0\ntsx-base-%s-r0\n' "\${LIBFOO_INSTALLED:-1.0.0}" "\$(cat "$T/base.ver")"
+	# the board package and one of its subpackages (a digit must follow the name)
+	[ -f "$T/board.ver" ] && printf 'tsx-fake-board-%s-r2\ntsx-fake-board-ha-9.9.9-r0\n' "\$(cat "$T/board.ver")"
+	exit 0;;
 esac
 exit 0
 EOF
@@ -46,14 +51,19 @@ done
 chmod +x "$T/bin"/*
 
 : > "$T/sim.txt"; : > "$T/calls"; : > "$T/apk.calls"
-printf 'ENABLED=1\nWINDOW=03:00-05:00\nREBOOT=auto\n' > "$T/autoupdate.conf"
+echo 0.3.5 > "$T/board.ver"; echo 0.3.5 > "$T/base.ver"
+echo boot-1 > "$T/bootid"
+conf() {  # conf MODE AUTO_RESTART: the settings file
+	printf 'MODE=%s\nWINDOW=03:00-05:00\nAUTO_RESTART=%s\n' "$1" "$2" > "$T/autoupdate.conf"
+}
+conf auto on
 echo blank > "$T/idled"
 echo 'KIOSK_URL="https://ha.example.org"' > "$T/kiosk.conf"
 mkdir -p "$T/initd"; : > "$T/initd/kiosk"   # the kiosk service exists (the kiosk and ha profiles)
 
 run() {  # run SUBCOMMAND  (env NOWDATE/NOWHHMM/APK_UPGRADE_RC/etc already exported)
 	PATH="$T/bin:$PATH" \
-	TSX_AUTOUPDATE_CONF="$T/autoupdate.conf" TSX_RUN_DIR="$T/run" TSX_STATE_DIR="$T/state" \
+	TSX_AUTOUPDATE_CONF="$T/autoupdate.conf" TSX_BOOT_ID_FILE="$T/bootid" TSX_RUN_DIR="$T/run" TSX_STATE_DIR="$T/state" \
 	TSX_LOG="$T/tsx-autoupdate.log" TSX_IDLED_STATE="$T/idled" TSX_KIOSK_CONF="$T/kiosk.conf" \
 	TSX_BUILD_ID_FILE="$T/buildid" TSX_INITD="$T/initd" TSX_BACKLIGHT_CLASS="$T/bl" TSX_HEALTH_POLL=1 \
 	TSX_RUNLEVELS="$T/runlevels" sh "$BIN" "$@"
@@ -67,45 +77,72 @@ NOWDATE=2026-01-01 NOWHHMM=04:00 run >/dev/null
 chk "$(jf "$T/run/update.json" .pending_count)" 0 "1: nothing pending"
 chk "$(jf "$T/run/update.json" .reboot_pending)" false "1: no reboot pending"
 grep -q '^APK upgrade$' "$T/apk.calls" && { echo "FAIL: 1: installed with nothing pending"; fail=1; }
+# The versions are release numbers (the board package), not the package hash.
+chk "$(jf "$T/run/update-ha-state.json" .installed_version)/$(jf "$T/run/update-ha-state.json" .latest_version)" 0.3.5/0.3.5 "1: release numbers, nothing pending"
+chk "$(jf "$T/run/update-ha-state.json" .release_summary)" "up to date" "1: summary"
+chk "$(jf "$T/run/update-ha-state.json" '[.restart_required, .mode, .auto_restart] | join(" ")')" "false auto true" "1: restart_required, mode, auto_restart"
+chk "$(cat "$T/run/update.state")" "installed 0.3.5
+latest 0.3.5
+title TSX tsx packages
+summary up to date
+in-progress no
+restart-required no
+mode auto
+auto-restart on" "1: update.state"
 # The Chromium patch logic is not part of this tool: no Chromium field in the status.
 chk "$(jq -r '[keys[] | select(startswith("chromium"))] | length' "$T/run/update.json")" 0 "1: update.json has no chromium field"
 chk "$(grep -c chromium "$T/state/fields")" 0 "1: the status file has no chromium field"
 
-# ---- 2: a reboot-needing package pending, in window + idle: installs and reboots
+# ---- 2: a restart-needing package pending, in window + idle: installs and restarts
 printf '(1/2) Upgrading musl (1.2.5-r0 -> 1.2.5-r1)\n(2/2) Upgrading libfoo (1.0-r0 -> 1.1-r0)\n' > "$T/sim.txt"
 reset_calls
-NOWDATE=2026-01-01 NOWHHMM=04:00 run >/dev/null
+NOWDATE=2026-01-01 NOWHHMM=12:00 run check >/dev/null
 chk "$(jf "$T/run/update.json" .pending_count)" 2 "2: two pending packages"
-chk "$(jf "$T/run/update.json" .reboot_pending)" true "2: musl -> reboot needed"
+chk "$(jf "$T/run/update.json" .reboot_pending)" true "2: musl -> restart needed after the install"
+# only other packages are pending: the latest version is the installed release plus a note
+chk "$(jf "$T/run/update-ha-state.json" .installed_version)/$(jf "$T/run/update-ha-state.json" .latest_version)" "0.3.5/0.3.5 + 2 packages" "2: latest with only other packages pending"
+chk "$(jf "$T/run/update-ha-state.json" .release_summary)" "musl (1.2.5-r0 -> 1.2.5-r1); libfoo (1.0-r0 -> 1.1-r0); restart needed after install" "2: summary lists the packages"
+chk "$(jf "$T/run/update-ha-state.json" .restart_required)" false "2: nothing installed yet"
+NOWDATE=2026-01-01 NOWHHMM=04:00 run >/dev/null
 grep -q '^APK upgrade$' "$T/apk.calls" || { echo "FAIL: 2: apk upgrade not run"; fail=1; }
 grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 2: reboot not called inside the window"; fail=1; }
 [ -e "$T/state/reboot-marker" ] || { echo "FAIL: 2: reboot-marker not written"; fail=1; }
 chk "$(jf "$T/run/update.json" .last_result)" ok "2: last_result ok"
+chk "$(jf "$T/run/update.json" .pending_count)/$(jf "$T/run/update.json" .restart_required)" 0/true "2: installed: nothing pending, restart required"
 
-# ---- 2a: only a tsx-* package is pending (a new common release): the services keep the old code, so reboot
+# ---- 2a: only a tsx-* package is pending (a new common release): the services keep the old code, so a restart
 rm -f "$T/state/reboot-marker"
+echo boot-2 > "$T/bootid"   # the panel restarted: a new boot
 printf '(1/1) Upgrading tsx-ha (0.2.1-r0 -> 0.2.2-r0)\n' > "$T/sim.txt"
 reset_calls
+NOWDATE=2026-01-01 NOWHHMM=12:00 run check >/dev/null
+chk "$(jf "$T/run/update.json" .restart_required)" false "2a: a new boot ended the state restart required"
+chk "$(jf "$T/run/update.json" .reboot_pending)" true "2a: a tsx-ha upgrade needs a restart"
 NOWDATE=2026-01-01 NOWHHMM=04:00 run >/dev/null
-chk "$(jf "$T/run/update.json" .reboot_pending)" true "2a: a tsx-ha upgrade needs a reboot"
 grep -q '^APK upgrade$' "$T/apk.calls" || { echo "FAIL: 2a: apk upgrade not run"; fail=1; }
 grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 2a: no reboot after a tsx-ha install inside the window"; fail=1; }
 [ -e "$T/state/reboot-marker" ] || { echo "FAIL: 2a: reboot-marker not written (no health check after the reboot)"; fail=1; }
 rm -f "$T/state/reboot-marker"
-# the same upgrade with REBOOT=never: installed, no reboot, the reboot stays pending
-printf 'ENABLED=1\nWINDOW=03:00-05:00\nREBOOT=never\n' > "$T/autoupdate.conf"
+# the same upgrade with AUTO_RESTART=off: installed, no restart, "restart required" stays
+echo boot-3 > "$T/bootid"
+conf auto off
 reset_calls
 NOWDATE=2026-01-01 NOWHHMM=04:00 run >/dev/null
-grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 2a: rebooted with REBOOT=never"; fail=1; }
-chk "$(jf "$T/run/update.json" .reboot_pending)" true "2a: REBOOT=never: the reboot stays pending"
-printf 'ENABLED=1\nWINDOW=03:00-05:00\nREBOOT=auto\n' > "$T/autoupdate.conf"
-rm -f "$T/state/reboot-marker"
-# tsx-keys is a public key: no reboot
+grep -q '^APK upgrade$' "$T/apk.calls" || { echo "FAIL: 2a: AUTO_RESTART=off: not installed"; fail=1; }
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 2a: restarted with AUTO_RESTART=off"; fail=1; }
+chk "$(jf "$T/run/update.json" .restart_required)" true "2a: AUTO_RESTART=off: restart required stays"
+conf auto on
+# AUTO_RESTART comes on later: the next scheduled run restarts (in the window, screen idle)
+reset_calls
+NOWDATE=2026-01-01 NOWHHMM=04:15 run >/dev/null
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 2a: AUTO_RESTART on later: no restart"; fail=1; }
+rm -f "$T/state/reboot-marker"; echo boot-4 > "$T/bootid"
+# tsx-keys is a public key: no restart
 printf '(1/1) Upgrading tsx-keys (1-r0 -> 1-r1)\n' > "$T/sim.txt"
 reset_calls
 NOWDATE=2026-01-01 NOWHHMM=04:00 run >/dev/null
-chk "$(jf "$T/run/update.json" .reboot_pending)" false "2a: a tsx-keys upgrade needs no reboot"
-grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 2a: rebooted for tsx-keys"; fail=1; }
+chk "$(jf "$T/run/update.json" .restart_required)" false "2a: a tsx-keys upgrade needs no restart"
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 2a: restarted for tsx-keys"; fail=1; }
 printf '(1/2) Upgrading musl (1.2.5-r0 -> 1.2.5-r1)\n(2/2) Upgrading libfoo (1.0-r0 -> 1.1-r0)\n' > "$T/sim.txt"
 
 # ---- 3: same pending list, outside the window: must not install -----------
@@ -187,7 +224,7 @@ rw=$(jf "$T/run/update.json" .repo_warning)
 case $rw in "tsx-aports repository unreachable (https://tsx-aports.example.org/v3.24/common, https://tsx-aports.example.org/v3.24/fake)"*) :;; *) echo "FAIL: 10: repo_warning '$rw'"; fail=1;; esac
 grep -q '^APK upgrade --simulate --force-missing-repositories$' "$T/apk.calls" || { echo "FAIL: 10: check did not force past our missing repositories"; fail=1; }
 grep -q '^APK upgrade --force-missing-repositories$' "$T/apk.calls" || { echo "FAIL: 10: Alpine updates not installed while our repository is unreachable"; fail=1; }
-chk "$(jf "$T/run/update.json" .pending_count)" 1 "10: Alpine update still counted"
+chk "$(jf "$T/run/update.json" .last_result)" ok "10: Alpine update installed"
 jf "$T/run/update-ha-state.json" .release_summary | grep -q 'WARNING: tsx-aports repository unreachable' || { echo "FAIL: 10: HA summary lacks the repository warning"; fail=1; }
 run status | grep -q '^repositories:   tsx-aports repository unreachable' || { echo "FAIL: 10: status lacks the repository warning"; fail=1; }
 
@@ -339,6 +376,136 @@ rm -f "$T/runlevels/boot/tsx-panel-app"
 kill "$APP" 2>/dev/null; wait "$APP" 2>/dev/null
 rm -f "$T/initd/tsx-panel-app" "$T/run/panel-app.state"
 printf 'ENABLED=1\nWINDOW=03:00-05:00\nREBOOT=auto\n' > "$T/autoupdate.conf"
+
+# ---- 20: modes, install now, versions and "restart required" across a boot ----
+reset_state() {  # a panel that booted with the board 0.3.5, nothing pending
+	rm -rf "$T/state" "$T/run" "$T/state/reboot-marker"; : > "$T/sim.txt"; : > "$T/update.txt"
+	echo 0.3.5 > "$T/board.ver"; rm -f "$T/board.next"; echo 0.3.5 > "$T/base.ver"
+	echo "boot-$1" > "$T/bootid"; echo blank > "$T/idled"; reset_calls
+}
+SIM_BOARD='(1/2) Upgrading tsx-fake-board (0.3.5-r2 -> 0.3.6-r0)\n(2/2) Upgrading tsx-base (0.3.5-r0 -> 0.3.6-r0)\n'
+ha() { jf "$T/run/update-ha-state.json" "$1"; }
+
+# 20a: the release of the board package, the latest release, the summary
+reset_state 20
+printf "$SIM_BOARD" > "$T/sim.txt"
+NOWDATE=2026-02-01 NOWHHMM=12:00 run check >/dev/null
+chk "$(ha .installed_version)/$(ha .latest_version)" 0.3.5/0.3.6 "20a: board package: installed 0.3.5, latest 0.3.6 (a subpackage and tsx-base do not count)"
+chk "$(ha .release_summary)" "tsx-fake-board (0.3.5-r2 -> 0.3.6-r0); tsx-base (0.3.5-r0 -> 0.3.6-r0); restart needed after install" "20a: summary"
+chk "$(sed -n 's/^summary //p' "$T/run/update.state")" "$(ha .release_summary)" "20a: update.state has the same summary"
+# one pending package that is not the board package
+printf '(1/1) Upgrading libfoo (1.0-r0 -> 1.1-r0)\n' > "$T/sim.txt"
+NOWDATE=2026-02-01 NOWHHMM=12:01 run check >/dev/null
+chk "$(ha .latest_version)" "0.3.5 + 1 package" "20a: one other package pending"
+# a panel with no board package: tsx-base carries the release
+rm -f "$T/board.ver"; printf '(1/1) Upgrading tsx-base (0.3.5-r0 -> 0.3.6-r0)\n' > "$T/sim.txt"
+NOWDATE=2026-02-01 NOWHHMM=12:02 run check >/dev/null
+chk "$(ha .installed_version)/$(ha .latest_version)" 0.3.5/0.3.6 "20a: no board package: tsx-base gives the release"
+echo 0.3.5 > "$T/board.ver"
+
+# 20b: manual mode checks on the schedule and never installs by itself
+reset_state 21
+printf "$SIM_BOARD" > "$T/sim.txt"; echo 0.3.6 > "$T/board.next"
+conf manual on
+NOWDATE=2026-02-02 NOWHHMM=04:00 run >/dev/null
+chk "$(jf "$T/run/update.json" .pending_count)" 2 "20b: manual: the schedule checks"
+chk "$(ha .latest_version)" 0.3.6 "20b: manual: Home Assistant sees the update"
+grep -q '^APK upgrade$' "$T/apk.calls" && { echo "FAIL: 20b: manual mode installed by itself"; fail=1; }
+grep -q 'manual mode: not installing' "$T/tsx-autoupdate.log" || { echo "FAIL: 20b: no log line of the manual mode"; fail=1; }
+chk "$(ha '[.mode, .auto_restart] | join(" ")')" "manual true" "20b: mode in the status"
+
+# 20c: install from Home Assistant in manual mode: at once, screen on, outside the window; AUTO_RESTART=off
+echo "on 40" > "$T/idled"; conf manual off; reset_calls
+NOWDATE=2026-02-02 NOWHHMM=12:00 run now >/dev/null
+grep -q '^APK upgrade$' "$T/apk.calls" || { echo "FAIL: 20c: install now did not install"; fail=1; }
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20c: restarted with AUTO_RESTART=off"; fail=1; }
+chk "$(ha .installed_version)/$(ha .latest_version)" 0.3.5/0.3.6 "20c: installed stays the running release, latest is the new one"
+chk "$(ha .release_summary)" "installed, restart required" "20c: summary"
+chk "$(ha .restart_required)" true "20c: restart required"
+chk "$(grep -c '^restart-required yes$' "$T/run/update.state")" 1 "20c: update.state: restart required"
+chk "$(jf "$T/run/update.json" .pending_count)" 0 "20c: nothing pending after the install"
+# the next scheduled check keeps the state (the packages are installed, the board is 0.3.6 now)
+: > "$T/sim.txt"; NOWDATE=2026-02-02 NOWHHMM=12:15 run check >/dev/null
+chk "$(ha .installed_version)/$(ha .latest_version)/$(ha .restart_required)" 0.3.5/0.3.6/true "20c: a later check keeps the state"
+# auto mode with AUTO_RESTART=off: the schedule restarts nothing
+conf auto off; echo blank > "$T/idled"; reset_calls
+NOWDATE=2026-02-02 NOWHHMM=04:00 run >/dev/null
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20c: the schedule restarted with AUTO_RESTART=off"; fail=1; }
+# Install on the entry "restart required": it restarts the panel (any mode, any time)
+echo "on 40" > "$T/idled"; reset_calls
+NOWDATE=2026-02-02 NOWHHMM=12:30 run now >/dev/null
+grep -q '^APK upgrade$' "$T/apk.calls" && { echo "FAIL: 20c: install on a restart entry ran apk upgrade"; fail=1; }
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20c: install on the restart entry did not restart"; fail=1; }
+[ -e "$T/state/reboot-marker" ] || { echo "FAIL: 20c: no reboot-marker for the health check"; fail=1; }
+
+# 20d: the fake boot: the running release is the installed release, the state is gone
+echo boot-22 > "$T/bootid"; rm -f "$T/state/reboot-marker"
+NOWDATE=2026-02-02 NOWHHMM=12:40 run boot >/dev/null
+chk "$(ha .installed_version)/$(ha .latest_version)/$(ha .restart_required)/$(ha .release_summary)" "0.3.6/0.3.6/false/up to date" "20d: after the boot"
+chk "$(grep -c '^restart-required no$' "$T/run/update.state")" 1 "20d: update.state after the boot"
+# the same boot id again changes nothing
+NOWDATE=2026-02-02 NOWHHMM=12:41 run boot >/dev/null
+chk "$(ha .installed_version)" 0.3.6 "20d: the same boot: no new record"
+
+# 20e: install from Home Assistant with AUTO_RESTART=on: restarts right after, outside the window, in manual mode
+reset_state 23
+printf "$SIM_BOARD" > "$T/sim.txt"; echo 0.3.6 > "$T/board.next"
+conf manual on; echo "on 40" > "$T/idled"
+NOWDATE=2026-02-03 NOWHHMM=12:00 run now >/dev/null
+grep -q '^APK upgrade$' "$T/apk.calls" || { echo "FAIL: 20e: install now did not install"; fail=1; }
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20e: no restart after install now with AUTO_RESTART=on"; fail=1; }
+chk "$(cat "$T/state/reboot-marker" 2>/dev/null)" "panel_app_ha " "20e: marker for the health check"
+# an automatic install outside the window does not happen, in auto mode
+reset_state 24
+printf "$SIM_BOARD" > "$T/sim.txt"; conf auto on
+NOWDATE=2026-02-03 NOWHHMM=12:00 run >/dev/null
+grep -q '^APK upgrade$' "$T/apk.calls" && { echo "FAIL: 20e: auto mode installed outside the window"; fail=1; }
+# a failed apk upgrade: no restart, no restart required
+reset_state 25
+printf "$SIM_BOARD" > "$T/sim.txt"; conf auto on
+NOWDATE=2026-02-03 NOWHHMM=04:00 APK_UPGRADE_RC=3 run >/dev/null
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20e: restarted after a failed install"; fail=1; }
+chk "$(ha .restart_required)/$(jf "$T/run/update.json" .last_result)" "false/apk upgrade rc=3" "20e: failed install"
+chk "$(ha .latest_version)" 0.3.6 "20e: the update is still offered"
+
+# 20f: the settings: new keys, old keys, the override of panel.conf, bad values
+cfg() { printf '%s' "$1" > "$T/autoupdate.conf"; }
+get() { PATH="$T/bin:$PATH" TSX_AUTOUPDATE_CONF="$T/autoupdate.conf" TSX_AUTOUPDATE_OVERRIDE="$T/override.conf" TSX_LOG="$T/get.log" sh "$BIN" get "$1"; }
+rm -f "$T/override.conf"
+cfg 'ENABLED=1
+REBOOT=auto
+'; chk "$(get mode)/$(get auto-restart)" auto/on "20f: old keys, defaults"
+cfg 'ENABLED=0
+REBOOT=never
+'; chk "$(get mode)/$(get auto-restart)" manual/off "20f: old keys: ENABLED=0 is manual, REBOOT=never is off"
+cfg 'ENABLED=0
+REBOOT=never
+MODE=auto
+AUTO_RESTART=on
+'; chk "$(get mode)/$(get auto-restart)" auto/on "20f: the new keys win over the old keys"
+cfg ''; chk "$(get mode)/$(get auto-restart)" auto/on "20f: an empty file: auto, on"
+cfg 'MODE=auto
+AUTO_RESTART=on
+'; printf 'MODE="manual"\nAUTO_RESTART="off"\n' > "$T/override.conf"
+chk "$(get mode)/$(get auto-restart)" manual/off "20f: the override of panel.conf wins"
+cfg 'MODE=bogus
+AUTO_RESTART=maybe
+'; rm -f "$T/override.conf"
+chk "$(get mode)/$(get auto-restart)" auto/on "20f: bad values: auto, on"
+PATH="$T/bin:$PATH" TSX_AUTOUPDATE_CONF="$T/autoupdate.conf" sh "$BIN" get nothing >/dev/null 2>&1; chk $? 2 "20f: get of an unknown name"
+conf auto on
+# refresh writes the status again after a change of the settings, with no apk call
+reset_state 26
+NOWDATE=2026-02-04 NOWHHMM=12:00 run check >/dev/null
+printf 'MODE="manual"\nAUTO_RESTART="off"\n' > "$T/run/autoupdate.conf"; reset_calls
+NOWDATE=2026-02-04 NOWHHMM=12:01 TSX_AUTOUPDATE_OVERRIDE="$T/run/autoupdate.conf" run refresh >/dev/null
+chk "$(grep -E '^(mode|auto-restart) ' "$T/run/update.state" | tr '\n' ' ')" "mode manual auto-restart off " "20f: refresh: update.state"
+chk "$(ha '[.mode, .auto_restart] | join(" ")')" "manual false" "20f: refresh: JSON"
+chk "$(wc -l < "$T/apk.calls")" 0 "20f: refresh calls no apk"
+rm -f "$T/run/autoupdate.conf"
+out=$(run status); echo "$out" | grep -q '^mode: *auto (automatic restart on)$' || { echo "FAIL: 20f: status mode line: $(echo "$out" | grep '^mode')"; fail=1; }
+echo "$out" | grep -q '^installed: *0.3.5' || { echo "FAIL: 20f: status installed line"; fail=1; }
+conf auto on
 
 # ---- 14: no Chromium call at all ------------------------------------------------
 grep -qi chromium "$T/apk.calls" "$T/calls" "$T/tsx-autoupdate.log" && { echo "FAIL: 14: a Chromium call or log line"; fail=1; }

@@ -242,6 +242,29 @@ for v in -1 86401 10s 1e3 ''; do
 done
 set_ BLANK_TIMEOUT 86400 >/dev/null 2>&1 && ok "BLANK_TIMEOUT 86400 (a day) accepted" || bad "BLANK_TIMEOUT 86400 rejected"
 
+echo "== UPDATE_MODE and UPDATE_AUTO_RESTART: /run/tsx/autoupdate.conf for tsx-autoupdate =="
+AUB="$W/au-bin"; cat > "$AUB" <<EOF
+#!/bin/sh
+echo "tsx-autoupdate \$*" >> "$W/au.log"
+EOF
+chmod +x "$AUB"; : > "$W/au.log"
+applyu() { env TSX_AUTOUPDATE_BIN="$AUB" TSX_CONF="$CFG" TSX_RUN="$FX/run" TSX_STATE_DIR="$FX/var/lib/tsx" TSX_APPLY_PREFIX="$FX" TSX_APPLY_ALLOW_NONROOT=1 busybox sh "$SCRIPT" apply >/dev/null 2>&1; }
+[ ! -e "$FX/run/tsx/autoupdate.conf" ] && ok "unset: no autoupdate.conf override" || bad "autoupdate.conf written while unset"
+set_ UPDATE_MODE manual >/dev/null; applyu
+grep -qx 'MODE="manual"' "$FX/run/tsx/autoupdate.conf" 2>/dev/null && ok "UPDATE_MODE manual -> MODE=\"manual\"" || bad "autoupdate.conf: $(cat "$FX/run/tsx/autoupdate.conf" 2>/dev/null)"
+[ "$(stat -c %a "$FX/run/tsx/autoupdate.conf")" = 644 ] && ok "autoupdate.conf is world-readable (644)" || bad "autoupdate.conf mode"
+grep -qx 'tsx-autoupdate refresh' "$W/au.log" && ok "a changed file: tsx-autoupdate refresh" || bad "no refresh after the change"
+: > "$W/au.log"; applyu
+[ ! -s "$W/au.log" ] && ok "an unchanged file: no refresh" || bad "refresh without a change"
+set_ UPDATE_AUTO_RESTART off >/dev/null; applyu
+grep -qx 'AUTO_RESTART="off"' "$FX/run/tsx/autoupdate.conf" && grep -qx 'MODE="manual"' "$FX/run/tsx/autoupdate.conf" && ok "both keys in the override" || bad "autoupdate.conf: $(cat "$FX/run/tsx/autoupdate.conf")"
+TSX_CONF="$CFG" busybox sh "$SCRIPT" unset UPDATE_MODE >/dev/null; TSX_CONF="$CFG" busybox sh "$SCRIPT" unset UPDATE_AUTO_RESTART >/dev/null; applyu
+[ ! -e "$FX/run/tsx/autoupdate.conf" ] && ok "unset again: override removed (autoupdate.conf of /etc counts)" || bad "override left after unset"
+for v in semi '' Auto; do set_ UPDATE_MODE "$v" >/dev/null 2>&1 && bad "UPDATE_MODE '$v' accepted" || ok "UPDATE_MODE '$v' rejected"; done
+for v in yes '' 1; do set_ UPDATE_AUTO_RESTART "$v" >/dev/null 2>&1 && bad "UPDATE_AUTO_RESTART '$v' accepted" || ok "UPDATE_AUTO_RESTART '$v' rejected"; done
+env TSX_AUTOUPDATE_BIN="$W/no-such" TSX_CONF="$CFG" TSX_RUN="$FX/run" TSX_STATE_DIR="$FX/var/lib/tsx" TSX_APPLY_PREFIX="$FX" TSX_APPLY_ALLOW_NONROOT=1 busybox sh "$SCRIPT" apply >/dev/null 2>&1 \
+	&& ok "a panel without tsx-autoupdate: apply still exits 0" || bad "apply failed without tsx-autoupdate"
+
 echo "== BOOT_VERBOSE: /etc/tsx/boot-verbose on the root fs for the initramfs =="
 [ ! -e "$FX/etc/tsx/boot-verbose" ] && ok "unset: no boot-verbose flag" || bad "boot-verbose flag while unset"
 set_ BOOT_VERBOSE 1 >/dev/null; applyb
