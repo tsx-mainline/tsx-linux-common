@@ -73,7 +73,7 @@ echo "on 17" > "$F/run/tsx-idled.state"
 printf 'level 17\nmax 23\nmin 1\n' > "$F/run/tsx/brightness.state"
 # the own status of tsx-autoupdate (the shape of write_ha_json of tsx-autoupdate)
 cat > "$F/run/tsx/update-ha-state.json" <<'EOF'
-{"installed_version":"abc123","latest_version":"abc123+1pending","title":"TSX test-panel packages","release_summary":"pkg1 (1.0 -> 1.1)","in_progress":false}
+{"installed_version":"abc123","latest_version":"abc123+1pending","title":"TSX test-panel packages","release_summary":"pkg1 (1.0 -> 1.1)","in_progress":false,"restart_required":true,"mode":"manual","auto_restart":false}
 EOF
 cat > "$F/etc/kiosk.conf" <<'EOF'
 BACKLIGHT_MAX=23
@@ -88,13 +88,33 @@ button home   KEY_F14 led=2
 EOF
 printf 'life_a 0x01\nlife_b 0x02\neol 0x01\n' > "$F/run/tsx/emmc.state"
 echo 40000 > "$F/sys/thermal/temp"
-for b in tsx-ledbar tsx-keypad tsx-blank tsx-config tsx-als tsx-autoupdate; do
+for b in tsx-ledbar tsx-keypad tsx-blank tsx-als; do
 	cat > "$F/bin/$b" <<EOF
 #!/bin/sh
 echo "$b \$*" >> "$F/cmds.log"
 EOF
 	chmod +x "$F/bin/$b"
 done
+
+# The update settings. The base system's tsx-panelctl asks tsx-autoupdate for
+# them (`get mode`, `get auto-restart`) and saves them with tsx-config (set
+# UPDATE_MODE, UPDATE_AUTO_RESTART). The fakes keep the two values in files, so
+# a value that the test sets comes back. Without a file there is no answer, and
+# the entities use the update state file.
+cat > "$F/bin/tsx-autoupdate" <<EOF
+#!/bin/sh
+if [ "\$1" = get ]; then cat "$F/ua-\$2" 2>/dev/null; exit 0; fi
+echo "tsx-autoupdate \$*" >> "$F/cmds.log"
+EOF
+cat > "$F/bin/tsx-config" <<EOF
+#!/bin/sh
+echo "tsx-config \$*" >> "$F/cmds.log"
+case "\$1 \$2" in
+"set UPDATE_MODE") echo "\$3" > "$F/ua-mode";;
+"set UPDATE_AUTO_RESTART") echo "\$3" > "$F/ua-auto-restart";;
+esac
+EOF
+chmod +x "$F/bin/tsx-autoupdate" "$F/bin/tsx-config"
 
 # The base system's tsx-panelctl: the backend sends every command to its FIFO
 # and gets the volume from it. It runs the fake tools above.
@@ -193,7 +213,7 @@ print("OK: PANEL_NAME -> lowercase name + PANEL_NAME friendly name, with the fal
 full_check() {
 	local title=$1 port=$2; shift 2
 	echo "== $title =="
-	: > "$F/cmds.log"; rm -f "$F/run/tsx/brightness" "$F/etc/tsx/boot-verbose"
+	: > "$F/cmds.log"; rm -f "$F/run/tsx/brightness" "$F/etc/tsx/boot-verbose" "$F/ua-mode" "$F/ua-auto-restart"
 	echo 120 > "$F/run/tsx/blank-timeout"      # tsx-config apply's file (panel.conf BLANK_TIMEOUT)
 	date +%s > "$F/run/tsx/last-input"        # tsx-idled: a touch just now
 	printf 'leds yes\nled 128 unknown\nlast power short\n' > "$F/run/tsx/buttons.state"
@@ -214,6 +234,10 @@ full_check() {
 	grep -q '^tsx-config set BOOT_VERBOSE 1$' "$F/cmds.log" 2>/dev/null \
 		&& echo "OK: verbose boot persisted through tsx-config (set BOOT_VERBOSE 1 + apply)" || { echo "FAIL: tsx-config set BOOT_VERBOSE 1 missing"; rc=1; }
 	grep -q '^tsx-autoupdate now$' "$F/cmds.log" 2>/dev/null && echo "OK: update entity Install ran tsx-autoupdate now" || { echo "FAIL: tsx-autoupdate now missing"; rc=1; }
+	grep -q '^reboot$' "$F/cmds.log" 2>/dev/null && echo "OK: the Restart button ran reboot" || { echo "FAIL: reboot missing after the Restart button"; rc=1; }
+	grep -q '^tsx-config set UPDATE_MODE auto$' "$F/cmds.log" 2>/dev/null && grep -q '^tsx-config set UPDATE_AUTO_RESTART on$' "$F/cmds.log" \
+		&& echo "OK: update mode and automatic restart persisted through tsx-config" || { echo "FAIL: tsx-config set UPDATE_MODE auto or UPDATE_AUTO_RESTART on missing"; rc=1; }
+	! grep -q 'UPDATE_MODE sometimes' "$F/cmds.log" || { echo "FAIL: a bad update mode reached tsx-config"; rc=1; }
 	grep -q '^tsx-config set ORIENTATION portrait$' "$F/cmds.log" 2>/dev/null && ! grep -q 'ORIENTATION sideways' "$F/cmds.log" \
 		&& echo "OK: orientation persisted through tsx-config (portrait, and the bad option never reached it)" || { echo "FAIL: tsx-config set ORIENTATION portrait missing"; rc=1; }
 }
@@ -448,7 +472,7 @@ wait_listening "$T/server-same.log" "$T/voice-same.log"
 BARE_PORT=$((API_PORT + 60))
 mkdir -p "$F/bare/run"
 cp -r "$F/run/tsx/." "$F/bare/run/"
-rm -f "$F/bare/run/emmc.state"
+rm -f "$F/bare/run/emmc.state" "$F/ua-mode" "$F/ua-auto-restart"
 printf 'leds no\nled 0 unknown\n' > "$F/bare/run/buttons.state"
 date +%s > "$F/bare/run/last-input"
 start_server standalone "$T/server-bare.log" "$BARE_PORT" Bare-Panel TSX_HA_API_KEY= \

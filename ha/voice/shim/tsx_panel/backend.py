@@ -185,6 +185,8 @@ class PanelBackend:
         self._last_key: Optional[Tuple[str, ...]] = None
         self._blank_timeout_pending: Optional[Tuple[int, float]] = None
         self._verbose_boot_pending: Optional[Tuple[bool, float]] = None
+        self._update_mode_pending: Optional[Tuple[str, float]] = None
+        self._auto_restart_pending: Optional[Tuple[bool, float]] = None
 
     # ---- the seam: tsx-panelctl ---------------------------------------------
     def _panelctl(self, *args, timeout=5):
@@ -985,6 +987,9 @@ class PanelBackend:
                 "title": "TSX packages",
                 "release_summary": "tsx-autoupdate has not run yet",
                 "in_progress": False,
+                "restart_required": False,
+                "mode": "auto",
+                "auto_restart": True,
             }
 
     def install_update(self) -> None:
@@ -992,3 +997,54 @@ class PanelBackend:
         tsx-mqtt's Install runs -- right away, outside the night window (the
         window/idle gate still applies to the reboot itself)."""
         self._ctl("update-install")
+
+    # ---- update settings (UPDATE_MODE and UPDATE_AUTO_RESTART, panel.conf) ----
+    UPDATE_MODES = ("auto", "manual")
+
+    def get_update_mode(self) -> str:
+        """auto or manual, from `tsx-panelctl get update-mode`. A value just
+        set is reported until the state shows it (a few seconds at most), so
+        the Home Assistant select does not jump back meanwhile. Without an
+        answer it uses the "mode" key of the update state file, else auto."""
+        ok, out = self._panelctl("get", "update-mode")
+        value = out.split()[0] if ok and out.split() else ""
+        if value not in self.UPDATE_MODES:
+            value = str(self.get_update_status().get("mode") or "")
+        if value not in self.UPDATE_MODES:
+            value = "auto"
+        pending = self._update_mode_pending
+        if pending and pending[0] != value and time.monotonic() - pending[1] < 10:
+            return pending[0]
+        self._update_mode_pending = None
+        return value
+
+    def set_update_mode(self, mode: str) -> None:
+        if mode not in self.UPDATE_MODES:
+            _LOGGER.warning("update mode %r refused", mode)
+            return
+        self._update_mode_pending = (mode, time.monotonic())
+        self._ctl("update-mode", mode)
+
+    def get_auto_restart(self) -> bool:
+        """True while the panel restarts by itself after an update that needs
+        a restart, from `tsx-panelctl get auto-restart` (as get_update_mode)."""
+        ok, out = self._panelctl("get", "auto-restart")
+        word = out.split()[0] if ok and out.split() else ""
+        if word in ("on", "off"):
+            value = word == "on"
+        else:
+            value = bool(self.get_update_status().get("auto_restart", True))
+        pending = self._auto_restart_pending
+        if pending and pending[0] != value and time.monotonic() - pending[1] < 10:
+            return pending[0]
+        self._auto_restart_pending = None
+        return value
+
+    def set_auto_restart(self, on: bool) -> None:
+        self._auto_restart_pending = (bool(on), time.monotonic())
+        self._ctl("auto-restart", "on" if on else "off")
+
+    def get_restart_required(self) -> bool:
+        """True while installed packages wait for a restart (the key
+        restart_required of the update state file)."""
+        return bool(self.get_update_status().get("restart_required"))

@@ -242,7 +242,7 @@ class SelectEntity(ESPHomeEntity):
 
 
 class ButtonEntity(ESPHomeEntity):
-    """A generic momentary action (reload page, reboot)."""
+    """A generic momentary action (reload page, restart)."""
 
     def __init__(self, server, key, name, object_id, press, icon=""):
         ESPHomeEntity.__init__(self, server)

@@ -1,0 +1,246 @@
+#!/bin/sh
+# Host test of the update entities of tsx_panel (backend.py and device.py):
+#  - The entity list: Update, Restart required (binary sensor), Restart
+#    (button, object id reboot), Update mode (select: auto, manual) and
+#    Automatic restart (switch), with their names, icons and fixed keys.
+#  - The values come from `tsx-panelctl get update-mode|auto-restart` (here a
+#    small fake script). Without an answer they come from the update state
+#    file, then from the defaults. "Restart required" comes from the key
+#    restart_required of update-ha-state.json.
+#  - Commands go to the FIFO of tsx-panelctl (here a real FIFO that the test
+#    reads): reboot, update-install, update-mode V, auto-restart on|off.
+#  - A value that Home Assistant just set stays for 10 seconds, until
+#    tsx-panelctl reports it. A poll does not flip it back.
+# Small stand-ins replace aioesphomeapi, protobuf and linux_voice_assistant,
+# so the test needs no network and no libmpv.
+set -eu
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+mkdir -p "$T/run" "$T/state" "$T/bl" "$T/pc" "$T/stub/aioesphomeapi" "$T/stub/google/protobuf" "$T/stub/linux_voice_assistant"
+export PYTHONDONTWRITEBYTECODE=1
+: > "$T/stub/aioesphomeapi/__init__.py"
+cat > "$T/stub/aioesphomeapi/api_pb2.py" <<'PY'
+_classes = {}
+
+class UpdateCommand:
+    UPDATE_COMMAND_NONE = 0
+    UPDATE_COMMAND_UPDATE = 1
+    UPDATE_COMMAND_CHECK = 2
+
+def __getattr__(name):
+    if name.startswith("__"):
+        raise AttributeError(name)
+    if name == "UpdateCommand":
+        return UpdateCommand
+    if name not in _classes:
+        _classes[name] = type(name, (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+    return _classes[name]
+PY
+: > "$T/stub/google/__init__.py"; : > "$T/stub/google/protobuf/__init__.py"
+echo "class Message: pass" > "$T/stub/google/protobuf/message.py"
+: > "$T/stub/linux_voice_assistant/__init__.py"
+cat > "$T/stub/linux_voice_assistant/entity.py" <<'PY'
+class ESPHomeEntity:
+    def __init__(self, server):
+        self.server = server
+
+class LEDLightEntity(ESPHomeEntity):
+    def __init__(self, server, key, name, object_id, effects=None, supports_rgb=True,
+                 supports_brightness=True, on_changed=None, icon=""):
+        ESPHomeEntity.__init__(self, server)
+        self.key, self.name, self.object_id = key, name, object_id
+        self.effects_list = list(effects) if effects else []
+        self.is_on, self.brightness, self.red, self.green, self.blue, self.effect = False, 1.0, 1.0, 1.0, 1.0, ""
+
+    def update_on_changed(self, on_changed):
+        self._on_changed = on_changed
+PY
+# the fake tsx-panelctl: `get NAME` prints the file $T/pc/NAME, and fails without it. `has` says no.
+cat > "$T/panelctl" <<EOF
+#!/bin/sh
+[ "\$1" = get ] && [ -r "$T/pc/\$2" ] && exec cat "$T/pc/\$2"
+exit 1
+EOF
+chmod 755 "$T/panelctl"
+mkfifo "$T/fifo"
+python3 - "$HERE/ha/voice/shim" "$T" <<'PY'
+import json, os, sys, time
+shim, t = sys.argv[1:3]
+sys.path[:0] = [t + "/stub", shim]
+os.environ.update(TSX_RUN_DIR=t + "/run", TSX_STATE_DIR=t + "/state", TSX_BACKLIGHT_DIR=t + "/bl",
+                  TSX_KIOSK_CONF=t + "/none", TSX_BUTTONS_CONF=t + "/none", TSX_BUTTONS_BOARD_CONF=t + "/none",
+                  TSX_ALS_CONF=t + "/none", TSX_ASOUND_DIR=t + "/none", TSX_IDLED_STATE=t + "/none",
+                  TSX_THERMAL_ZONE=t + "/none", TSX_PANELCTL_BIN=t + "/panelctl", TSX_PANELCTL=t + "/fifo")
+from aioesphomeapi import api_pb2 as pb
+from tsx_panel.backend import PanelBackend
+from tsx_panel import device as dev
+from tsx_panel.keys import stable_key
+
+fails = 0
+def check(name, got, want):
+    global fails
+    if got == want:
+        print("ok  ", name)
+    else:
+        print("FAIL", name, "got", repr(got), "want", repr(want)); fails += 1
+
+# the reading end of the FIFO: the backend opens it without blocking and needs a reader
+fifo = os.open(t + "/fifo", os.O_RDONLY | os.O_NONBLOCK)
+def sent():
+    """The lines that the backend wrote to the FIFO since the last call."""
+    try:
+        return os.read(fifo, 65536).decode().splitlines()
+    except BlockingIOError:
+        return []
+
+def pc(name, value=None):
+    """What `tsx-panelctl get NAME` prints. None: no answer."""
+    path = f"{t}/pc/{name}"
+    if value is None:
+        if os.path.exists(path):
+            os.remove(path)
+    else:
+        open(path, "w").write(value + "\n")
+
+def state_file(**kw):
+    base = {"installed_version": "0.3.5", "latest_version": "0.3.6", "title": "TSX HOST packages",
+            "release_summary": "restart needed after install", "in_progress": False}
+    base.update(kw)
+    open(t + "/run/update-ha-state.json", "w").write(json.dumps(base) + "\n")
+
+def info(entity):
+    return list(entity.handle_message(pb.ListEntitiesRequest()))[0]
+
+# ---- the backend: no answer, no file --------------------------------------------------
+b = PanelBackend()
+status = b.get_update_status()
+check("default status: restart_required, mode and auto_restart",
+      (status["restart_required"], status["mode"], status["auto_restart"]), (False, "auto", True))
+check("no answer, no file: restart not required", b.get_restart_required(), False)
+check("no answer, no file: mode auto", b.get_update_mode(), "auto")
+check("no answer, no file: automatic restart on", b.get_auto_restart(), True)
+
+# ---- the backend: the update state file -------------------------------------------------
+state_file(restart_required=True, mode="manual", auto_restart=False)
+check("state file: restart required", b.get_restart_required(), True)
+check("state file: mode manual", b.get_update_mode(), "manual")
+check("state file: automatic restart off", b.get_auto_restart(), False)
+state_file(restart_required=False)
+check("state file: restart not required", b.get_restart_required(), False)
+check("state file without mode and auto_restart: the defaults", (b.get_update_mode(), b.get_auto_restart()), ("auto", True))
+
+# ---- the backend: tsx-panelctl wins over the state file ----------------------------------
+pc("update-mode", "auto"); pc("auto-restart", "off")
+state_file(mode="manual", auto_restart=True)
+check("tsx-panelctl: mode", b.get_update_mode(), "auto")
+check("tsx-panelctl: automatic restart", b.get_auto_restart(), False)
+pc("update-mode", "weekly"); pc("auto-restart", "maybe")
+check("tsx-panelctl: a bad answer falls back to the state file", (b.get_update_mode(), b.get_auto_restart()), ("manual", True))
+pc("update-mode"); pc("auto-restart")
+
+# ---- the backend: commands to the FIFO ---------------------------------------------------
+sent()
+b.reboot(); b.install_update()
+b.set_update_mode("manual"); b.set_update_mode("auto"); b.set_update_mode("sometimes")
+b.set_auto_restart(False); b.set_auto_restart(True)
+check("commands: reboot, update-install, update-mode V, auto-restart on|off (a bad mode is refused)", sent(),
+      ["reboot", "update-install", "update-mode manual", "update-mode auto", "auto-restart off", "auto-restart on"])
+
+# ---- the backend: a value just set is held -----------------------------------------------
+b = PanelBackend()
+pc("update-mode", "auto"); pc("auto-restart", "on")
+b.set_update_mode("manual"); b.set_auto_restart(False)
+check("held: mode and automatic restart while tsx-panelctl has the old values", (b.get_update_mode(), b.get_auto_restart()), ("manual", False))
+check("held: the hold stays while the values differ", (b._update_mode_pending is not None, b._auto_restart_pending is not None), (True, True))
+pc("update-mode", "manual"); pc("auto-restart", "off")
+check("held: tsx-panelctl has the new values", (b.get_update_mode(), b.get_auto_restart()), ("manual", False))
+check("held: the hold ends", (b._update_mode_pending, b._auto_restart_pending), (None, None))
+pc("update-mode", "auto"); pc("auto-restart", "on")
+check("held: a later change of tsx-panelctl shows", (b.get_update_mode(), b.get_auto_restart()), ("auto", True))
+b.set_update_mode("manual"); b.set_auto_restart(False)
+b._update_mode_pending = ("manual", time.monotonic() - 11)
+b._auto_restart_pending = (False, time.monotonic() - 11)
+check("held: after 10 s tsx-panelctl wins", (b.get_update_mode(), b.get_auto_restart()), ("auto", True))
+check("held: a new backend has no hold", (PanelBackend()._update_mode_pending, PanelBackend()._auto_restart_pending), (None, None))
+sent()
+
+# ---- the entities ----------------------------------------------------------------------------
+pc("update-mode", "auto"); pc("auto-restart", "on")
+state_file(restart_required=False, mode="auto", auto_restart=True)
+b = PanelBackend()
+d = dev.build_entities(None, b)
+check("entity: Update", (info(d.update).object_id, info(d.update).name, info(d.update).icon),
+      ("update", "Update", "mdi:package-up"))
+rr = info(d.restart_required)
+check("entity: Restart required", (rr.object_id, rr.name, rr.icon, d.restart_required.key),
+      ("restart_required", "Restart required", "mdi:restart-alert", stable_key("restart_required")))
+rb = info(d.reboot_button)
+check("entity: Restart button keeps the object id reboot", (rb.object_id, rb.name, rb.icon, d.reboot_button.key),
+      ("reboot", "Restart", "mdi:restart", stable_key("reboot")))
+um = info(d.update_mode)
+check("entity: Update mode", (um.object_id, um.name, um.icon, list(um.options), d.update_mode.key),
+      ("update_mode", "Update mode", "mdi:update", ["auto", "manual"], stable_key("update_mode")))
+ar = info(d.auto_restart)
+check("entity: Automatic restart", (ar.object_id, ar.name, ar.icon, d.auto_restart.key),
+      ("auto_restart", "Automatic restart", "mdi:restart", stable_key("auto_restart")))
+ids = [e.object_id for e in d.entities if hasattr(e, "object_id")]
+check("entity: each object id once", len(ids), len(set(ids)))
+check("entity: no entity with the object id restart (the button is reboot)", "restart" in ids, False)
+check("entity: the initial values", (d.update_mode._state, d.auto_restart._state, d.restart_required._state),
+      ("auto", True, False))
+
+# commands from Home Assistant
+sent()
+list(d.reboot_button.handle_message(pb.ButtonCommandRequest(key=d.reboot_button.key)))
+check("command: the Restart button sends reboot", sent(), ["reboot"])
+list(d.update.handle_message(pb.UpdateCommandRequest(key=d.update.key, command=pb.UpdateCommand.UPDATE_COMMAND_UPDATE)))
+check("command: Install sends update-install", sent(), ["update-install"])
+list(d.update.handle_message(pb.UpdateCommandRequest(key=d.update.key, command=pb.UpdateCommand.UPDATE_COMMAND_CHECK)))
+check("command: Check sends nothing", sent(), [])
+reply = list(d.update_mode.handle_message(pb.SelectCommandRequest(key=d.update_mode.key, state="manual")))
+check("command: Update mode manual", (sent(), reply[0].state), (["update-mode manual"], "manual"))
+reply = list(d.update_mode.handle_message(pb.SelectCommandRequest(key=d.update_mode.key, state="weekly")))
+check("command: a bad Update mode is refused and the state stays", (sent(), reply[0].state), ([], "manual"))
+reply = list(d.auto_restart.handle_message(pb.SwitchCommandRequest(key=d.auto_restart.key, state=False)))
+check("command: Automatic restart off", (sent(), reply[0].state), (["auto-restart off"], False))
+reply = list(d.auto_restart.handle_message(pb.SwitchCommandRequest(key=d.auto_restart.key, state=True)))
+check("command: Automatic restart on", (sent(), reply[0].state), (["auto-restart on"], True))
+
+# polls
+def mine(msgs):
+    names = {d.restart_required.key: "restart_required", d.update_mode.key: "update_mode",
+             d.auto_restart.key: "auto_restart", d.update.key: "update"}
+    return [(names[m.key], getattr(m, "state", None)) for m in msgs if getattr(m, "key", None) in names
+            and names[m.key] != "update"]
+
+msgs = []
+dev.poll(d, msgs.extend)
+msgs.clear()
+# the values were just set (manual, on). tsx-panelctl still says auto and on: the poll shows the held value
+list(d.update_mode.handle_message(pb.SelectCommandRequest(key=d.update_mode.key, state="manual")))
+list(d.auto_restart.handle_message(pb.SwitchCommandRequest(key=d.auto_restart.key, state=False)))
+dev.poll(d, msgs.extend)
+check("poll: a value just set is not flipped back", (mine(msgs), d.update_mode._state, d.auto_restart._state),
+      ([], "manual", False))
+pc("update-mode", "manual"); pc("auto-restart", "off")
+dev.poll(d, msgs.extend)
+check("poll: tsx-panelctl has the values: no change", (mine(msgs), d.update_mode._state, d.auto_restart._state),
+      ([], "manual", False))
+# a change from elsewhere (the setup page) reaches Home Assistant
+pc("update-mode", "auto"); pc("auto-restart", "on")
+dev.poll(d, msgs.extend)
+check("poll: a change from elsewhere", sorted(mine(msgs)), [("auto_restart", True), ("update_mode", "auto")])
+msgs.clear()
+# restart required comes from the state file
+state_file(restart_required=True, in_progress=False, release_summary="installed, restart required")
+dev.poll(d, msgs.extend)
+check("poll: restart required on", mine(msgs), [("restart_required", True)])
+msgs.clear()
+dev.poll(d, msgs.extend)
+check("poll: no change, no message", mine(msgs), [])
+state_file(restart_required=False)
+dev.poll(d, msgs.extend)
+check("poll: restart required off", mine(msgs), [("restart_required", False)])
+sys.exit(1 if fails else 0)
+PY
+echo "PASS test-shim-update"

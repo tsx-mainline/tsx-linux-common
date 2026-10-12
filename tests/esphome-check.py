@@ -42,6 +42,7 @@ async def main(args) -> int:
             "screen", "backlight", "kiosk_url",
             "reload_page", "reboot", "cpu_temp", "uptime", "ip_address",
             "touched_recently", "update", "blank_timeout",
+            "restart_required", "update_mode", "auto_restart",
             "verbose_boot",
         }
         optional = {"ledbar", "key_leds", "key_leds_screen_off", "key_power", "key_home",
@@ -148,6 +149,34 @@ async def main(args) -> int:
         client.update_command(key=by_id["update"].key, command=UpdateCommand.INSTALL)
         await asyncio.sleep(0.5)
         print("OK: update entity Install sent (test-esphome.sh checks tsx-autoupdate ran)")
+
+        # the update settings: names, options, the values of the update state file, and the commands
+        assert "restart" not in by_id, "the button must keep the object id reboot"
+        assert by_id["reboot"].name == "Restart" and by_id["reboot"].icon == "mdi:restart", by_id["reboot"]
+        assert by_id["restart_required"].name == "Restart required", by_id["restart_required"]
+        assert by_id["auto_restart"].name == "Automatic restart", by_id["auto_restart"]
+        assert by_id["update_mode"].name == "Update mode" and list(by_id["update_mode"].options) == ["auto", "manual"], by_id["update_mode"]
+        print("OK: Restart button (object id reboot), Restart required, Update mode (auto, manual), Automatic restart listed")
+        rr_state = states.get(by_id["restart_required"].key)
+        assert rr_state is not None and rr_state.state, rr_state
+        um_state = states.get(by_id["update_mode"].key)
+        assert um_state is not None and um_state.state == "manual", um_state
+        ar_state = states.get(by_id["auto_restart"].key)
+        assert ar_state is not None and not ar_state.state, ar_state
+        print("OK: restart required on, update mode manual, automatic restart off (from the update state file)")
+        client.select_command(by_id["update_mode"].key, "auto")
+        await asyncio.sleep(0.3)
+        client.select_command(by_id["update_mode"].key, "sometimes")
+        client.switch_command(key=by_id["auto_restart"].key, state=True)
+        await asyncio.sleep(2.5)   # the poll runs twice: the new values stay
+        um_state = states.get(by_id["update_mode"].key)
+        assert um_state is not None and um_state.state == "auto", um_state
+        ar_state = states.get(by_id["auto_restart"].key)
+        assert ar_state is not None and ar_state.state, ar_state
+        print("OK: update mode set to auto ('sometimes' refused) and automatic restart set on, and both stay")
+        client.button_command(by_id["reboot"].key)
+        await asyncio.sleep(0.5)
+        print("OK: Restart button pressed (test-esphome.sh checks reboot ran)")
 
         # test-esphome.sh rewrites the fixture's buttons.state "last" line
         # after this point, to simulate a front-key press. Give the daemon's

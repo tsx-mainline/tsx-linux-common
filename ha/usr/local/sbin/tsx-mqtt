@@ -34,10 +34,22 @@
 #                         /run/tsx/emmc.state, which tsx-emmc-state writes)
 #   number "Volume"       0..100 % of the ALSA "Master" softvol (only when the
 #                         sound card exists. /etc/asound.conf)
-#   update "Update"       status of tsx-autoupdate (installed and pending
-#                         Alpine packages, reboot pending, Chromium hold
-#                         state). Install runs "tsx-autoupdate now" in the
-#                         background
+#   update "Update"       status of tsx-autoupdate (the installed and the
+#                         latest release, the pending packages, restart
+#                         required). Install runs "tsx-autoupdate now" in the
+#                         background through tsx-panelctl (update-install)
+#   binary_sensor "Restart required"  ON while installed packages wait for a
+#                         restart (restart_required of the update state, else
+#                         tsx-panelctl get restart-required)
+#   button "Restart"      restarts the panel (tsx-panelctl send reboot)
+#   select "Update mode"  auto or manual (tsx-panelctl get update-mode, send
+#                         update-mode V). panel.conf UPDATE_MODE via tsx-config
+#   switch "Automatic restart"  ON = the panel restarts by itself after an
+#                         update that needs it (tsx-panelctl get auto-restart,
+#                         send auto-restart on|off). panel.conf
+#                         UPDATE_AUTO_RESTART via tsx-config
+# A value that Home Assistant sets (update mode, automatic restart) shows at
+# once and stays for 10 seconds, until the state of tsx-autoupdate has it.
 # State and commands are under $BASE (default tsx/<hostname>). Availability
 # uses LWT.
 #
@@ -229,6 +241,10 @@ discovery() {
 		pub -r "$DP/event/$NODE/nfc_tag/config" "{\"name\":\"NFC tag\",\"uniq_id\":\"${NODE}_nfc_tag\",\"stat_t\":\"$BASE/nfc/tag\",\"evt_typ\":[\"scanned\"],\"icon\":\"mdi:nfc-variant\",$AV,$DEV}"
 	fi
 	pub -r "$DP/update/$NODE/update/config" "{\"name\":\"Update\",\"uniq_id\":\"${NODE}_update\",\"cmd_t\":\"$BASE/update/set\",\"stat_t\":\"$BASE/update/state\",\"icon\":\"mdi:package-up\",$AV,$DEV}"
+	pub -r "$DP/binary_sensor/$NODE/restart_required/config" "{\"name\":\"Restart required\",\"uniq_id\":\"${NODE}_restart_required\",\"stat_t\":\"$BASE/restart_required/state\",\"icon\":\"mdi:restart-alert\",$AV,$DEV}"
+	pub -r "$DP/button/$NODE/restart/config" "{\"name\":\"Restart\",\"uniq_id\":\"${NODE}_restart\",\"cmd_t\":\"$BASE/restart/set\",\"pl_prs\":\"PRESS\",\"icon\":\"mdi:restart\",$AV,$DEV}"
+	pub -r "$DP/select/$NODE/update_mode/config" "{\"name\":\"Update mode\",\"uniq_id\":\"${NODE}_update_mode\",\"cmd_t\":\"$BASE/update_mode/set\",\"stat_t\":\"$BASE/update_mode/state\",\"options\":[\"auto\",\"manual\"],\"icon\":\"mdi:update\",$AV,$DEV}"
+	pub -r "$DP/switch/$NODE/auto_restart/config" "{\"name\":\"Automatic restart\",\"uniq_id\":\"${NODE}_auto_restart\",\"cmd_t\":\"$BASE/auto_restart/set\",\"stat_t\":\"$BASE/auto_restart/state\",\"icon\":\"mdi:restart\",$AV,$DEV}"
 	for k in $(keys); do
 		pub -r "$DP/event/$NODE/key_$k/config" "{\"name\":\"Key $k\",\"uniq_id\":\"${NODE}_key_$k\",\"stat_t\":\"$BASE/key/$k\",\"evt_typ\":[\"short\",\"long\",\"hold\"],\"dev_cla\":\"button\",$AV,$DEV}"
 		pub -r "$DP/device_automation/$NODE/key_${k}_short/config" "{\"atype\":\"trigger\",\"t\":\"$BASE/trigger/$k/short\",\"type\":\"button_short_press\",\"stype\":\"$k\",\"pl\":\"short\",$DEV}"
@@ -346,11 +362,51 @@ volume_state() {  # "NN" percent of the speaker volume
 
 update_state() {  # raw HA-ready JSON from tsx-autoupdate (same $R), or a safe default
 	if [ -r "$R/update-ha-state.json" ]; then cat "$R/update-ha-state.json"
-	else echo '{"installed_version":"unknown","latest_version":"unknown","title":"TSX packages","release_summary":"tsx-autoupdate has not run yet","in_progress":false}'
+	else echo '{"installed_version":"unknown","latest_version":"unknown","title":"TSX packages","release_summary":"tsx-autoupdate has not run yet","in_progress":false,"restart_required":false,"mode":"auto","auto_restart":true}'
 	fi
 }
 
-P_LED= P_KL= P_SCR= P_BL= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_USB= P_POE= P_EMMC=
+# update_json_field KEY: the value of one key at the end of the update JSON
+# (restart_required, mode, auto_restart). A text value stops at a quote. The
+# last match counts, so a word in the release summary does not.
+update_json_field() {
+	update_state | sed -n 's/.*"'"$1"'": *"\{0,1\}\([A-Za-z0-9_-]\{1,\}\).*/\1/p' | head -n 1
+}
+
+restart_required_state() {  # ON or OFF
+	v=$(update_json_field restart_required)
+	case $v in true) echo ON; return;; false) echo OFF; return;; esac
+	[ "$("$PCTL" get restart-required 2>/dev/null)" = yes ] && echo ON || echo OFF
+}
+
+update_mode_state() {  # auto or manual
+	v=$("$PCTL" get update-mode 2>/dev/null | head -n 1)
+	case $v in auto|manual) echo "$v"; return;; esac
+	v=$(update_json_field mode)
+	case $v in auto|manual) echo "$v";; *) echo auto;; esac
+}
+
+auto_restart_state() {  # ON or OFF
+	v=$("$PCTL" get auto-restart 2>/dev/null | head -n 1)
+	case $v in on) echo ON; return;; off) echo OFF; return;; esac
+	v=$(update_json_field auto_restart)
+	case $v in false) echo OFF;; *) echo ON;; esac
+}
+
+# A value that Home Assistant sets: update_hold_set NAME VALUE keeps it, and
+# update_hold NAME CURRENT prints it instead of CURRENT for 10 seconds while
+# CURRENT is another value (tsx-autoupdate has not written the new value yet).
+# The files are in $M, because handle runs in a subshell.
+update_hold_set() { echo "$2 $(date +%s)" > "$M/hold.$1"; }
+update_hold() {
+	hv= ht=
+	[ -r "$M/hold.$1" ] && read -r hv ht < "$M/hold.$1"
+	case $ht in ''|*[!0-9]*) rm -f "$M/hold.$1"; echo "$2"; return;; esac
+	if [ "$hv" != "$2" ] && [ $(( $(date +%s) - ht )) -lt 10 ]; then echo "$hv"
+	else rm -f "$M/hold.$1"; echo "$2"; fi
+}
+
+P_LED= P_KL= P_SCR= P_BL= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_USB= P_POE= P_EMMC= P_RR= P_UM= P_AR=
 publish_states() {  # $1 = force
 	f=${1:-}
 	if [ "$P_BAR" = yes ]; then
@@ -389,8 +445,14 @@ publish_states() {  # $1 = force
 		v=$(emmc_state); if [ "$v" != "$P_EMMC" ] || [ -n "$f" ]; then
 			set -- $v; pub -r "$BASE/emmc/life_a" "$1"; pub -r "$BASE/emmc/life_b" "$2"; pub -r "$BASE/emmc/eol" "$3"; P_EMMC=$v; fi
 	fi
-	v=$(update_state); if [ "$v" != "$P_UPD" ] || [ -n "${1:-}" ]; then
+	v=$(update_state); if [ "$v" != "$P_UPD" ] || [ -n "$f" ]; then
 		pub -r "$BASE/update/state" "$v"; P_UPD=$v; fi
+	v=$(restart_required_state); if [ "$v" != "$P_RR" ] || [ -n "$f" ]; then
+		pub -r "$BASE/restart_required/state" "$v"; P_RR=$v; fi
+	v=$(update_hold update_mode "$(update_mode_state)"); if [ "$v" != "$P_UM" ] || [ -n "$f" ]; then
+		pub -r "$BASE/update_mode/state" "$v"; P_UM=$v; fi
+	v=$(update_hold auto_restart "$(auto_restart_state)"); if [ "$v" != "$P_AR" ] || [ -n "$f" ]; then
+		pub -r "$BASE/auto_restart/state" "$v"; P_AR=$v; fi
 }
 
 # The bar comes or goes: tsx-ledbard writes /run/tsx/ledbar.usb. It also writes
@@ -553,6 +615,19 @@ handle() {  # topic payload
 		"$PCTL" send blank-timeout "$p";;
 	update/set)
 		"$PCTL" send update-install;;
+	restart/set)
+		[ "$p" = PRESS ] && "$PCTL" send reboot;;
+	update_mode/set)
+		case $p in auto|manual) ;; *) return;; esac
+		"$PCTL" send update-mode "$p"
+		update_hold_set update_mode "$p"; pub -r "$BASE/update_mode/state" "$p";;
+	auto_restart/set)
+		case $p in
+		ON) "$PCTL" send auto-restart on;;
+		OFF) "$PCTL" send auto-restart off;;
+		*) return;;
+		esac
+		update_hold_set auto_restart "$p"; pub -r "$BASE/auto_restart/state" "$p";;
 	*) return;;
 	esac
 	: > "$M/poke"

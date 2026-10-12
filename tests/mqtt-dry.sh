@@ -24,12 +24,14 @@ printf 'want 0 0 40\nlast 0 0 40\nout 0 0 40\n' > "$T/run/ledbar.state"
 printf 'screen blank\nleds yes\nled 24 blank\nled_awake 128 day\nled_blank 24\nlast prog2 short 12:00:01\n' > "$T/run/buttons.state"
 echo "on 17" > "$T/idled"; echo 0 > "$T/bl/x/brightness"
 echo 120 > "$T/run/blank-timeout"; date +%s > "$T/run/last-input"
-printf '%s' '{"installed_version":"abc123","latest_version":"abc123+2pending","title":"TSX test packages","release_summary":"musl (1.2.5-r0 -> 1.2.5-r1)","in_progress":false}' > "$T/run/update-ha-state.json"
+printf '%s' '{"installed_version":"abc123","latest_version":"abc123+2pending","title":"TSX test packages","release_summary":"musl (1.2.5-r0 -> 1.2.5-r1)","in_progress":false,"restart_required":true,"mode":"manual","auto_restart":false}' > "$T/run/update-ha-state.json"
 printf 'NODE_ID=tsx-kiosk\nDEVICE_NAME=TSX test\n' > "$T/mqtt.conf"
 printf '%s\n' 'tsx/tsx-kiosk/ledbar/rgb/set 255,0,0' 'tsx/tsx-kiosk/ledbar/brightness/set 128' \
 	'tsx/tsx-kiosk/ledbar/set ON' 'tsx/tsx-kiosk/ledbar/set OFF' 'tsx/tsx-kiosk/key_leds/brightness/set 40' \
 	'tsx/tsx-kiosk/key_leds/set OFF' 'tsx/tsx-kiosk/screen/set OFF' 'tsx/tsx-kiosk/backlight/set 30' 'tsx/tsx-kiosk/bogus/set x' \
-	'tsx/tsx-kiosk/update/set INSTALL' 'tsx/tsx-kiosk/blank_timeout/set 600.0' 'tsx/tsx-kiosk/blank_timeout/set 99999' |
+	'tsx/tsx-kiosk/update/set INSTALL' 'tsx/tsx-kiosk/blank_timeout/set 600.0' 'tsx/tsx-kiosk/blank_timeout/set 99999' \
+	'tsx/tsx-kiosk/restart/set PRESS' 'tsx/tsx-kiosk/update_mode/set auto' 'tsx/tsx-kiosk/update_mode/set sometimes' \
+	'tsx/tsx-kiosk/auto_restart/set ON' 'tsx/tsx-kiosk/auto_restart/set maybe' |
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled \
 	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
 	TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_PANEL_BOARD_CONF=$TSX_BOARD_DIR/panel-board.conf TSX_BACKLIGHT_DIR=$T/bl \
@@ -38,7 +40,7 @@ sleep 0.3   # let the backgrounded "tsx-autoupdate now &" (update/set) finish lo
 fail=0
 chk() { grep -qF -- "$1" "$T/out" || { echo "FAIL: missing: $1"; fail=1; }; }
 n=0; grep '/config ' "$T/out" | while read -r _ _ t j; do echo "$j" | jq -e . >/dev/null || { echo "FAIL: bad JSON $t"; exit 1; }; done
-n=$(grep -c '/config ' "$T/out"); [ "$n" = 28 ] || { echo "FAIL: $n discovery configs, want 28 (the 7 keys of the board layer give 21)"; fail=1; }
+n=$(grep -c '/config ' "$T/out"); [ "$n" = 32 ] || { echo "FAIL: $n discovery configs, want 32 (the 7 keys of the board layer give 21)"; fail=1; }
 chk 'PUB (retained) tsx/tsx-kiosk/ledbar/state ON'
 chk 'PUB (retained) tsx/tsx-kiosk/ledbar/brightness 102'
 chk 'PUB (retained) tsx/tsx-kiosk/ledbar/rgb 0,0,255'
@@ -55,8 +57,29 @@ chk 'CALL tsx-panelctl send keypad led off'
 chk 'CALL tsx-panelctl send blank on'
 chk 'PUB tsx/tsx-kiosk/key/prog2 {"event_type":"short"}'
 chk 'PUB tsx/tsx-kiosk/trigger/prog2/short short'
-chk 'PUB (retained) tsx/tsx-kiosk/update/state {"installed_version":"abc123","latest_version":"abc123+2pending","title":"TSX test packages","release_summary":"musl (1.2.5-r0 -> 1.2.5-r1)","in_progress":false}'
+chk 'PUB (retained) tsx/tsx-kiosk/update/state {"installed_version":"abc123","latest_version":"abc123+2pending","title":"TSX test packages","release_summary":"musl (1.2.5-r0 -> 1.2.5-r1)","in_progress":false,"restart_required":true,"mode":"manual","auto_restart":false}'
 chk 'CALL tsx-panelctl send update-install'
+# the update settings: discovery, states from the update JSON, commands
+chk 'PUB (retained) homeassistant/binary_sensor/tsx-kiosk/restart_required/config {'
+chk 'PUB (retained) homeassistant/button/tsx-kiosk/restart/config {'
+chk 'PUB (retained) homeassistant/select/tsx-kiosk/update_mode/config {'
+chk 'PUB (retained) homeassistant/switch/tsx-kiosk/auto_restart/config {'
+cfgu() { grep -F "PUB (retained) homeassistant/$1/config " "$T/out" | sed 's/^[^{]*//'; }
+[ "$(cfgu button/tsx-kiosk/restart | jq -r '[.name, .cmd_t, .pl_prs, .icon] | join(" ")')" = "Restart tsx/tsx-kiosk/restart/set PRESS mdi:restart" ] || { echo "FAIL: the Restart button config"; fail=1; }
+[ "$(cfgu binary_sensor/tsx-kiosk/restart_required | jq -r '[.name, .stat_t, .icon] | join(" ")')" = "Restart required tsx/tsx-kiosk/restart_required/state mdi:restart-alert" ] || { echo "FAIL: the Restart required config"; fail=1; }
+[ "$(cfgu select/tsx-kiosk/update_mode | jq -r '[.name, .cmd_t, .stat_t, (.options | join(",")), .icon] | join(" ")')" = "Update mode tsx/tsx-kiosk/update_mode/set tsx/tsx-kiosk/update_mode/state auto,manual mdi:update" ] || { echo "FAIL: the Update mode config"; fail=1; }
+[ "$(cfgu switch/tsx-kiosk/auto_restart | jq -r '[.name, .cmd_t, .stat_t, .icon] | join(" ")')" = "Automatic restart tsx/tsx-kiosk/auto_restart/set tsx/tsx-kiosk/auto_restart/state mdi:restart" ] || { echo "FAIL: the Automatic restart config"; fail=1; }
+chk 'PUB (retained) tsx/tsx-kiosk/restart_required/state ON'
+chk 'PUB (retained) tsx/tsx-kiosk/update_mode/state manual'
+chk 'PUB (retained) tsx/tsx-kiosk/auto_restart/state OFF'
+chk 'CALL tsx-panelctl send reboot'
+chk 'CALL tsx-panelctl send update-mode auto'
+chk 'CALL tsx-panelctl send auto-restart on'
+# a set value shows at once (the held value)
+chk 'PUB (retained) tsx/tsx-kiosk/update_mode/state auto'
+chk 'PUB (retained) tsx/tsx-kiosk/auto_restart/state ON'
+[ "$(grep -c 'CALL tsx-panelctl send reboot' "$T/out")" = 1 ] || { echo "FAIL: one Restart press, one reboot"; fail=1; }
+grep -qE 'send (update-mode|auto-restart) (sometimes|maybe)' "$T/out" && { echo "FAIL: a bad update setting reached tsx-panelctl"; fail=1; }
 chk 'PUB (retained) tsx/tsx-kiosk/blank_timeout/state 120'
 chk 'PUB (retained) tsx/tsx-kiosk/touched_recently/state ON'
 chk 'CALL tsx-panelctl send blank-timeout 600'
@@ -79,6 +102,48 @@ PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run T
 nk=$(grep -c 'homeassistant/event/tsx-kiosk/key_.*/config {' "$T/outkeys")
 [ "$nk" = 8 ] && grep -q 'homeassistant/event/tsx-kiosk/key_extra/config {' "$T/outkeys" \
 	|| { echo "FAIL: $nk key events with an extra key in buttons.conf, want 8"; fail=1; }
+# The update settings from tsx-panelctl (get update-mode, auto-restart, restart-required), with an
+# update JSON of an older tsx-autoupdate that has no such keys. A value that was just set stays for
+# 10 seconds while tsx-panelctl reports another one. A hold that is older than 10 seconds does not count.
+T6=$T/upd; mkdir -p "$T6/bin" "$T6/run/mqtt"
+cat > "$T6/bin/tsx-panelctl" <<'EOF'
+#!/bin/sh
+case "$1 $2" in
+"has "*) exit 1;;
+"get update-mode") echo auto;;
+"get auto-restart") echo on;;
+"get restart-required") echo yes;;
+*) exit 1;;
+esac
+EOF
+chmod +x "$T6/bin/tsx-panelctl"
+printf '%s' '{"installed_version":"0.3.5","latest_version":"0.3.6","title":"TSX HOST packages","release_summary":"restart needed after install","in_progress":false}' > "$T6/run/update-ha-state.json"
+upd_run() {  # upd_run OUTFILE
+	PATH=$T6/bin:/usr/bin:/bin TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T6/run TSX_IDLED_STATE=$T/idled \
+		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+		sh "$(P usr/local/sbin/tsx-mqtt)" > "$1" 2>&1
+}
+upd_run "$T6/out1" < /dev/null
+for l in 'restart_required/state ON' 'update_mode/state auto' 'auto_restart/state ON'; do
+	grep -qxF "PUB (retained) tsx/tsx-kiosk/$l" "$T6/out1" || { echo "FAIL: update settings from tsx-panelctl: missing $l"; fail=1; }
+done
+echo "manual $(date +%s)" > "$T6/run/mqtt/hold.update_mode"; echo "OFF $(date +%s)" > "$T6/run/mqtt/hold.auto_restart"
+upd_run "$T6/out2" < /dev/null
+grep -qxF 'PUB (retained) tsx/tsx-kiosk/update_mode/state manual' "$T6/out2" && grep -qxF 'PUB (retained) tsx/tsx-kiosk/auto_restart/state OFF' "$T6/out2" \
+	|| { echo "FAIL: a value just set is not held"; fail=1; }
+echo "manual $(( $(date +%s) - 30 ))" > "$T6/run/mqtt/hold.update_mode"
+upd_run "$T6/out3" < /dev/null
+grep -qxF 'PUB (retained) tsx/tsx-kiosk/update_mode/state auto' "$T6/out3" && [ ! -e "$T6/run/mqtt/hold.update_mode" ] \
+	|| { echo "FAIL: a hold older than 10 seconds is not dropped"; fail=1; }
+# without any answer: the JSON, else the defaults
+printf '#!/bin/sh\nexit 1\n' > "$T6/bin/tsx-panelctl"
+rm -f "$T6/run/update-ha-state.json" "$T6/run/mqtt/hold."*
+upd_run "$T6/out4" < /dev/null
+for l in 'restart_required/state OFF' 'update_mode/state auto' 'auto_restart/state ON'; do
+	grep -qxF "PUB (retained) tsx/tsx-kiosk/$l" "$T6/out4" || { echo "FAIL: update settings without data: missing $l"; fail=1; }
+done
+grep -q '"restart_required":false,"mode":"auto","auto_restart":true' "$T6/out4" || { echo "FAIL: the default update JSON lacks the new keys"; fail=1; }
+
 # a board with keys and no key LEDs: the keys stay, the Key LEDs light goes
 printf '#!/bin/sh\ncase "$1" in has) exit 1;; esac\n' > "$T/bin-nokl-panelctl"; mkdir -p "$T/bin-nokl"
 cp "$T/bin-nokl-panelctl" "$T/bin-nokl/tsx-panelctl"; chmod +x "$T/bin-nokl/tsx-panelctl"

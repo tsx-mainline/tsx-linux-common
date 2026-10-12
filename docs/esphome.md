@@ -52,6 +52,11 @@ The kiosk panels (this device) and the panel app ([panel-app.md](panel-app.md)) 
 | Dim timeout, Dim level | number | No dim stage in `tsx-idled` | yes | `DIM_TIMEOUT`, `DIM_LEVEL` |
 | Kiosk URL | text | yes | No | `KIOSK_URL` |
 | Reload page | button | yes | No | |
+| Update | update | yes | yes | The state of `tsx-autoupdate` |
+| Restart required | binary sensor | yes | yes | The state of `tsx-autoupdate` |
+| Restart | button | yes | yes | |
+| Update mode | select, `auto` or `manual` | yes | yes | `UPDATE_MODE` |
+| Automatic restart | switch | yes | yes | `UPDATE_AUTO_RESTART` |
 | Wake word, wake word sensitivity | select, number | The voice satellite, with `VOICE=on` | No voice service | The preferences of the satellite |
 | LED bar, Key LEDs | light | With the part | | Live state |
 | The lights of `panel_lights` (for example the light bars of a board) | light | | With `panel_lights` | Live state |
@@ -60,6 +65,28 @@ The kiosk panels (this device) and the panel app ([panel-app.md](panel-app.md)) 
 The Backlight number is the percent of the brightness slider on every family, with the scale of the overlay (`tsx-level.h`): a square for a backlight with more than 64 steps. `tsx-panelctl` maps it to the level of `tsx-idled` (`brightness-pct`, `get backlight-pct`). Before 0.3.4 the number of a kiosk panel had the raw backlight steps.
 
 A setting that Home Assistant changes goes through `tsx-config set` and `tsx-config apply`, so it stays after a reboot. The live states act at once, as the overlay does. The secrets and the settings of the system (the SSH key, the root password, the update source, the reinstall) are not entities. They stay on the setup page, behind its login ([setup.md](setup.md)).
+
+## Update entities
+
+Five entities show and control the updates of the panel. They are the same on the kiosk panels (`tsx-esphome`, `tsx-voice` and `tsx-mqtt`) and on the panel app. [autoupdate.md](autoupdate.md) describes the modes and the update window.
+
+| Entity | ESPHome object id | MQTT topic (below the base topic) | Icon |
+|---|---|---|---|
+| Update | `update` | `update/state`, `update/set` | `mdi:package-up` |
+| Restart required | `restart_required` | `restart_required/state` | `mdi:restart-alert` |
+| Restart | `reboot` on the kiosk panels, `restart` on the panel app | `restart/set` | `mdi:restart` |
+| Update mode | `update_mode` | `update_mode/state`, `update_mode/set` | `mdi:update` |
+| Automatic restart | `auto_restart` | `auto_restart/state`, `auto_restart/set` | `mdi:restart` |
+
+- The Update entity shows the installed release and the latest release. Install runs `tsx-autoupdate now` through the command `update-install` of `tsx-panelctl`. It installs at once, in both modes.
+- Restart required is on while installed packages wait for a restart. It reads the key `restart_required` of `/run/tsx/update-ha-state.json`. In MQTT, the payload is `ON` or `OFF`. Without that key, `tsx-mqtt` asks `tsx-panelctl get restart-required`.
+- The Restart button sends the command `reboot` to `tsx-panelctl`. Its name is Restart. On a kiosk panel its object id stays `reboot`, because an object id must not change (see "Add an entity"). In MQTT, the button payload is `PRESS`.
+- Update mode has the options `auto` and `manual`, in lower case. A selection sends `update-mode auto` or `update-mode manual`. `tsx-panelctl get update-mode` reads the value.
+- Automatic restart sends `auto-restart on` or `auto-restart off`. `tsx-panelctl get auto-restart` reads the value. In MQTT, the payload is `ON` or `OFF`.
+
+`tsx-panelctl` saves `UPDATE_MODE` and `UPDATE_AUTO_RESTART` with `tsx-config set` and `tsx-config apply`, so both settings stay after a restart. The setup page shows the same two settings. A value that Home Assistant sets shows at once. The shim and `tsx-mqtt` hold it for 10 seconds, until the state of `tsx-autoupdate` has the value. Without this hold, the next poll would show the old value for a moment.
+
+The code is in `ha/voice/shim/tsx_panel/backend.py` (`get_update_mode`, `get_auto_restart`, `get_restart_required`) and `device.py`, and in `ha/usr/local/sbin/tsx-mqtt`. The tests are `tests/test-shim-update.sh`, `tests/test-esphome.sh` and `tests/mqtt-dry.sh`.
 
 ## Entity keys
 

@@ -93,6 +93,9 @@ class PanelDevice:
     ip_address: TextSensorEntity
     touched_recently: BinarySensorEntity
     update: UpdateEntity
+    restart_required: BinarySensorEntity
+    update_mode: SelectEntity
+    auto_restart: SwitchEntity
     keys: List[KeyEventEntity]
     usb_power: Optional[SwitchEntity] = None
     presence: Optional[BinarySensorEntity] = None
@@ -225,7 +228,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
     )
     entities.append(verbose_boot)
 
-    # ---- kiosk: URL (persists through tsx-config), reload, reboot -------------
+    # ---- kiosk: URL (persists through tsx-config), reload, restart ------------
     kiosk_url = TextEntity(
         server, key_for("kiosk_url"), "Kiosk URL", "kiosk_url",
         get_state=backend.get_kiosk_url, set_state=backend.set_kiosk_url, icon="mdi:web",
@@ -236,7 +239,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
     )
     entities.append(reload_button)
     reboot_button = ButtonEntity(
-        server, key_for("reboot"), "Reboot", "reboot", press=backend.reboot, icon="mdi:restart",
+        server, key_for("reboot"), "Restart", "reboot", press=backend.reboot, icon="mdi:restart",
     )
     entities.append(reboot_button)
 
@@ -267,6 +270,23 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         get_state=backend.get_update_status, install=backend.install_update, icon="mdi:package-up",
     )
     entities.append(update)
+    # needs a restart: the update state file says so (tsx-autoupdate)
+    restart_required = BinarySensorEntity(
+        server, key_for("restart_required"), "Restart required", "restart_required",
+        get_state=backend.get_restart_required, icon="mdi:restart-alert",
+    )
+    entities.append(restart_required)
+    # the update settings (UPDATE_MODE, UPDATE_AUTO_RESTART in panel.conf)
+    update_mode = SelectEntity(
+        server, key_for("update_mode"), "Update mode", "update_mode", options=backend.UPDATE_MODES,
+        get_state=backend.get_update_mode, set_state=backend.set_update_mode, icon="mdi:update",
+    )
+    entities.append(update_mode)
+    auto_restart = SwitchEntity(
+        server, key_for("auto_restart"), "Automatic restart", "auto_restart",
+        get_state=backend.get_auto_restart, set_state=backend.set_auto_restart, icon="mdi:restart",
+    )
+    entities.append(auto_restart)
 
     # ---- sensors and board I/O: each one only where its device is --------
     # (the daemons of the board write the state files, see the "Sensors" docs of
@@ -336,7 +356,8 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         backlight=backlight, blank_timeout=blank_timeout, als_auto=als_auto, illuminance=illuminance, volume=volume,
         verbose_boot=verbose_boot, kiosk_url=kiosk_url, reload_button=reload_button, reboot_button=reboot_button,
         cpu_temp=cpu_temp, uptime=uptime, ip_address=ip_address, touched_recently=touched_recently,
-        update=update, keys=keys, orientation=orientation, _pulse_since=time.time(),
+        update=update, restart_required=restart_required, update_mode=update_mode, auto_restart=auto_restart,
+        keys=keys, orientation=orientation, _pulse_since=time.time(),
         usb_power=usb_power, presence=presence, distance=distance, poe_class=poe_class,
         emmc_life_a=emmc_life_a, emmc_life_b=emmc_life_b, emmc_eol=emmc_eol, nfc=backend.nfc_present(),
         ledbar_fx=ledbar_fx, ledbar_leds=ledbar_leds, ledbar_actions=ledbar_actions,
@@ -528,7 +549,8 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
 
     for entity in (device.screen, device.backlight, device.blank_timeout, device.als_auto, device.illuminance,
                    device.volume, device.verbose_boot, device.cpu_temp, device.uptime, device.ip_address,
-                   device.touched_recently, device.update, device.presence, device.distance, device.usb_power,
+                   device.touched_recently, device.update, device.restart_required, device.update_mode,
+                   device.auto_restart, device.presence, device.distance, device.usb_power,
                    device.poe_class, device.emmc_life_a, device.emmc_life_b, device.emmc_eol,
                    device.key_leds_screen_off):
         if entity is None:

@@ -169,6 +169,7 @@ PARTS = ("ledbar", "ledbar_fx", "ledbar_leds", "key_leds", "als", "sound_card", 
 
 class Backend:
     ORIENTATIONS = backend_mod.PanelBackend.ORIENTATIONS
+    UPDATE_MODES = backend_mod.PanelBackend.UPDATE_MODES
     parts = dict.fromkeys(PARTS, True)
     keys = KEY_NAMES
 
@@ -215,7 +216,7 @@ set_bt(False)
 ALL = dict.fromkeys(PARTS, True)
 d = standalone(ALL)
 REF = listed(d.entities)
-check("all parts: the entity count (with the actions)", len(REF), 41)
+check("all parts: the entity count (with the actions)", len(REF), 44)
 check("all parts: the key LED entities have the new ids, the old ids are gone",
       sorted(i for i in REF if "key_leds" in i or i in ("keypad", "key_led_blank")),
       ["key_leds", "key_leds_screen_off"])
@@ -245,7 +246,7 @@ check("all parts off: only the fixed entities",
       sorted(listed(standalone(dict.fromkeys(PARTS, False), "off", []).entities).items()),
       sorted((i, REF[i]) for i in ("screen", "backlight", "blank_timeout", "orientation", "verbose_boot", "kiosk_url",
                                    "reload_page", "reboot", "cpu_temp", "uptime", "ip_address", "touched_recently",
-                                   "update")))
+                                   "update", "restart_required", "update_mode", "auto_restart")))
 set_bt(True)
 check("Bluetooth proxy on: the same keys", (bluetooth.PROXY.enabled(), listed(standalone(ALL).entities)), (True, REF))
 
