@@ -64,10 +64,27 @@ Home Assistant shows release numbers, for example `0.3.5`. The release number is
 Other states of the latest version:
 
 - Only other packages are pending: `<release> + N packages`. The summary lists the packages.
-- The install needs a restart and the panel did not restart: the installed release, or `<release> + restart` when the release number did not change.
+- The install needs a restart and the panel did not restart: `<release> (restart required)`. The release is the new one, or the running one when the release number did not change.
 - Nothing is pending: the installed version.
 
-The summary names the pending packages and ends with "restart needed after install" when the install will need a restart. After an install that waits for a restart, it says "installed, restart required".
+## What Home Assistant shows
+
+Home Assistant shows the title, the two versions and the release notes. The release notes are Markdown, with one package on each line.
+
+| State | Title | Latest version | Release notes |
+|---|---|---|---|
+| Update pending | `TSX <host> packages` | `0.3.6` | "Packages to install:", a list, and the line "Restart needed after install." when the install needs a restart |
+| Install runs | the same | the same | "Installing the packages. Do not switch the panel off." above the list. `in_progress` is on. Home Assistant shows a progress bar. |
+| Installed, restart required | `Restart required to finish 0.3.6` | `0.3.6 (restart required)` | "Installed. Restart the panel to finish the update." and a line about Install and the Restart button |
+| After the restart | `TSX <host> packages` | `0.3.6` | "up to date" |
+
+The title and the latest version change after an install because of two limits of Home Assistant. The dialog of an update reads the release notes only when it opens. And the entity state does not change when the versions stay the same. So the title and the latest version show the new state at once. The release notes follow when the dialog opens again.
+
+A repository warning is the last paragraph of the release notes. The installed version stays the running release in all states.
+
+Home Assistant truncates the attribute `release_summary` to 255 characters. This affects only MQTT. A long list of packages ends early there. The ESPHome entities (kiosk and panel app) give the full text as release notes.
+
+In `update-ha-state.json` the summary is one JSON string with `\n` for each newline. In `update.state` the summary is one line. A newline is the two characters `\n` and a backslash is doubled.
 
 ## Idle screen
 
@@ -127,7 +144,7 @@ The panel app writes `/run/tsx/panel-app.state` at its start, at its first frame
 |---|---|
 | `/run/tsx/update.json` | The status (a copy is in `/var/lib/tsx/autoupdate`) |
 | `/run/tsx/update-ha-state.json` | The status for the Home Assistant entity Update, and the fields `restart_required`, `mode` and `auto_restart` |
-| `/run/tsx/update.state` | The same values as `key value` lines for the panel app and `tsx-panelctl`: `installed`, `latest`, `title`, `summary`, `in-progress`, `restart-required`, `mode`, `auto-restart` |
+| `/run/tsx/update.state` | The same values as `key value` lines for the panel app and `tsx-panelctl`: `installed`, `latest`, `title`, `summary` (one line, `\n` for a newline), `in-progress`, `restart-required`, `mode`, `auto-restart` |
 | `/run/tsx/autoupdate.conf` | The override that `tsx-config apply` writes from `panel.conf` |
 | `/var/log/tsx-autoupdate.log` | The log |
 

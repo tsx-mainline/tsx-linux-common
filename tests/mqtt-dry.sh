@@ -135,6 +135,17 @@ echo "manual $(( $(date +%s) - 30 ))" > "$T6/run/mqtt/hold.update_mode"
 upd_run "$T6/out3" < /dev/null
 grep -qxF 'PUB (retained) tsx/tsx-kiosk/update_mode/state auto' "$T6/out3" && [ ! -e "$T6/run/mqtt/hold.update_mode" ] \
 	|| { echo "FAIL: a hold older than 10 seconds is not dropped"; fail=1; }
+# The notes are Markdown: the JSON of tsx-autoupdate holds \n for each newline. The state topic gets the
+# JSON as it is, in one message, and the title and the latest version of a restart that is required.
+printf '%s\n' '{"installed_version":"0.3.5","latest_version":"0.3.6 (restart required)","title":"Restart required to finish 0.3.6","release_summary":"Installed. Restart the panel to finish the update.\n\nPress Install, or the Restart button, to restart the panel now.","in_progress":false,"restart_required":true,"mode":"auto","auto_restart":false}' > "$T6/run/update-ha-state.json"
+upd_run "$T6/out3b" < /dev/null
+payload=$(sed -n 's#^PUB (retained) tsx/tsx-kiosk/update/state ##p' "$T6/out3b")
+[ "$(printf '%s\n' "$payload" | wc -l)" = 1 ] && [ "$(printf '%s' "$payload" | jq -r .title)" = "Restart required to finish 0.3.6" ] \
+	&& [ "$(printf '%s' "$payload" | jq -r .release_summary | sed -n 1p)" = "Installed. Restart the panel to finish the update." ] \
+	&& [ "$(printf '%s' "$payload" | jq -r .release_summary | wc -l)" = 3 ] \
+	&& [ "$(printf '%s' "$payload" | jq -r .latest_version)" = "0.3.6 (restart required)" ] \
+	|| { echo "FAIL: the update state topic does not carry the title, the latest version and the notes with newlines: $payload"; fail=1; }
+grep -qxF 'PUB (retained) tsx/tsx-kiosk/restart_required/state ON' "$T6/out3b" || { echo "FAIL: restart_required with the new update JSON"; fail=1; }
 # without any answer: the JSON, else the defaults
 printf '#!/bin/sh\nexit 1\n' > "$T6/bin/tsx-panelctl"
 rm -f "$T6/run/update-ha-state.json" "$T6/run/mqtt/hold."*

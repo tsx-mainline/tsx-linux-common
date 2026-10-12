@@ -1,8 +1,8 @@
 #!/bin/bash
 # Host test for panel-app/esphome/components/tsx_cards/update_logic.h: the
 # update entities of the panel app (docs/panel-app.md, "Updates").
-#  - update.state: the fields, the raw summary, bad and missing lines, a
-#    missing file
+#  - update.state: the fields, the summary (Markdown on one line: \n is a
+#    newline), bad and missing lines, a missing file
 #  - the state of the update entity: unknown, no update, available,
 #    installing, restart required, and the hold after an install
 #  - the mode and the automatic restart: the values and the lines for the
@@ -52,6 +52,28 @@ int main(int argc, char **argv) {
   check(parse_update_state("installed   1.0   \n", s) && s.installed == "1.0", "extra spaces are cut");
   check(parse_update_state("installed 1.0\nsummary   a  b  \n", s) && s.summary == "a  b",
         "the summary keeps inner spaces, loses the edges");
+  puts("== the summary: Markdown on one line ==");
+  check(parse_update_state("installed 0.3.5\nsummary Packages to install:\\n\\n- tsx-base (0.3.5-r0 -> 0.3.6-r0)\\n- tsx-setup (0.3.5-r0 -> 0.3.6-r0)\\n\\nRestart needed after install.\n", s) &&
+            s.summary == "Packages to install:\n\n- tsx-base (0.3.5-r0 -> 0.3.6-r0)\n- tsx-setup (0.3.5-r0 -> 0.3.6-r0)\n\nRestart needed after install.",
+        "\\n in the summary is a newline: a list with one package on each line");
+  check(parse_update_state("installed 1.0\nsummary a\\\\nb\\\\\\n\\c\n", s) && s.summary == "a\\nb\\\n\\c",
+        "a doubled backslash is one backslash and does not make a newline. Another backslash stays");
+  check(parse_update_state("installed 1.0\nsummary end\\", s) && s.summary == "end\\", "a backslash at the end of the line stays");
+  check(parse_update_state("installed 1.0\ntitle Restart required to finish 0.3.6\nsummary x\n", s) &&
+            s.title == "Restart required to finish 0.3.6",
+        "the title");
+  {
+    // a long list of packages (about 10 KiB) is read whole
+    std::string big = "installed 0.3.5\nsummary ";
+    for (int i = 0; i < 200; i++)
+      big += "- tsx-package-with-a-long-name-" + std::to_string(i) + " (0.3.5-r0 -> 0.3.6-r0)\\n";
+    big += "end\nlatest 0.3.6\n";
+    FILE *bf = fopen((std::string(argv[1]) + "/big.state").c_str(), "w");
+    fputs(big.c_str(), bf);
+    fclose(bf);
+    check(read_update_state(std::string(argv[1]) + "/big.state", s) && s.latest == "0.3.6" && s.summary.size() > 8000,
+          "a file of 10 KiB is read whole");
+  }
   check(parse_update_state("installed 1.0\nmode sometimes\nauto-restart maybe\nin-progress perhaps\nrestart-required 1\n", s) &&
             s.mode.empty() && s.auto_restart == -1 && s.in_progress == -1 && s.restart_required == -1,
         "bad mode, auto-restart, yes/no values are unknown");

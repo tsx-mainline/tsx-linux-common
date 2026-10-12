@@ -78,7 +78,7 @@ Five entities show and control the updates of the panel. They are the same on th
 | Update mode | `update_mode` | `update_mode/state`, `update_mode/set` | `mdi:update` |
 | Automatic restart | `auto_restart` | `auto_restart/state`, `auto_restart/set` | `mdi:restart` |
 
-- The Update entity shows the installed release and the latest release. Install runs `tsx-autoupdate now` through the command `update-install` of `tsx-panelctl`. It installs at once, in both modes.
+- The Update entity shows the installed release, the latest release, the title and the release notes (a Markdown list of the packages). After an install that needs a restart, the title and the latest version say "restart required". See [autoupdate.md](autoupdate.md). Install runs `tsx-autoupdate now` through the command `update-install` of `tsx-panelctl`. It installs at once, in both modes.
 - Restart required is on while installed packages wait for a restart. It reads the key `restart_required` of `/run/tsx/update-ha-state.json`. In MQTT, the payload is `ON` or `OFF`. Without that key, `tsx-mqtt` asks `tsx-panelctl get restart-required`.
 - The Restart button sends the command `reboot` to `tsx-panelctl`. Its name is Restart. On a kiosk panel its object id stays `reboot`, because an object id must not change (see "Add an entity"). In MQTT, the button payload is `PRESS`.
 - Update mode has the options `auto` and `manual`, in lower case. A selection sends `update-mode auto` or `update-mode manual`. `tsx-panelctl get update-mode` reads the value.

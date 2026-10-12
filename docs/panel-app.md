@@ -516,7 +516,7 @@ The app shows the state of `tsx-autoupdate` as Home Assistant entities. They are
 
 The select and the switch are in the entity category `config`.
 
-The state comes from the file `/run/tsx/update.state` that `tsx-autoupdate` writes (`TSX_PANEL_APP_UPDATE_STATE` names another file). The file has one `key value` pair on each line: `installed`, `latest`, `title`, `summary`, `in-progress`, `restart-required`, `mode` and `auto-restart`. The summary is the text to the end of the line. The app reads the file at most every 3 s. While a change waits for the file, the app reads it every second.
+The state comes from the file `/run/tsx/update.state` that `tsx-autoupdate` writes (`TSX_PANEL_APP_UPDATE_STATE` names another file). The file has one `key value` pair on each line: `installed`, `latest`, `title`, `summary`, `in-progress`, `restart-required`, `mode` and `auto-restart`. The summary is Markdown text on one line. The two characters `\n` are a newline and `\\` is a backslash. Home Assistant shows it as the release notes. The app reads the file at most every 3 s. While a change waits for the file, the app reads it every second.
 
 The entity "Update" has one of these states:
 
@@ -527,7 +527,7 @@ The entity "Update" has one of these states:
 | Update available | `latest` is not the same as `installed`. |
 | No update | In all other cases. |
 
-After an install that needs a restart, `installed` stays the running release and `latest` is the new release. So the entity stays in the list of updates, and Install restarts the panel.
+After an install that needs a restart, `installed` stays the running release and `latest` is the new release with the text "(restart required)". The title is "Restart required to finish" and the new release. So the entity stays in the list of updates, the title and the latest version show the new state, and Install restarts the panel. See "What Home Assistant shows" in [autoupdate.md](autoupdate.md).
 
 The app does not run as root. Each action is one line on the FIFO of `tsx-panelctl`:
 

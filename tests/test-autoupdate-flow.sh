@@ -25,6 +25,8 @@ case "\$1 \${2:-}" in
 "update ") cat "$T/update.txt" 2>/dev/null; exit "\${APK_UPDATE_RC:-0}";;
 "upgrade --simulate") cat "$T/sim.txt" 2>/dev/null; exit 0;;
 "upgrade "|"upgrade --force-missing-repositories")
+	# The state that Home Assistant sees while apk runs.
+	cp "$T/run/update-ha-state.json" "$T/during.json" 2>/dev/null; cp "$T/run/update.state" "$T/during.state" 2>/dev/null
 	# A good install makes the next board version the installed one.
 	if [ "\${APK_UPGRADE_RC:-0}" = 0 ] && [ -f "$T/board.next" ]; then mv "$T/board.next" "$T/board.ver"; fi
 	exit "\${APK_UPGRADE_RC:-0}";;
@@ -101,7 +103,16 @@ chk "$(jf "$T/run/update.json" .pending_count)" 2 "2: two pending packages"
 chk "$(jf "$T/run/update.json" .reboot_pending)" true "2: musl -> restart needed after the install"
 # only other packages are pending: the latest version is the installed release plus a note
 chk "$(jf "$T/run/update-ha-state.json" .installed_version)/$(jf "$T/run/update-ha-state.json" .latest_version)" "0.3.5/0.3.5 + 2 packages" "2: latest with only other packages pending"
-chk "$(jf "$T/run/update-ha-state.json" .release_summary)" "musl (1.2.5-r0 -> 1.2.5-r1); libfoo (1.0-r0 -> 1.1-r0); restart needed after install" "2: summary lists the packages"
+chk "$(jf "$T/run/update-ha-state.json" .release_summary)" "Packages to install:
+
+- musl (1.2.5-r0 -> 1.2.5-r1)
+- libfoo (1.0-r0 -> 1.1-r0)
+
+Restart needed after install." "2: the summary is a Markdown list, one package on each line, the restart note on its own line"
+chk "$(sed -n 's/^summary //p' "$T/run/update.state")" 'Packages to install:\n\n- musl (1.2.5-r0 -> 1.2.5-r1)\n- libfoo (1.0-r0 -> 1.1-r0)\n\nRestart needed after install.' "2: update.state: the summary on one line, with \\n"
+chk "$(wc -l < "$T/run/update.state")" 8 "2: update.state has 8 lines (no raw newline in the summary)"
+grep -c 'Packages to install' "$T/run/update-ha-state.json" | grep -qx 1 && [ "$(wc -l < "$T/run/update-ha-state.json")" = 1 ] || { echo "FAIL: 2: update-ha-state.json is not one line"; fail=1; }
+chk "$(jf "$T/run/update-ha-state.json" .title)" "TSX tsx packages" "2: title, nothing installed yet"
 chk "$(jf "$T/run/update-ha-state.json" .restart_required)" false "2: nothing installed yet"
 NOWDATE=2026-01-01 NOWHHMM=04:00 run >/dev/null
 grep -q '^APK upgrade$' "$T/apk.calls" || { echo "FAIL: 2: apk upgrade not run"; fail=1; }
@@ -391,8 +402,14 @@ reset_state 20
 printf "$SIM_BOARD" > "$T/sim.txt"
 NOWDATE=2026-02-01 NOWHHMM=12:00 run check >/dev/null
 chk "$(ha .installed_version)/$(ha .latest_version)" 0.3.5/0.3.6 "20a: board package: installed 0.3.5, latest 0.3.6 (a subpackage and tsx-base do not count)"
-chk "$(ha .release_summary)" "tsx-fake-board (0.3.5-r2 -> 0.3.6-r0); tsx-base (0.3.5-r0 -> 0.3.6-r0); restart needed after install" "20a: summary"
-chk "$(sed -n 's/^summary //p' "$T/run/update.state")" "$(ha .release_summary)" "20a: update.state has the same summary"
+chk "$(ha .release_summary)" "Packages to install:
+
+- tsx-fake-board (0.3.5-r2 -> 0.3.6-r0)
+- tsx-base (0.3.5-r0 -> 0.3.6-r0)
+
+Restart needed after install." "20a: summary: a Markdown list, one package on each line"
+chk "$(sed -n 's/^summary //p' "$T/run/update.state" | sed 's/\\n/\
+/g')" "$(ha .release_summary)" "20a: update.state has the same summary (\\n for a newline)"
 # one pending package that is not the board package
 printf '(1/1) Upgrading libfoo (1.0-r0 -> 1.1-r0)\n' > "$T/sim.txt"
 NOWDATE=2026-02-01 NOWHHMM=12:01 run check >/dev/null
@@ -419,14 +436,25 @@ echo "on 40" > "$T/idled"; conf manual off; reset_calls
 NOWDATE=2026-02-02 NOWHHMM=12:00 run now >/dev/null
 grep -q '^APK upgrade$' "$T/apk.calls" || { echo "FAIL: 20c: install now did not install"; fail=1; }
 grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20c: restarted with AUTO_RESTART=off"; fail=1; }
-chk "$(ha .installed_version)/$(ha .latest_version)" 0.3.5/0.3.6 "20c: installed stays the running release, latest is the new one"
-chk "$(ha .release_summary)" "installed, restart required" "20c: summary"
+chk "$(ha .installed_version)/$(ha .latest_version)" "0.3.5/0.3.6 (restart required)" "20c: installed stays the running release, latest is the new one and says restart required"
+chk "$(ha .release_summary)" "Installed. Restart the panel to finish the update.
+
+Press Install, or the Restart button, to restart the panel now." "20c: summary: starts with the installed note"
+chk "$(ha .title)" "Restart required to finish 0.3.6" "20c: the title says restart required"
+chk "$(sed -n 's/^title //p' "$T/run/update.state")" "Restart required to finish 0.3.6" "20c: update.state: the title"
+chk "$(sed -n 's/^summary //p' "$T/run/update.state")" 'Installed. Restart the panel to finish the update.\n\nPress Install, or the Restart button, to restart the panel now.' "20c: update.state: the summary"
+# while apk ran, Home Assistant saw the install in progress (a spinner)
+chk "$(jf "$T/during.json" '[.in_progress, .title, .latest_version] | join("|")')" "true|TSX tsx packages|0.3.6" "20c: during the install: in_progress, the old title"
+grep -q '^in-progress yes$' "$T/during.state" || { echo "FAIL: 20c: update.state had no in-progress yes during the install"; fail=1; }
+jf "$T/during.json" .release_summary | head -1 | grep -qx 'Installing the packages. Do not switch the panel off.' || { echo "FAIL: 20c: the summary does not say Installing while apk runs"; fail=1; }
+chk "$(ha .in_progress)" false "20c: in_progress ends"
 chk "$(ha .restart_required)" true "20c: restart required"
 chk "$(grep -c '^restart-required yes$' "$T/run/update.state")" 1 "20c: update.state: restart required"
 chk "$(jf "$T/run/update.json" .pending_count)" 0 "20c: nothing pending after the install"
 # the next scheduled check keeps the state (the packages are installed, the board is 0.3.6 now)
 : > "$T/sim.txt"; NOWDATE=2026-02-02 NOWHHMM=12:15 run check >/dev/null
-chk "$(ha .installed_version)/$(ha .latest_version)/$(ha .restart_required)" 0.3.5/0.3.6/true "20c: a later check keeps the state"
+chk "$(ha .installed_version)/$(ha .latest_version)/$(ha .restart_required)" "0.3.5/0.3.6 (restart required)/true" "20c: a later check keeps the state"
+chk "$(ha .title)" "Restart required to finish 0.3.6" "20c: a later check keeps the title"
 # auto mode with AUTO_RESTART=off: the schedule restarts nothing
 conf auto off; echo blank > "$T/idled"; reset_calls
 NOWDATE=2026-02-02 NOWHHMM=04:00 run >/dev/null
@@ -441,7 +469,7 @@ grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20c: install on the restart e
 # 20d: the fake boot: the running release is the installed release, the state is gone
 echo boot-22 > "$T/bootid"; rm -f "$T/state/reboot-marker"
 NOWDATE=2026-02-02 NOWHHMM=12:40 run boot >/dev/null
-chk "$(ha .installed_version)/$(ha .latest_version)/$(ha .restart_required)/$(ha .release_summary)" "0.3.6/0.3.6/false/up to date" "20d: after the boot"
+chk "$(ha .installed_version)/$(ha .latest_version)/$(ha .restart_required)/$(ha .release_summary)/$(ha .title)" "0.3.6/0.3.6/false/up to date/TSX tsx packages" "20d: after the boot: the normal title and notes"
 chk "$(grep -c '^restart-required no$' "$T/run/update.state")" 1 "20d: update.state after the boot"
 # the same boot id again changes nothing
 NOWDATE=2026-02-02 NOWHHMM=12:41 run boot >/dev/null
@@ -505,6 +533,31 @@ chk "$(wc -l < "$T/apk.calls")" 0 "20f: refresh calls no apk"
 rm -f "$T/run/autoupdate.conf"
 out=$(run status); echo "$out" | grep -q '^mode: *auto (automatic restart on)$' || { echo "FAIL: 20f: status mode line: $(echo "$out" | grep '^mode')"; fail=1; }
 echo "$out" | grep -q '^installed: *0.3.5' || { echo "FAIL: 20f: status installed line"; fail=1; }
+conf auto on
+
+# 20g: an install that leaves the release number as it is (only tsx-base changes): the title and latest still say restart required
+reset_state 27
+printf '(1/1) Upgrading tsx-base (0.3.5-r0 -> 0.3.5-r1)\n' > "$T/sim.txt"
+conf manual off; echo "on 40" > "$T/idled"
+NOWDATE=2026-02-05 NOWHHMM=12:00 run now >/dev/null
+chk "$(ha '[.installed_version, .latest_version, .title, .restart_required] | join("|")')" "0.3.5|0.3.5 (restart required)|Restart required to finish the update|true" "20g: same release: installed, latest and title"
+chk "$(ha .release_summary | head -1)" "Installed. Restart the panel to finish the update." "20g: the notes start with the installed note"
+# 20h: a restart is required and another package waits: both are in the notes
+printf '(1/1) Upgrading libfoo (1.0-r0 -> 1.1-r0)\n' > "$T/sim.txt"
+NOWDATE=2026-02-05 NOWHHMM=12:10 run check >/dev/null
+chk "$(ha .release_summary)" "Installed. Restart the panel to finish the update.
+
+Also pending:
+
+- libfoo (1.0-r0 -> 1.1-r0)" "20h: restart required and one package pending" 
+chk "$(ha '[.latest_version, .title] | join("|")')" "0.3.5 + 1 package|Restart required to finish the update" "20h: latest and title"
+# 20i: a repository warning is its own paragraph
+printf 'WARNING: updating and opening https://x.example/tsx/common/x86/APKINDEX.tar.gz: temporary error\n' > "$T/update.txt"
+: > "$T/sim.txt"
+NOWDATE=2026-02-05 NOWHHMM=12:20 run check >/dev/null
+ha .release_summary | tail -1 | grep -q '^WARNING: tsx-aports repository unreachable' || { echo "FAIL: 20i: the warning is not the last line of the notes"; fail=1; }
+ha .release_summary | sed -n 4p | grep -q '^$' || { echo "FAIL: 20i: no blank line before the warning"; fail=1; }
+: > "$T/update.txt"
 conf auto on
 
 # ---- 14: no Chromium call at all ------------------------------------------------

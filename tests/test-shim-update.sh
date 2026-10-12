@@ -241,6 +241,49 @@ check("poll: no change, no message", mine(msgs), [])
 state_file(restart_required=False)
 dev.poll(d, msgs.extend)
 check("poll: restart required off", mine(msgs), [("restart_required", False)])
+
+# ---- the Update entity after an install that needs a restart ----------------------------
+# The versions stay as they are. Home Assistant writes a new state only when the title, the latest
+# version or in_progress change, so the shim must push these. The notes are Markdown with newlines.
+def upd(msgs):
+    return [m for m in msgs if getattr(m, "key", None) == d.update.key]
+
+LIST_NOTES = "Packages to install:\n\n- tsx-base (0.3.5-r0 -> 0.3.6-r0)\n- tsx-setup (0.3.5-r0 -> 0.3.6-r0)\n\nRestart needed after install."
+DONE_NOTES = ("Installed. Restart the panel to finish the update.\n\n"
+              "Press Install, or the Restart button, to restart the panel now.")
+state_file(restart_required=False, in_progress=False, release_summary=LIST_NOTES, latest_version="0.3.6")
+msgs = []; dev.poll(d, msgs.extend); msgs.clear()
+m = d.update._state_msg()
+check("update: the list as release notes, newlines kept", m.release_summary, LIST_NOTES)
+check("update: the list has one package on each line", m.release_summary.count("\n- "), 2)
+check("update: before the install: title, latest, in_progress",
+      (m.title, m.latest_version, m.in_progress), ("TSX HOST packages", "0.3.6", False))
+state_file(restart_required=False, in_progress=True, release_summary="Installing the packages. Do not switch the panel off.\n\n" + LIST_NOTES)
+dev.poll(d, msgs.extend)
+check("update: apk runs: pushes in_progress", [(m.in_progress, m.current_version) for m in upd(msgs)], [(True, "0.3.5")])
+msgs.clear()
+state_file(restart_required=True, in_progress=False, release_summary=DONE_NOTES,
+           latest_version="0.3.6 (restart required)", title="Restart required to finish 0.3.6")
+dev.poll(d, msgs.extend)
+got = upd(msgs)
+check("update: after the install the shim pushes a new state", len(got), 1)
+m = got[0]
+check("update: after the install: the versions stay, the latest says restart required",
+      (m.current_version, m.latest_version, m.in_progress), ("0.3.5", "0.3.6 (restart required)", False))
+check("update: after the install: title and notes", (m.title, m.release_summary),
+      ("Restart required to finish 0.3.6", DONE_NOTES))
+check("update: the notes start with the installed note", m.release_summary.splitlines()[0],
+      "Installed. Restart the panel to finish the update.")
+msgs.clear()
+dev.poll(d, msgs.extend)
+check("update: no change, no push", upd(msgs), [])
+# after the restart
+state_file(installed_version="0.3.6", latest_version="0.3.6", restart_required=False, release_summary="up to date",
+           title="TSX HOST packages")
+dev.poll(d, msgs.extend)
+m = upd(msgs)[0]
+check("update: after the restart", (m.current_version, m.latest_version, m.release_summary, m.title),
+      ("0.3.6", "0.3.6", "up to date", "TSX HOST packages"))
 sys.exit(1 if fails else 0)
 PY
 echo "PASS test-shim-update"

@@ -24,8 +24,10 @@
 # release is the version of the board package tsx-<family>-board (tsx-base if
 # the panel has no board package). The installed version is the release that
 # RUNS: tsx-autoupdate records it at each boot. After an install that needs a
-# restart, the latest version is the installed release. If only other
-# packages are pending, the latest version is "<release> + N packages".
+# restart, the latest version is "<release> (restart required)" and the title
+# says "Restart required to finish <release>". If only other packages are
+# pending, the latest version is "<release> + N packages". The summary is
+# Markdown (a list, one package on each line): HA shows it as release notes.
 #
 # Repositories: apk refuses to upgrade anything while a listed repository is
 # unavailable. Sometimes only the own repositories of this project cannot be
@@ -192,10 +194,27 @@ set_fields() {  # set_fields FILE "k1=v1" "k2=v2" ...
 	mv "$tmp" "$f"
 }
 
-jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+# jesc TEXT: a JSON string body. Backslash and quote get a backslash, and
+# each newline becomes the two characters \n (JSON has no raw newline).
+jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk 'BEGIN { ORS = "" } NR > 1 { print "\\n" } { print }'; }
+
+# esc_nl TEXT: the text with a backslash doubled and each newline written as
+# \n. The panel app reads the summary line of update.state this way.
+esc_nl() { printf '%s' "$1" | sed 's/\\/\\\\/g' | awk 'BEGIN { ORS = "" } NR > 1 { print "\\n" } { print }'; }
+
+# md_list "a (x -> y); b (x -> y)": a Markdown list, one package on each line.
+md_list() { printf '%s\n' "$1" | tr ';' '\n' | sed 's/^ *//; s/ *$//; /^$/d; s/^/- /'; }
 
 # compute_view: what Home Assistant shows. It sets V_INSTALLED (the running
-# release), V_LATEST, V_SUMMARY and V_RESTART (1 = a restart is required).
+# release), V_LATEST, V_TITLE, V_SUMMARY (Markdown: HA shows it as the release
+# notes) and V_RESTART (1 = a restart is required).
+#
+# Why the title and the latest version change after an install: the dialog of
+# an update in Home Assistant reads the release notes once, when it opens.
+# Home Assistant also writes a new entity state only when an attribute
+# changes. So an install that leaves the versions as they are would look
+# the same. The title and the latest version say "restart required", and the
+# notes tell the reason when the dialog opens again.
 compute_view() {
 	f=$STATE/fields
 	run=$(get_field "$f" running_version)
@@ -207,9 +226,15 @@ compute_view() {
 	plist=$(get_field "$f" pending_list)
 	prel=$(get_field "$f" pending_release)
 	rb=$(get_field "$f" reboot_pending)
+	ipg=$(get_field "$f" in_progress)
+	host=$(hostname 2>/dev/null); [ -n "$host" ] || host=tsx
 	V_RESTART=0; [ "$(get_field "$f" restart_required)" = 1 ] && V_RESTART=1
 	V_INSTALLED=$run
-	V_SUMMARY=
+	V_TITLE="TSX $host packages"
+	nl='
+'
+	paras=
+	[ "$ipg" = 1 ] && paras="Installing the packages. Do not switch the panel off."
 	if [ "$pcount" -gt 0 ] 2>/dev/null; then
 		if [ -n "$prel" ] && [ "$prel" != "$run" ]; then
 			V_LATEST=$prel
@@ -217,18 +242,25 @@ compute_view() {
 			noun=packages; [ "$pcount" = 1 ] && noun=package
 			V_LATEST="$run + $pcount $noun"
 		fi
-		[ "$V_RESTART" = 1 ] && V_SUMMARY="installed, restart required; also pending: "
-		V_SUMMARY="$V_SUMMARY$plist"
-		[ "$rb" = 1 ] && V_SUMMARY="$V_SUMMARY; restart needed after install"
+		if [ "$V_RESTART" = 1 ]; then
+			paras="${paras:+$paras$nl$nl}Installed. Restart the panel to finish the update.${nl}${nl}Also pending:"
+			[ "$run" != "$inst" ] && V_TITLE="Restart required to finish $inst" || V_TITLE="Restart required to finish the update"
+		else
+			paras="${paras:+$paras$nl$nl}Packages to install:"
+		fi
+		paras="$paras$nl$nl$(md_list "$plist")"
+		[ "$rb" = 1 ] && paras="$paras${nl}${nl}Restart needed after install."
 	elif [ "$V_RESTART" = 1 ]; then
-		if [ "$inst" != "$run" ]; then V_LATEST=$inst; else V_LATEST="$run + restart"; fi
-		V_SUMMARY="installed, restart required"
+		V_LATEST="$inst (restart required)"
+		if [ "$inst" != "$run" ]; then V_TITLE="Restart required to finish $inst"; else V_TITLE="Restart required to finish the update"; fi
+		paras="${paras:+$paras$nl$nl}Installed. Restart the panel to finish the update.${nl}${nl}Press Install, or the Restart button, to restart the panel now."
 	else
 		V_LATEST=$run
 	fi
 	rw=$(get_field "$f" repo_warning)
-	[ -n "$rw" ] && V_SUMMARY="${V_SUMMARY:+$V_SUMMARY; }WARNING: $rw"
-	[ -n "$V_SUMMARY" ] || V_SUMMARY="up to date"
+	[ -n "$rw" ] && paras="${paras:+$paras$nl$nl}WARNING: $rw"
+	[ -n "$paras" ] || paras="up to date"
+	V_SUMMARY=$paras
 	return 0
 }
 
@@ -274,31 +306,31 @@ write_update_json() {
 }
 
 # update-ha-state.json (tsx-mqtt, the ESPHome shim) and update.state (the
-# panel app, tsx-panelctl). Both say the same. The summary in update.state is
-# raw text to the end of the line.
+# panel app, tsx-panelctl). Both say the same. The summary is Markdown with
+# one package on each line. In update.state it is one line: a newline is the
+# two characters \n and a backslash is doubled (see esc_nl).
 write_ha_json() {
 	f=$STATE/fields
 	compute_view
 	ip=$(get_field "$f" in_progress); [ "$ip" = 1 ] && ipj=true || ipj=false
-	host=$(hostname 2>/dev/null); [ -n "$host" ] || host=tsx
 	mkdir -p "$RUN" 2>/dev/null
 	{
 		printf '{'
 		printf '"installed_version":"%s",' "$(jesc "$V_INSTALLED")"
 		printf '"latest_version":"%s",' "$(jesc "$V_LATEST")"
-		printf '"title":"TSX %s packages",' "$(jesc "$host")"
+		printf '"title":"%s",' "$(jesc "$V_TITLE")"
 		printf '"release_summary":"%s",' "$(jesc "$V_SUMMARY")"
 		printf '"in_progress":%s,' "$ipj"
 		printf '"restart_required":%s,' "$([ "$V_RESTART" = 1 ] && echo true || echo false)"
 		printf '"mode":"%s",' "$MODE"
 		printf '"auto_restart":%s' "$([ "$AUTO_RESTART" = on ] && echo true || echo false)"
 		printf '}\n'
-	} > "$RUN/update-ha-state.json"
+	} > "$RUN/update-ha-state.json.$$" && mv "$RUN/update-ha-state.json.$$" "$RUN/update-ha-state.json"
 	{
 		printf 'installed %s\n' "$V_INSTALLED"
 		printf 'latest %s\n' "$V_LATEST"
-		printf 'title TSX %s packages\n' "$host"
-		printf 'summary %s\n' "$(printf '%s' "$V_SUMMARY" | tr '\n' ' ')"
+		printf 'title %s\n' "$(printf '%s' "$V_TITLE" | tr '\n' ' ')"
+		printf 'summary %s\n' "$(esc_nl "$V_SUMMARY")"
 		printf 'in-progress %s\n' "$([ "$ip" = 1 ] && echo yes || echo no)"
 		printf 'restart-required %s\n' "$([ "$V_RESTART" = 1 ] && echo yes || echo no)"
 		printf 'mode %s\n' "$MODE"

@@ -118,7 +118,8 @@ chmod 600 "$M/mosquitto_pub" "$M/mosquitto_sub"
 
 pub() {  # pub [-r] TOPIC PAYLOAD
 	r=; [ "$1" = -r ] && { r=-r; shift; }
-	if [ "$DRY" = 1 ]; then echo "PUB${r:+ (retained)} $1 $2"; return 0; fi
+	# dry run: printf, not echo (echo of ash turns a \n of the JSON into a newline)
+	if [ "$DRY" = 1 ]; then printf 'PUB%s %s %s\n' "${r:+ (retained)}" "$1" "$2"; return 0; fi
 	# setsid + timeout limit connect+publish to $PUBTO seconds, even with an
 	# unreachable broker. setsid puts mosquitto_pub in its own process group
 	# (pgid = pid of timeout). The stop trap can then kill both with one

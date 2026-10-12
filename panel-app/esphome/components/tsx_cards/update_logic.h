@@ -7,7 +7,7 @@
 //   installed 0.3.5
 //   latest 0.3.6
 //   title TSX HOST packages
-//   summary Text to the end of the line. No escape.
+//   summary Markdown text on one line: \n is a newline and \\ is a backslash.
 //   in-progress yes|no
 //   restart-required yes|no
 //   mode auto|manual
@@ -49,6 +49,22 @@ struct UpdateStatus {
   // The latest version for the entity: the installed one when the file has no latest.
   std::string latest_version() const { return this->latest.empty() ? this->installed : this->latest; }
 };
+
+// The summary line: the two characters \n are a newline, \\ is a backslash.
+// Any other backslash stays as it is.
+inline std::string unescape_summary(const std::string &v) {
+  std::string out;
+  out.reserve(v.size());
+  for (size_t i = 0; i < v.size(); i++) {
+    if (v[i] == '\\' && i + 1 < v.size() && (v[i + 1] == 'n' || v[i + 1] == '\\')) {
+      out += v[i + 1] == 'n' ? '\n' : '\\';
+      i++;
+    } else {
+      out += v[i];
+    }
+  }
+  return out;
+}
 
 inline int update_yes_no(const std::string &v) { return v == "yes" ? 1 : v == "no" ? 0 : -1; }
 
@@ -94,7 +110,7 @@ inline bool parse_update_state(const std::string &text, UpdateStatus &s) {
     else if (key == "title")
       s.title = value;
     else if (key == "summary")
-      s.summary = value;
+      s.summary = unescape_summary(value);
     else if (key == "in-progress")
       s.in_progress = update_yes_no(value);
     else if (key == "restart-required")
@@ -107,13 +123,14 @@ inline bool parse_update_state(const std::string &text, UpdateStatus &s) {
   return s.known();
 }
 
-// Read the file (at most 4 KiB). No file: the status is not present.
+// Read the file (at most 16 KiB: a long list of packages). No file: the
+// status is not present.
 inline bool read_update_state(const std::string &path, UpdateStatus &s) {
   s = UpdateStatus();
   FILE *f = fopen(path.c_str(), "r");
   if (f == nullptr)
     return false;
-  char buf[4096];
+  static char buf[16384];
   size_t n = fread(buf, 1, sizeof buf, f);
   fclose(f);
   return parse_update_state(std::string(buf, n), s);
