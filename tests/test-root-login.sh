@@ -120,8 +120,81 @@ printf 'root:%s:19000:0:::::\n' "$HASH" > "$SH"; touch -d '2026-02-01 00:00:00' 
 for f in issue motd; do grep -q 'password is set' "$T/$f" && ! grep -q 'login on this screen is off' "$T/$f" && ok "check: $f says the password is set after passwd" || bad "check: $f stays stale after passwd"; done
 printf 'root:*::0:::::\n' > "$SH"; touch -d '2026-03-01 00:00:00' "$SH"; cban
 grep -q 'no password is set' "$T/issue" && ok "check: the password removed, the banner follows" || bad "check: banner stays at password set"
-grep -q 'tsx-banner watch' "$HERE/base/etc/local.d/tsx-banner.start" && ok "the boot hook starts the watch" || bad "boot hook does not start the watch"
 busybox sh -n "$BAN" && ok "tsx-banner passes busybox sh -n" || bad "tsx-banner: busybox sh -n"
+
+echo "== tsx-banner watch: inotify events, no polling =="
+# The panel busybox has inotifyd. A host busybox often has not (Debian): then
+# a stand-in polls the folders five times a second and runs the program as
+# inotifyd does ("PROG EVENTS FOLDER FILE"). A stat in front of PATH counts
+# the checks of tsx-banner (each check runs stat once).
+W=$T/watch; mkdir -p "$W/etc" "$W/root/.ssh" "$W/run" "$W/bin"; echo FAKE-100 > "$W/run/model"
+WSH=$W/etc/shadow WAK=$W/root/.ssh/authorized_keys
+REAL_STAT=$(command -v stat)
+printf '#!/bin/sh\necho x >> "%s/stat.calls"\nexec "%s" "$@"\n' "$W" "$REAL_STAT" > "$W/bin/stat"; chmod 755 "$W/bin/stat"
+cat > "$W/inotifyd" <<'STUB'
+#!/bin/sh
+# The program runs from this shell (not from a pipe), so its parent is this
+# process, as with inotifyd.
+prog=$1; shift
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"; exit 0' TERM INT
+snap() { for a in "$@"; do d=${a%%:*}; [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 1 -printf "%h %f %T@ %s %i\n"; done | sort; }
+snap "$@" > "$tmp/old"
+while sleep 0.2; do
+	snap "$@" > "$tmp/new"
+	grep -vxF -f "$tmp/old" "$tmp/new" > "$tmp/ev"
+	mv "$tmp/new" "$tmp/old"
+	while read -r d f _; do "$prog" y "$d" "$f"; done < "$tmp/ev"
+done
+STUB
+chmod 755 "$W/inotifyd"
+if busybox inotifyd 2>&1 | grep -q 'Usage: inotifyd'; then INOTIFYD="busybox inotifyd"; echo "  (real busybox inotifyd)"
+else INOTIFYD=$W/inotifyd; echo "  (no inotifyd in the host busybox: the polling stand-in)"; fi
+# wenv replaces its shell: call it in a subshell, so $! of "( wenv ... ) &" is the watch itself.
+wenv() { exec env PATH="$W/bin:$PATH" TSX_BANNER_ART="$ART" TSX_ISSUE_FILE="$W/issue" TSX_MOTD_FILE="$W/motd" TSX_RUN="$W/run" TSX_IP=192.0.2.10 TSX_NO_RESPAWN=1 TSX_ROOTPW_BIN="$RPW" TSX_SHADOW_FILE="$WSH" TSX_AUTH_KEYS_FILE="$WAK" "$@"; }
+# wait_for TEXT SECONDS: the issue file has TEXT within SECONDS
+wait_for() { i=0; while [ $i -lt $(($2 * 10)) ]; do grep -q "$1" "$W/issue" 2>/dev/null && return 0; sleep 0.1; i=$((i + 1)); done; return 1; }
+calls() { wc -l < "$W/stat.calls" 2>/dev/null | tr -d ' ' || echo 0; }
+printf 'root:*::0:::::\n' > "$WSH"; : > "$WAK"
+( wenv TSX_INOTIFYD="$INOTIFYD" TSX_WATCH_SEC=300 sh "$BAN" watch ) >/dev/null 2>&1 &
+WPID=$!
+wait_for 'Nobody can log in' 5 && ok "watch: the first check writes the banner" || bad "watch: no banner at start"
+sleep 1; c0=$(calls); sleep 3
+eq "$(calls)" "$c0" "watch: no check while nothing changes (3 s)"
+# passwd writes a new file and renames it over /etc/shadow
+printf 'root:%s:19000:0:::::\n' "$HASH" > "$WSH.new"; mv "$WSH.new" "$WSH"
+wait_for 'password is set' 3 && ok "watch: the banner follows passwd (a rename) at once" || bad "watch: no update after the rename of shadow"
+printf 'root:*::0:::::\n' > "$WSH.new"; mv "$WSH.new" "$WSH"
+wait_for 'Nobody can log in' 3 && ok "watch: the password removed, the banner follows" || bad "watch: no update after the second rename"
+echo "$KEY" >> "$WAK"
+wait_for 'over SSH with your key' 3 && ok "watch: the banner follows a new key at once" || bad "watch: no update after a new key"
+c1=$(calls); touch -d '2026-05-01 00:00:00' "$WAK"; sleep 1.5
+[ "$(calls)" -gt "$c1" ] && ok "watch: a new time on the key file (touch) runs a check" || bad "watch: no check after touch"
+c1=$(calls); echo x > "$W/etc/other"; echo y > "$W/root/.ssh/known_hosts"; sleep 1.5
+eq "$(calls)" "$c1" "watch: a change of another file in the folders runs no check"
+left() { ps -eo pid,args | grep -F -e "$BAN" -e "$W/" | grep -v grep; }
+stop_watch() { kill "$WPID"; sleep 1; l=$(left); [ -z "$l" ] && ok "watch: TERM ends the watch, the timer and inotifyd ($1)" || bad "watch: processes left after TERM ($1): $l"; }
+stop_watch "events"
+
+echo "== tsx-banner watch: a key folder that comes later, no inotifyd =="
+rm -rf "$W/root/.ssh" "$W/issue"; printf 'root:*::0:::::\n' > "$WSH"
+( wenv TSX_INOTIFYD="$INOTIFYD" TSX_WATCH_SEC=300 sh "$BAN" watch ) >/dev/null 2>&1 &
+WPID=$!
+wait_for 'Nobody can log in' 5 || bad "watch (no key folder): no banner at start"
+mkdir "$W/root/.ssh"; sleep 0.5; echo "$KEY" > "$WAK"
+wait_for 'over SSH with your key' 15 && ok "watch: a new key folder starts the watch again, the key shows" || bad "watch: the key in a new key folder is not seen"
+sleep 1
+echo "$KEY" > "$WAK.2"; mv "$WAK.2" "$WAK"; printf 'root:%s:19000:0:::::\n' "$HASH" > "$WSH.new"; mv "$WSH.new" "$WSH"
+wait_for 'password is set' 3 && ok "watch: the new watch sees passwd at once" || bad "watch: no update after the new watch"
+stop_watch "new key folder"
+printf 'root:*::0:::::\n' > "$WSH"; rm -f "$W/issue"
+( wenv TSX_INOTIFYD="$W/no-such-inotifyd" TSX_WATCH_SEC=1 sh "$BAN" watch ) >/dev/null 2>&1 &
+WPID=$!
+wait_for 'over SSH with your key' 5 || bad "watch (no inotifyd): no banner at start"
+printf 'root:%s:19000:0:::::\n' "$HASH" > "$WSH"; touch -d '2026-04-01 00:00:00' "$WSH"
+wait_for 'password is set' 4 && ok "watch: with no inotifyd the slow timer still runs the check" || bad "watch: no update with no inotifyd"
+stop_watch "no inotifyd"
+c2=$(calls); ( TSX_BANNER_EVENT=1 wenv sh "$BAN" w "$W/etc" other ); eq "$(calls)" "$c2" "an event of another file ends at once, with no check"
+grep -q 'tsx-banner watch' "$HERE/base/etc/local.d/tsx-banner.start" && ok "the boot hook starts the watch" || bad "boot hook does not start the watch"
 
 echo "== no package file is changed by a boot script (securetty, motd) =="
 # A script that changes a file of a package makes apk write a .apk-new file at

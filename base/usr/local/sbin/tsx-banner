@@ -8,10 +8,16 @@
 #                     getty processes. init starts them again, so the login
 #                     prompt shows the new address.
 #
-#   tsx-banner watch  run "check" every few seconds, without end
+#   tsx-banner watch  run "check" when the root password or the authorized
+#                     keys change, without end. inotifyd watches the folders
+#                     of the two files (passwd replaces /etc/shadow by a
+#                     rename), so the banner follows a passwd or a new key at
+#                     once. A slow timer (every 5 min) also runs "check": it
+#                     covers a change that the watch cannot see, for example
+#                     with no inotifyd. The watch starts no process while
+#                     nothing changes.
 #   tsx-banner check  write both files only when the root password or the
-#                     authorized keys changed since the last run. This is how
-#                     the banner follows a passwd or a new key at once.
+#                     authorized keys changed since the last run.
 #
 # /etc/local.d/tsx-banner.start runs it at boot, starts "watch", and runs it
 # again when the DHCP lease gives an address. /etc/udhcpc/post-bound/tsx-banner
@@ -19,7 +25,8 @@
 # The model comes from /run/tsx/model, which /etc/init.d/tsx-hostname writes.
 # Test hooks: TSX_BANNER_ART TSX_ISSUE_FILE TSX_MOTD_FILE TSX_RUN TSX_IP
 # (an empty value means: no address) TSX_ROOTPW_BIN TSX_PKILL TSX_NO_RESPAWN=1
-# TSX_SHADOW_FILE TSX_AUTH_KEYS_FILE TSX_WATCH_SEC.
+# TSX_SHADOW_FILE TSX_AUTH_KEYS_FILE TSX_WATCH_SEC (the slow timer, 300)
+# TSX_INOTIFYD (the inotifyd command).
 set -u
 SHADOW=${TSX_SHADOW_FILE:-/etc/shadow}
 KEYS=${TSX_AUTH_KEYS_FILE:-/root/.ssh/authorized_keys}
@@ -31,11 +38,71 @@ RUN=${TSX_RUN:-/run/tsx}
 # the files that decide which root password case the banner shows
 stamp() { stat -c '%Y:%s' "$SHADOW" "$KEYS" 2>/dev/null | tr '\n' ' '; }
 
-case "${1:-}" in
+# The folders that "watch" gives to inotifyd. The folder of the keys can be
+# missing (no key yet): then its parent, and the event of the new folder
+# starts the watch again with the folder itself.
+watch_args() {
+	set -- "${SHADOW%/*}:wymnde"
+	if [ -d "${KEYS%/*}" ]; then set -- "$@" "${KEYS%/*}:wymndex"
+	else set -- "$@" "${KEYS%/*/*}:ymn"; fi
+	echo "$@"
+}
+
+mode=${1:-}
+if [ "${TSX_BANNER_EVENT:-}" = 1 ]; then
+	# inotifyd runs this script for each event in a watched folder:
+	# $1 the events, $2 the folder, $3 the file in it. Most events are of
+	# other files: they end here, with no other process.
+	unset TSX_BANNER_EVENT
+	case "$2/${3:-}" in
+	"$SHADOW"|"$KEYS") mode=check;;
+	"${KEYS%/*}")
+		# The folder of the keys is new: end this inotifyd (the parent of
+		# this script). "watch" starts it again with the folder.
+		kill "$PPID" 2>/dev/null; mode=check;;
+	*)
+		# The folder of the keys is gone ("x"): start the watch again.
+		case "$1" in *x*) kill "$PPID" 2>/dev/null;; esac
+		exit 0;;
+	esac
+fi
+
+case "$mode" in
 watch)
-	while :; do sleep "${TSX_WATCH_SEC:-3}"; "$0" check; done;;
+	period=${TSX_WATCH_SEC:-300}
+	"$0" check
+	# The slow timer, in a child shell: one sleep and one check in each
+	# period. The waits run in the background with "wait", so a TERM ends
+	# them at once (a shell runs a trap only after a foreground command).
+	(
+		s=; trap 'kill $s 2>/dev/null; exit 0' TERM
+		while :; do sleep "$period" & s=$!; wait "$s"; "$0" check; done
+	) &
+	timer=$! ipid= s=
+	trap 'kill $timer $ipid $s 2>/dev/null; exit 0' TERM INT HUP
+	# shellcheck disable=SC2086 # the command can have arguments
+	set -- ${TSX_INOTIFYD:-inotifyd}
+	if ! command -v "$1" >/dev/null 2>&1; then
+		wait "$timer"; exit 0
+	fi
+	while :; do
+		# inotifyd runs "$0 EVENTS FOLDER FILE" for each event. It ends when
+		# the event of a new or a removed key folder ends it, or when it
+		# cannot start (no inotify). Then start it again after a pause and
+		# check once for a change in that time.
+		# shellcheck disable=SC2046 # the folder list is split on purpose
+		TSX_BANNER_EVENT=1 "$@" "$0" $(watch_args) </dev/null >/dev/null 2>&1 &
+		ipid=$!
+		wait "$ipid"
+		ipid=
+		sleep 10 & s=$!
+		wait "$s"
+		s=
+		"$0" check
+	done;;
 check)
-	[ "$(stamp)" != "$(cat "$RUN/banner.stamp" 2>/dev/null)" ] || exit 0;;
+	old=; IFS= read -r old 2>/dev/null < "$RUN/banner.stamp"
+	[ "$(stamp)" != "$old" ] || exit 0;;
 esac
 mkdir -p "$RUN" 2>/dev/null; stamp > "$RUN/banner.stamp" 2>/dev/null
 
