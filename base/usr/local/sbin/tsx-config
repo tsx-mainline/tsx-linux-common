@@ -42,6 +42,15 @@
 # Keys:
 # PANEL_NAME, KIOSK_URL, HA_LOGIN_METHOD (token|trusted), HA_TOKEN, TZ_NAME,
 # VOICE (on|off), WAKE_WORD.
+# KIOSK_DARK (on|off, default off): the kiosk browser asks pages for the dark
+#   color scheme (the Chromium flags --force-dark-mode and
+#   --blink-settings=preferredColorScheme=0). Home Assistant then shows its
+#   dark theme when the profile theme of the user is "Auto", and the page
+#   starts with the dark loading screen. Apply writes it to
+#   /run/tsx/kiosk.conf, which kiosk-session reads after /etc/kiosk.conf. A
+#   running browser keeps the old value until the kiosk restarts. The setup
+#   page and tsx-panelctl (dark-mode) restart it, and so does the Home
+#   Assistant "Dark mode" switch. A panel with no kiosk browser ignores the key.
 # HA_URL: the URL of the Home Assistant of this panel, only the scheme, the
 #   host and the port (https://ha.example.org:8123). The setup page sends a
 #   visitor there for "Log in with Home Assistant" (docs/setup.md). Empty =
@@ -151,7 +160,7 @@ BOARD=${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}
 [ -r "$BOARD" ] || BOARD=$(dirname "$0")/../lib/tsx/board.sh
 . "$BOARD"
 
-KNOWN_KEYS="PANEL_NAME KIOSK_URL HA_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_API_KEY HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR APK_URL BLANK_TIMEOUT KEY_LED_BLANK BOOT_VERBOSE ORIENTATION BT_PROXY BT_ACTIVE BT_MAC PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE UPDATE_MODE UPDATE_AUTO_RESTART ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
+KNOWN_KEYS="PANEL_NAME KIOSK_URL KIOSK_DARK HA_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_API_KEY HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR APK_URL BLANK_TIMEOUT KEY_LED_BLANK BOOT_VERBOSE ORIENTATION BT_PROXY BT_ACTIVE BT_MAC PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE UPDATE_MODE UPDATE_AUTO_RESTART ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 SECRET_KEYS="HA_TOKEN HA_API_KEY MQTT_PASSWORD ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 
 usage() { sed -n '2,/^set -eu$/p' "$0" | sed '$d' >&2; exit 2; }
@@ -368,6 +377,7 @@ val_ok() {
 	KIOSK_URL) printf '%s' "$v" | grep -Eq '^https?://[^[:space:]]+$';;
 	# the origin only: a host name or an IPv4 or [IPv6] address, an optional port
 	HA_URL) [ -z "$v" ] && return 0; printf '%s' "$v" | grep -Eq '^https?://([A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?/?$';;
+	KIOSK_DARK) case "$v" in on|off) return 0;; esac; return 1;;
 	HA_LOGIN_METHOD) case "$v" in token|trusted) return 0;; esac; return 1;;
 	HA_TOKEN) printf '%s' "$v" | grep -Eq '^[A-Za-z0-9._-]{20,}$';;
 	TZ_NAME) printf '%s' "$v" | grep -Eq '^[A-Za-z0-9_+/-]{1,64}$';;
@@ -711,6 +721,9 @@ apply() {
 		[ -n "$url" ] && printf 'KIOSK_URL="%s"\n' "$(shq "$url")"
 		tz=$(cfg_get TZ_NAME) || tz=
 		[ -n "$tz" ] && printf 'TZ_NAME="%s"\n' "$(shq "$tz")"
+		kd=$(cfg_get KIOSK_DARK) || kd=
+		[ -n "$kd" ] && printf 'KIOSK_DARK="%s"\n' "$(shq "$kd")"
+		true
 	} | write_override "$RUN/kiosk.conf" 644   # read by kiosk-session as the kiosk user (no secrets in it)
 
 	{ [ -n "$name" ] && printf 'SENDSPIN_NAME="%s"\n' "$(shq "$name")"; } | write_override "$RUN/sendspin.conf"

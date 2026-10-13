@@ -165,7 +165,7 @@ KEY_NAMES = [line.split()[1] for line in open(board_keys) if line.startswith("bu
 check("the keys of the board layer of the made-up board", KEY_NAMES,
       ["prog1", "prog2", "prog3", "prog4", "extra1", "extra2", "extra3"])
 PARTS = ("ledbar", "ledbar_fx", "ledbar_leds", "key_leds", "als", "sound_card", "presence",
-         "usb_power", "poe", "emmc", "nfc")
+         "usb_power", "poe", "emmc", "dark_mode", "nfc")
 
 class Backend:
     ORIENTATIONS = backend_mod.PanelBackend.ORIENTATIONS
@@ -216,7 +216,7 @@ set_bt(False)
 ALL = dict.fromkeys(PARTS, True)
 d = standalone(ALL)
 REF = listed(d.entities)
-check("all parts: the entity count (with the actions)", len(REF), 44)
+check("all parts: the entity count (with the actions)", len(REF), 45)
 check("all parts: the key LED entities have the new ids, the old ids are gone",
       sorted(i for i in REF if "key_leds" in i or i in ("keypad", "key_led_blank")),
       ["key_leds", "key_leds_screen_off"])

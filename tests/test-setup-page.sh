@@ -246,6 +246,7 @@ const STORED = {
   ok($("f-url").value === "https://ha.example.org" && $("f-name").value === "panel-b", "the URL and the panel name show");
   ok($("f-mqtt-user").value === "u300", "the MQTT user shows (u300)");
   ok($("f-orient").value === "landscape", "no ORIENTATION: landscape shows");
+  ok($("f-dark").value === "off", "no KIOSK_DARK: the dark mode shows off");
   ok($("f-kernel").value === "stable" && $("f-tz").value === "America/Denver", "the kernel flavor and the time zone show");
   ok($("f-btproxy").value === "on", "BT_PROXY shows");
   ok($("f-mqtt-host").value === "mq.example" && $("f-mqtt-port").value === "", "MQTT host shows, the empty MQTT port is empty");
@@ -358,6 +359,7 @@ const STORED = {
   await flush();
   ok(p.$("url-card").style.display === "none", "the page URL card is hidden");
   ok(p.$("f-url").disabled, "its field is disabled, so a save does not send it");
+  ok(p.$("dark-wrap").style.display === "none" && p.$("f-dark").disabled, "without a kiosk browser the dark mode is hidden and disabled, so a save does not send it");
   ok(p.$("login-wrap").style.display === "none" && p.$("f-token").disabled, "the login method of the browser is hidden and disabled (plugin of tsx-ha)");
   ok(p.$("f-tz").value === bz, "the time zone shows the zone of this browser: " + p.$("f-tz").value);
   p.$("f-url").value = "https://example.org";
@@ -374,6 +376,21 @@ const STORED = {
   p = load({ state: stateWith(STORED, { kiosk: true }), status: {} });
   await flush();
   ok(p.$("url-card").style.display === "block" && !p.$("f-url").disabled && p.$("login-wrap").style.display === "block", "with a kiosk the URL card and the login method show");
+  ok(p.$("dark-wrap").style.display === "block" && !p.$("f-dark").disabled, "with a kiosk the dark mode shows");
+  console.log("== dark mode: the stored value shows, a change is sent, the old value is not ==");
+  p = load({ state: stateWith(Object.assign({}, STORED, { KIOSK_DARK: "on" }), { kiosk: true }), status: {} });
+  await flush();
+  ok(p.$("f-dark").value === "on", "KIOSK_DARK on shows on");
+  p.submit(); await flush();
+  ok(same(p.lastSubmit().fields, {}), "an unchanged dark mode is not sent: " + JSON.stringify(p.lastSubmit().fields));
+  p.$("f-dark").value = "off";
+  p.submit(); await flush();
+  ok(same(p.lastSubmit().fields, { KIOSK_DARK: "off" }), "a changed dark mode is sent: " + JSON.stringify(p.lastSubmit().fields));
+  p = load({ state: stateWith(STORED, { kiosk: true }), status: {} });
+  await flush();
+  p.$("f-dark").value = "on";
+  p.submit(); await flush();
+  ok(same(p.lastSubmit().fields, { KIOSK_DARK: "on" }), "off to on is sent: " + JSON.stringify(p.lastSubmit().fields));
 
 
   console.log("== CSRF: every POST sends the token of the state, a GET sends none ==");

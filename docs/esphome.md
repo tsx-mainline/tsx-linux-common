@@ -52,6 +52,7 @@ The kiosk panels (this device) and the panel app ([panel-app.md](panel-app.md)) 
 | Dim timeout, Dim level | number | No dim stage in `tsx-idled` | yes | `DIM_TIMEOUT`, `DIM_LEVEL` |
 | Kiosk URL | text | yes | No | `KIOSK_URL` |
 | Reload page | button | yes | No | |
+| Dark mode | switch | yes | No (no browser) | `KIOSK_DARK` |
 | Update | update | yes | yes | The state of `tsx-autoupdate` |
 | Restart required | binary sensor | yes | yes | The state of `tsx-autoupdate` |
 | Restart | button | yes | yes | |
@@ -65,6 +66,18 @@ The kiosk panels (this device) and the panel app ([panel-app.md](panel-app.md)) 
 The Backlight number is the percent of the brightness slider on every family, with the scale of the overlay (`tsx-level.h`): a square for a backlight with more than 64 steps. `tsx-panelctl` maps it to the level of `tsx-idled` (`brightness-pct`, `get backlight-pct`). Before 0.3.4 the number of a kiosk panel had the raw backlight steps.
 
 A setting that Home Assistant changes goes through `tsx-config set` and `tsx-config apply`, so it stays after a reboot. The live states act at once, as the overlay does. The secrets and the settings of the system (the SSH key, the root password, the update source, the reinstall) are not entities. They stay on the setup page, behind its login ([setup.md](setup.md)).
+
+## Dark mode
+
+The switch "Dark mode" (object id `dark_mode`, icon `mdi:theme-light-dark`, MQTT topics `dark_mode/state` and `dark_mode/set`) is on a panel that runs the kiosk browser. A panel with the panel app has no browser and no switch. In MQTT, the payload is `ON` or `OFF`.
+
+- A change sends `dark-mode on` or `dark-mode off` to `tsx-panelctl`. It saves `KIOSK_DARK` in `panel.conf` with `tsx-config set` and `tsx-config apply`.
+- The browser reads the flags at its start. So `tsx-panelctl` restarts the kiosk service when the value changes. The page loads again, dark or light.
+- `tsx-panelctl get dark-mode` reads the value from `/run/tsx/kiosk.conf`, else from `/etc/kiosk.conf`. The shim asks again only when one of the two files changed.
+- A value that Home Assistant sets shows at once. The shim and `tsx-mqtt` hold it for 10 seconds, as for the update settings.
+- `tsx-mqtt` announces the switch only where `tsx-panelctl has dark-mode` is true. It clears an older discovery topic on other panels.
+
+What the setting does in the browser is in [setup.md](setup.md) "Dark mode of the browser".
 
 ## Update entities
 
@@ -88,7 +101,7 @@ Five entities show and control the updates of the panel. They are the same on th
 
 `tsx-panelctl` saves `UPDATE_MODE` and `UPDATE_AUTO_RESTART` with `tsx-config set` and `tsx-config apply`, so both settings stay after a restart. The setup page shows the same two settings. A value that Home Assistant sets shows at once. The shim and `tsx-mqtt` hold it for 10 seconds, until the state of `tsx-autoupdate` has the value. Without this hold, the next poll would show the old value for a moment.
 
-The code is in `ha/voice/shim/tsx_panel/backend.py` (`get_update_mode`, `get_auto_restart`, `get_restart_required`) and `device.py`, and in `ha/usr/local/sbin/tsx-mqtt`. The tests are `tests/test-shim-update.sh`, `tests/test-esphome.sh` and `tests/mqtt-dry.sh`.
+The code is in `ha/voice/shim/tsx_panel/backend.py` (`get_update_mode`, `get_auto_restart`, `get_restart_required`) and `device.py`, and in `ha/usr/local/sbin/tsx-mqtt`. The tests are `tests/test-shim-update.sh`, `tests/test-shim-dark.sh`, `tests/test-esphome.sh` and `tests/mqtt-dry.sh`.
 
 ## Entity keys
 

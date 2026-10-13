@@ -199,6 +199,30 @@ case "$f" in *--disable-gpu-compositing*) bad "GPU browser: software flags";; *)
 f=$(bflags 0 "--fake-gl-flag" "")
 case "$f" in *--disable-gpu-compositing*) ok "software browser: GPU compositing off";; *) bad "software browser flags: $f";; esac
 case "$f" in *--fake-gl-flag*|*--ignore-gpu-blocklist*) bad "software browser: GPU flags: $f";; *) ok "software browser: the GPU flags stay out";; esac
+# KIOSK_DARK=on adds the two dark flags before KIOSK_EXTRA_FLAGS. Off, unset and any other word: no flag.
+bdark() { # KIOSK_DARK value, or "unset"
+	env -i PATH="$PATH" sh -c '
+		log() { :; }
+		KIOSK_PROFILE='"$T"'/profile KIOSK_SCALE=1 KIOSK_NO_SANDBOX=1 browser_gl=1 KIOSK_BROWSER_GL_FLAGS="" KIOSK_DISABLE_FEATURES=""
+		[ "'"$1"'" = unset ] || KIOSK_DARK="'"$1"'"
+		. '"$T"'/browser.sh
+		echo "$@"' 2>&1; }
+f=$(bdark on)
+case " $f " in *" --force-dark-mode "*) ok "KIOSK_DARK=on: --force-dark-mode";; *) bad "KIOSK_DARK=on, no --force-dark-mode: $f";; esac
+case " $f " in *" --blink-settings=preferredColorScheme=0 "*) ok "KIOSK_DARK=on: --blink-settings=preferredColorScheme=0";; *) bad "KIOSK_DARK=on, no blink setting: $f";; esac
+for v in off unset yes 1 On ""; do
+	f=$(bdark "$v")
+	case "$f" in *force-dark-mode*|*preferredColorScheme*) bad "KIOSK_DARK='$v' added a dark flag: $f";; *) ok "KIOSK_DARK='$v': no dark flag";; esac
+done
+# the flags come before KIOSK_EXTRA_FLAGS, which kiosk-session appends last
+ds=$(grep -n 'KIOSK_DARK' "$KS" | grep -c 'set -- "\$@" --force-dark-mode')
+[ "$ds" = 1 ] && ok "kiosk-session adds the dark flags once" || bad "dark flags in kiosk-session: $ds places"
+dline=$(grep -n -- '--force-dark-mode' "$KS" | head -n 1 | cut -d: -f1); xline=$(grep -n 'set -- "\$@" \$KIOSK_EXTRA_FLAGS' "$KS" | head -n 1 | cut -d: -f1)
+[ -n "$dline" ] && [ -n "$xline" ] && [ "$dline" -lt "$xline" ] && ok "the dark flags come before KIOSK_EXTRA_FLAGS (the extra flags can override)" || bad "order of dark flags ($dline) and extra flags ($xline)"
+# the override of tsx-config apply wins over /etc/kiosk.conf, and the default is off
+kc=$(sed -n '/^\. \/etc\/kiosk.conf/,/^\[ -s \/run\/tsx\/kiosk-url \]/p' "$KS")
+case "$kc" in *'. /run/tsx/kiosk.conf'*) ok "kiosk-session reads /run/tsx/kiosk.conf after /etc/kiosk.conf";; *) bad "kiosk-session does not read the override: $kc";; esac
+grep -qx 'KIOSK_DARK=off' "$HERE/kiosk/etc/kiosk.conf" && ok "kiosk.conf: KIOSK_DARK=off by default" || bad "kiosk.conf has no KIOSK_DARK=off"
 # name order, only *.sh, and every safe file runs
 H=$T/h3; mkhooks "$H"
 hk "$H" 10-a.sh 'order=a'

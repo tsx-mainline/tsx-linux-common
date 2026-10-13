@@ -103,6 +103,17 @@ for v in sideways Portrait 90 "portrait " "" "landscape;reboot"; do
 done
 run validate ORIENTATION portrait && ok "validate ORIENTATION portrait (the setup page's check)" || bad "validate ORIENTATION portrait"
 
+echo "== KIOSK_DARK: on or off, nothing else =="
+for v in on off; do
+	run set KIOSK_DARK "$v" && [ "$(run get KIOSK_DARK)" = "$v" ] && ok "KIOSK_DARK $v accepted" || bad "KIOSK_DARK $v"
+done
+for v in yes 1 true On OFF "on " "" "on;reboot"; do
+	run set KIOSK_DARK "$v" >/dev/null 2>&1 && bad "KIOSK_DARK '$v' accepted" || ok "KIOSK_DARK '$v' rejected"
+done
+run validate KIOSK_DARK on && ok "validate KIOSK_DARK on (the setup page's check)" || bad "validate KIOSK_DARK on"
+run validate KIOSK_DARK dark >/dev/null 2>&1 && bad "validate KIOSK_DARK dark" || ok "validate KIOSK_DARK dark fails"
+run unset KIOSK_DARK && ok "KIOSK_DARK can be removed" || bad "unset KIOSK_DARK"
+
 echo "== AUTO_BRIGHTNESS and ALS_SCALE =="
 for kv in "AUTO_BRIGHTNESS on" "AUTO_BRIGHTNESS off" "ALS_SCALE 1" "ALS_SCALE 0.01" "ALS_SCALE 16" "ALS_SCALE 2.5" "ALS_SCALE 1000" "ALS_SCALE 1.125"; do
 	set -- $kv

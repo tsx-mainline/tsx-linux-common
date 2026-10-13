@@ -226,6 +226,18 @@ for v in ftp://x.example.org 'https://a b' 'http://' relative/path; do
 done
 set_ APK_URL /media/usb/tsx-aports >/dev/null 2>&1 && ok "APK_URL local directory accepted" || bad "APK_URL local directory rejected"
 
+echo "== KIOSK_DARK: the override /run/tsx/kiosk.conf for kiosk-session =="
+apply_ >/dev/null 2>&1
+grep -q '^KIOSK_DARK=' "$FX/run/tsx/kiosk.conf" && bad "KIOSK_DARK in the override while unset" || ok "unset: no KIOSK_DARK line (kiosk.conf of /etc counts)"
+set_ KIOSK_DARK on >/dev/null; apply_ >/dev/null 2>&1
+grep -qx 'KIOSK_DARK="on"' "$FX/run/tsx/kiosk.conf" && ok "KIOSK_DARK on -> KIOSK_DARK=\"on\" in the override" || bad "kiosk.conf: $(cat "$FX/run/tsx/kiosk.conf")"
+grep -q '^KIOSK_URL=' "$FX/run/tsx/kiosk.conf" && grep -q '^TZ_NAME=' "$FX/run/tsx/kiosk.conf" && ok "the URL and the time zone stay in the override" || bad "kiosk.conf lost a line"
+[ "$(stat -c %a "$FX/run/tsx/kiosk.conf")" = 644 ] && ok "the override is world-readable (644)" || bad "kiosk.conf mode"
+set_ KIOSK_DARK off >/dev/null; apply_ >/dev/null 2>&1
+grep -qx 'KIOSK_DARK="off"' "$FX/run/tsx/kiosk.conf" && ok "KIOSK_DARK off is written (it wins over a value of /etc/kiosk.conf)" || bad "kiosk.conf: $(cat "$FX/run/tsx/kiosk.conf")"
+TSX_CONF="$CFG" busybox sh "$SCRIPT" unset KIOSK_DARK >/dev/null; apply_ >/dev/null 2>&1
+grep -q '^KIOSK_DARK=' "$FX/run/tsx/kiosk.conf" && bad "KIOSK_DARK left after unset" || ok "unset again: the line is gone"
+
 echo "== BLANK_TIMEOUT: /run/tsx/blank-timeout for tsx-idled =="
 [ ! -e "$FX/run/tsx/blank-timeout" ] && ok "unset: no blank-timeout file" || bad "blank-timeout written while unset"
 set_ BLANK_TIMEOUT 600 >/dev/null; applyb

@@ -204,6 +204,7 @@ class PanelBackend:
         self._verbose_boot_pending: Optional[Tuple[bool, float]] = None
         self._update_mode_pending: Optional[Tuple[str, float]] = None
         self._auto_restart_pending: Optional[Tuple[bool, float]] = None
+        self._dark_mode_pending: Optional[Tuple[bool, float]] = None
 
     # ---- the seam: tsx-panelctl ---------------------------------------------
     def _panelctl(self, *args, timeout=5):
@@ -216,13 +217,17 @@ class PanelBackend:
             return False, ""
         return res.returncode == 0, res.stdout.strip()
 
-    def _panelctl_setting(self, name):
-        """`tsx-panelctl get NAME` for an update setting, as _panelctl. A good
-        answer stays until tsx-autoupdate reads another file: the settings are the
-        shell variables of its two settings files, so the answer changes only when
-        one of them changes. The poll then starts no process (it started one for
-        each of the two settings every second). A failed call is not kept."""
-        sig = (_stat_sig(self.autoupdate_conf), _stat_sig(self.autoupdate_override))
+    def _panelctl_setting(self, name, files=None):
+        """`tsx-panelctl get NAME` for a setting that a file holds, as
+        _panelctl. A good answer stays until the files change: the update
+        settings are the shell variables of the two files of tsx-autoupdate
+        (the default), the dark mode is in the two files of the kiosk, so the
+        answer changes only when one of them changes. The poll then starts no
+        process (it started one for each of the settings every second). A
+        failed call is not kept."""
+        if files is None:
+            files = (self.autoupdate_conf, self.autoupdate_override)
+        sig = tuple(_stat_sig(f) for f in files)
         hit = self._setting_cache.get(name)
         if hit is not None and hit[0] == sig:
             return hit[1]
@@ -1091,6 +1096,31 @@ class PanelBackend:
     def set_auto_restart(self, on: bool) -> None:
         self._auto_restart_pending = (bool(on), time.monotonic())
         self._ctl("auto-restart", "on" if on else "off")
+
+    # ---- dark mode (KIOSK_DARK, panel.conf) ---------------------------------------
+    def dark_mode_present(self) -> bool:
+        """The panel runs the kiosk browser (tsx-panelctl has dark-mode)."""
+        return self._panelctl("has", "dark-mode")[0]
+
+    def get_dark_mode(self) -> bool:
+        """True while the kiosk browser starts with the dark color scheme,
+        from `tsx-panelctl get dark-mode` (the override of tsx-config apply,
+        else /etc/kiosk.conf). The answer is cached until one of the two
+        files changes (as get_update_mode). A value just set is reported
+        until the files have it (a few seconds at most)."""
+        ok, out = self._panelctl_setting("dark-mode", (self.kiosk_conf, self.run_dir / "kiosk.conf"))
+        value = (out.split() or [""])[0] == "on" if ok else False
+        pending = self._dark_mode_pending
+        if pending and pending[0] != value and time.monotonic() - pending[1] < 10:
+            return pending[0]
+        self._dark_mode_pending = None
+        return value
+
+    def set_dark_mode(self, on: bool) -> None:
+        """Save KIOSK_DARK. tsx-panelctl restarts the kiosk browser when the
+        value changes, so the page starts again in the new scheme."""
+        self._dark_mode_pending = (bool(on), time.monotonic())
+        self._ctl("dark-mode", "on" if on else "off")
 
     def get_restart_required(self) -> bool:
         """True while installed packages wait for a restart (the key

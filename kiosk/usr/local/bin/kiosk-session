@@ -23,7 +23,7 @@ set -u
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 . /etc/kiosk.conf
 [ -r /etc/tsx/panel-board.conf ] && . /etc/tsx/panel-board.conf   # the values of the board
-# panel.conf overrides (KIOSK_URL, TZ_NAME). tsx-config apply generates them
+# panel.conf overrides (KIOSK_URL, KIOSK_DARK, TZ_NAME). tsx-config apply generates them
 # at boot. See the header of tsx-config.
 [ -r /run/tsx/kiosk.conf ] && . /run/tsx/kiosk.conf
 # URL chosen with a front-panel key when DevTools is off (tsx-buttons, NAV_FALLBACK=restart)
@@ -315,6 +315,11 @@ set -- --ozone-platform=wayland \
 	--pull-to-refresh=0 --autoplay-policy=no-user-gesture-required \
 	--force-device-scale-factor="$KIOSK_SCALE" \
 	--renderer-process-limit=2 --disk-cache-size=67108864 --log-level=2
+# KIOSK_DARK=on: pages see the dark color scheme (prefers-color-scheme: dark),
+# and Chromium darkens a page that has no dark mode of its own. Home Assistant
+# then uses its dark theme (profile theme "Auto") and starts with its dark
+# loading screen. The flags come before KIOSK_EXTRA_FLAGS, which can override them.
+[ "${KIOSK_DARK:-off}" = on ] && set -- "$@" --force-dark-mode --blink-settings=preferredColorScheme=0
 # Keep the cache off the data partition (see KIOSK_CACHE_DIR in kiosk.conf).
 # Drop the old copy inside the profile once. It would only take space on the card.
 if [ -n "${KIOSK_CACHE_DIR:-}" ] && [ -d "$KIOSK_CACHE_DIR" ] && [ -w "$KIOSK_CACHE_DIR" ]; then

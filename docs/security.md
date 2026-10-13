@@ -55,6 +55,7 @@ The FIFO is `/run/tsx/panelctl`, mode 660. The group is `kiosk` on a panel with 
 | `reboot` | `reboot` |
 | `update-install` | `tsx-autoupdate now`: install at once, in both modes. The daemon starts it detached (its own session, no FIFO, no terminal). Init adopts and reaps it, so no zombie stays. See [Automatic update](autoupdate.md). |
 | `update-mode auto\|manual`, `auto-restart on\|off` | A key of `panel.conf` (`UPDATE_MODE`, `UPDATE_AUTO_RESTART`), then `tsx-config apply` |
+| `dark-mode on\|off` | A key of `panel.conf` (`KIOSK_DARK`), then `tsx-config apply`. When the value changes, it restarts the kiosk service in the background. |
 | `setup` | `tsx-config setup`: open the setup page for about 15 minutes |
 | `layout-install ID` | `tsx-layout-check --install` of the fixed file `/run/tsx/panel-app/app/layout.ha` to `/var/lib/tsx/panel-layout.json`. The result goes to `/run/tsx/panel-app/layout.result`. |
 

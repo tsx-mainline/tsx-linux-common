@@ -578,6 +578,93 @@ send "layout-install"; send "layout-install x"; send "layout-install 1234567"; s
 [ ! -s "$T/cmds.log" ] && [ "$(grep -c 'rejected:' "$T/panelctl.log")" = $((r0 + 5)) ] && ok "5 bad layout-install lines rejected" || bad "bad layout-install lines: $(cat "$T/cmds.log")"
 ls -A "$T/run" | grep -q '^\.panel-app-layout' && bad "a temporary result file stays" || ok "no temporary result file stays"
 
+echo "== dark-mode: KIOSK_DARK through tsx-config, a restart of the kiosk when the value changes =="
+# A fake tsx-config that keeps KIOSK_DARK and writes the override as apply does.
+# A fake rc-service that logs. With KIOSK_STATUS_FAIL it says that the kiosk is stopped.
+mkdir -p "$T/run5" "$T/dbin"
+cat > "$T/dbin/tsx-config" <<EOF
+#!/bin/sh
+echo "tsx-config \$*" >> "$T/dcmds.log"
+case "\$1 \$2" in
+"set KIOSK_DARK") echo "\$3" > "$T/dark.val";;
+"apply ") if [ -s "$T/dark.val" ]; then echo "KIOSK_DARK=\"\$(cat "$T/dark.val")\"" > "$T/run5/kiosk.conf"; else rm -f "$T/run5/kiosk.conf"; fi;;
+esac
+EOF
+cat > "$T/dbin/rc-service" <<EOF
+#!/bin/sh
+echo "rc-service \$*" >> "$T/dcmds.log"
+[ -n "\${KIOSK_STATUS_FAIL:-}" ] && [ "\$2" = status ] && exit 3
+exit 0
+EOF
+chmod +x "$T/dbin/tsx-config" "$T/dbin/rc-service"
+printf '# kiosk\nKIOSK_URL=""\nKIOSK_DARK=off\n' > "$T/kiosk.conf"
+: > "$T/dcmds.log"; rm -f "$T/dark.val" "$T/run5/kiosk.conf"
+DENV=(env PATH="$T/dbin:$PATH" TSX_RUN_DIR="$T/run5" TSX_KIOSK_CONF="$T/kiosk.conf" TSX_CONFIG_BIN="$T/dbin/tsx-config" TSX_RC_SERVICE="$T/dbin/rc-service"
+	TSX_PANEL_APP_STATE="$T/run5/panel-app.state" TSX_IDLED_STATE="$T/idled.state")
+dpc() { "${DENV[@]}" busybox sh "$SCRIPT" "$@"; }
+dstart() { # the daemon. exec makes $DPID the daemon itself, so that dstop kills it
+	( exec "${DENV[@]}" busybox sh "$SCRIPT" ) > "$T/dpanelctl.log" 2>&1 &
+	DPID=$!
+	for _ in $(seq 1 20); do grep -q "listening on" "$T/dpanelctl.log" 2>/dev/null && break; sleep 0.1; done
+}
+dstop() { kill "$DPID" 2>/dev/null; wait "$DPID" 2>/dev/null; true; }
+dsend() { # the daemon logs each line it takes: wait for that line, then for the background restart
+	n0=$(wc -l < "$T/dpanelctl.log")
+	echo "$1" > "$T/run5/panelctl"
+	for _ in $(seq 1 50); do [ "$(wc -l < "$T/dpanelctl.log")" -gt "$n0" ] && break; sleep 0.1; done
+	sleep 0.4
+}
+dstart
+dpc has dark-mode && ok "has dark-mode: the kiosk.conf of tsx-kiosk exists" || bad "has dark-mode"
+[ "$(dpc get dark-mode)" = off ] && ok "get dark-mode: off, from KIOSK_DARK of /etc/kiosk.conf" || bad "get dark-mode: '$(dpc get dark-mode)'"
+dpc state | grep -qxF "dark-mode off" && ok "state: dark-mode off" || bad "state misses dark-mode off: $(dpc state)"
+sed -i 's/^KIOSK_DARK=off/KIOSK_DARK=on  # comment/' "$T/kiosk.conf"
+[ "$(dpc get dark-mode)" = on ] && ok "get dark-mode: on from /etc/kiosk.conf (a comment after the value does not matter)" || bad "get dark-mode (conf on): '$(dpc get dark-mode)'"
+sed -i 's/^KIOSK_DARK=on.*/KIOSK_DARK=dark/' "$T/kiosk.conf"
+[ "$(dpc get dark-mode)" = off ] && ok "a value other than on counts as off (as kiosk-session does)" || bad "get dark-mode (bad value): '$(dpc get dark-mode)'"
+sed -i 's/^KIOSK_DARK=.*/KIOSK_DARK=off/' "$T/kiosk.conf"
+echo 'KIOSK_DARK="on"' > "$T/run5/kiosk.conf"
+[ "$(dpc get dark-mode)" = on ] && ok "the override of tsx-config apply wins over /etc/kiosk.conf" || bad "get dark-mode (override): '$(dpc get dark-mode)'"
+echo 'KIOSK_URL="https://ha.example.org"' > "$T/run5/kiosk.conf"
+[ "$(dpc get dark-mode)" = off ] && ok "an override with no KIOSK_DARK line: the value of /etc/kiosk.conf" || bad "get dark-mode (override without the key): '$(dpc get dark-mode)'"
+rm -f "$T/run5/kiosk.conf"
+: > "$T/dcmds.log"
+dsend "dark-mode on"
+[ "$(cat "$T/dcmds.log")" = "$(printf 'tsx-config set KIOSK_DARK on\ntsx-config apply\nrc-service kiosk status\nrc-service kiosk restart')" ] \
+	&& ok "dark-mode on: tsx-config set + apply, then the kiosk restarts" || bad "dark-mode on: $(cat "$T/dcmds.log")"
+[ "$(dpc get dark-mode)" = on ] && ok "get dark-mode: on after the command" || bad "get dark-mode after on"
+: > "$T/dcmds.log"
+dsend "dark-mode on"
+[ "$(cat "$T/dcmds.log")" = "$(printf 'tsx-config set KIOSK_DARK on\ntsx-config apply')" ] \
+	&& ok "dark-mode on again: saved, and no restart (the value did not change)" || bad "dark-mode on again: $(cat "$T/dcmds.log")"
+: > "$T/dcmds.log"
+dsend "dark-mode off"
+[ "$(cat "$T/dcmds.log")" = "$(printf 'tsx-config set KIOSK_DARK off\ntsx-config apply\nrc-service kiosk status\nrc-service kiosk restart')" ] \
+	&& ok "dark-mode off: the value changes, the kiosk restarts" || bad "dark-mode off: $(cat "$T/dcmds.log")"
+: > "$T/dcmds.log"; r0=$(grep -c 'rejected:' "$T/dpanelctl.log")
+dsend "dark-mode"; dsend "dark-mode maybe"; dsend "dark-mode on x"; dsend "dark-mode *"; dsend "dark-mode On"
+[ ! -s "$T/dcmds.log" ] && [ "$(grep -c 'rejected:' "$T/dpanelctl.log")" = $((r0 + 5)) ] && ok "5 bad dark-mode lines rejected" || bad "bad dark-mode lines: $(cat "$T/dcmds.log")"
+dstop
+# the kiosk service is stopped: the value is saved, and the restart does not run
+rm -f "$T/dark.val" "$T/run5/kiosk.conf"
+export KIOSK_STATUS_FAIL=1
+dstart
+: > "$T/dcmds.log"
+dsend "dark-mode on"
+grep -qxF 'tsx-config set KIOSK_DARK on' "$T/dcmds.log" && ! grep -qxF 'rc-service kiosk restart' "$T/dcmds.log" \
+	&& ok "the kiosk is stopped: the value is saved and nothing restarts" || bad "kiosk stopped: $(cat "$T/dcmds.log") // $(tail -n 4 "$T/dpanelctl.log")"
+dstop
+unset KIOSK_STATUS_FAIL
+# the panel app owns the screen, or the panel has no kiosk: no dark-mode
+mkdir -p "$T/proc/4243"; printf 'pid 4243\nstarted 1\n' > "$T/run5/panel-app.state"
+TSX_PROC_DIR="$T/proc" dpc has dark-mode 2>/dev/null && bad "has dark-mode while the panel app runs" || ok "has dark-mode is false while the panel app runs (its process exists)"
+TSX_PROC_DIR="$T/proc" dpc get dark-mode >/dev/null 2>&1 && bad "get dark-mode while the panel app runs" || ok "get dark-mode fails while the panel app owns the screen"
+rm -rf "$T/proc/4243" "$T/run5/panel-app.state"
+env TSX_RUN_DIR="$T/run5" TSX_KIOSK_CONF="$T/no-such-kiosk.conf" busybox sh "$SCRIPT" has dark-mode \
+	&& bad "has dark-mode without kiosk.conf" || ok "a panel with no kiosk.conf (the panel app): no dark-mode"
+env TSX_RUN_DIR="$T/run5" TSX_KIOSK_CONF="$T/no-such-kiosk.conf" busybox sh "$SCRIPT" state | grep -q '^dark-mode' \
+	&& bad "state lists dark-mode without kiosk.conf" || ok "state lists no dark-mode without kiosk.conf"
+
 echo "== the group of the FIFO: the first group of TSX_PANELCTL_GROUPS that exists =="
 G=$(id -gn)
 env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run4" TSX_PANELCTL_ONESHOT=1 TSX_PANELCTL_GROUPS="tsx-no-such-group $G" busybox sh "$SCRIPT" > "$T/oneshot4.log" 2>&1 &

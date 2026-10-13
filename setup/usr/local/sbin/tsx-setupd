@@ -95,7 +95,7 @@ the mode is "on" when /etc/kiosk.conf exists. With the mode "off":
 
   * The page has no page URL card, and a save does not need KIOSK_URL. The
     page also hides the fields that only a service of tsx-kiosk reads:
-    KIOSK_URL and BLANK_TIMEOUT (tsx-idled). A plugin names its own such
+    KIOSK_URL, KIOSK_DARK and BLANK_TIMEOUT (tsx-idled). A plugin names its own such
     keys in KIOSK_ONLY_KEYS. A save leaves these keys as they are.
   * The panel is "configured" when panel.conf has at least one key. While
     it is not configured, a save always sends TZ_NAME, so the first save
@@ -123,7 +123,7 @@ clients get the code from the state API too, as in the kiosk mode.
 
 A save (handle_submit) restarts the kiosk only when the setup page is on the
 screen (a loopback request or the open window) or when the save changed a
-key that the kiosk reads at its start (KIOSK_URL, HA_LOGIN_METHOD,
+key that the kiosk reads at its start (KIOSK_URL, KIOSK_DARK, HA_LOGIN_METHOD,
 HA_TOKEN). A remote administrator who changes MQTT does not reload the
 screen of the panel.
 
@@ -221,7 +221,7 @@ KIOSK_MODE = (os.environ.get("TSX_SETUP_KIOSK") or _conf.get("TSX_SETUP_KIOSK") 
 if KIOSK_MODE not in ("auto", "on", "off"):
     KIOSK_MODE = "auto"
 # the keys that only a service of tsx-kiosk reads (tsx-idled reads BLANK_TIMEOUT)
-BASE_KIOSK_ONLY_KEYS = ("KIOSK_URL", "BLANK_TIMEOUT")
+BASE_KIOSK_ONLY_KEYS = ("KIOSK_URL", "KIOSK_DARK", "BLANK_TIMEOUT")
 
 
 def kiosk_enabled():
@@ -739,7 +739,7 @@ PAIRING = Pairing()
 # separately below (required). These are the keys of the base system. A
 # plugin adds its own keys (see "plugins" below).
 BASE_SIMPLE_KEYS = ["PANEL_NAME", "TZ_NAME", "SSH_AUTHORIZED_KEY",
-                    "KERNEL_FLAVOR", "BLANK_TIMEOUT", "ORIENTATION",
+                    "KERNEL_FLAVOR", "BLANK_TIMEOUT", "ORIENTATION", "KIOSK_DARK",
                     "PRESENCE_WAKE", "PRESENCE_DISTANCE_MM", "PRESENCE_HOLD_S",
                     "AUTO_BRIGHTNESS", "ALS_SCALE"]
 # Empty = cleared. The page pre-fills these keys, so an empty one was cleared
@@ -869,7 +869,7 @@ STALE_MESSAGE = ("The settings of the panel changed after this page loaded. Noth
 
 # The keys that the kiosk reads only at its start: a save that changes one
 # restarts the kiosk, also from a remote session.
-KIOSK_START_KEYS = {"KIOSK_URL", "HA_LOGIN_METHOD", "HA_TOKEN"}
+KIOSK_START_KEYS = {"KIOSK_URL", "KIOSK_DARK", "HA_LOGIN_METHOD", "HA_TOKEN"}
 
 
 def handle_submit(fields, revision=None, on_screen=True):
@@ -1466,6 +1466,11 @@ class Handler(BaseHTTPRequestHandler):
                 fields[k + "__set"] = True
             else:
                 fields[k] = v
+        if kiosk and "KIOSK_DARK" not in fields:
+            # not in panel.conf: the page shows the value of /etc/kiosk.conf
+            kd = load_conf(KIOSK_CONF_PATH).get("KIOSK_DARK")
+            if kd in ("on", "off"):
+                fields["KIOSK_DARK"] = kd
         sess = None if loop else self._session()
         resp = {
             "need_pairing": False,
@@ -1909,6 +1914,14 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
         <option value="portrait-flipped">Portrait, flipped (keys above)</option>
       </select>
       <div class="hint">How the panel hangs on the wall. The screen turns as soon as you save. The screen times are in the Panel section above.</div>
+      <div id="dark-wrap">
+      <label for="f-dark">Dark mode of the browser</label>
+      <select id="f-dark" name="KIOSK_DARK">
+        <option value="off">Off</option>
+        <option value="on">On</option>
+      </select>
+      <div class="hint">On: pages use the dark color scheme. Home Assistant then shows its dark theme when the theme of your profile is "Auto", and the page starts dark. The browser restarts when you save a change.</div>
+      </div>
     </div>
 
     <details id="sensors-wrap"><summary>Sensors</summary>
@@ -2037,6 +2050,7 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
     $("f-url").value = fields.KIOSK_URL || "";
     $("f-name").value = fields.PANEL_NAME || "";
     $("f-orient").value = fields.ORIENTATION || "landscape";
+    $("f-dark").value = fields.KIOSK_DARK || "off";
     $("f-pwake").value = fields.PRESENCE_WAKE || "";
     $("f-pdist").value = fields.PRESENCE_DISTANCE_MM || "";
     $("f-phold").value = fields.PRESENCE_HOLD_S || "";
@@ -2097,6 +2111,8 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
   function applyKiosk(on, s){
     $("url-card").style.display = on ? "block" : "none";
     $("f-url").disabled = !on;
+    $("f-dark").disabled = !on;
+    $("dark-wrap").style.display = on ? "block" : "none";
     if (!on && !s.configured && !$("f-tz").value) {
       var zone = "";
       try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) {}

@@ -43,7 +43,7 @@ async def main(args) -> int:
             "reload_page", "reboot", "cpu_temp", "uptime", "ip_address",
             "touched_recently", "update", "blank_timeout",
             "restart_required", "update_mode", "auto_restart",
-            "verbose_boot",
+            "verbose_boot", "dark_mode",
         }
         optional = {"ledbar", "key_leds", "key_leds_screen_off", "key_power", "key_home",
                     "emmc_life_a", "emmc_life_b", "emmc_eol"}
@@ -177,6 +177,24 @@ async def main(args) -> int:
         client.button_command(by_id["reboot"].key)
         await asyncio.sleep(0.5)
         print("OK: Restart button pressed (test-esphome.sh checks reboot ran)")
+
+        # the dark mode of the browser: a switch, and a command that persists KIOSK_DARK
+        assert by_id["dark_mode"].name == "Dark mode" and by_id["dark_mode"].icon == "mdi:theme-light-dark", by_id["dark_mode"]
+        dm_state = states.get(by_id["dark_mode"].key)
+        assert dm_state is not None, dm_state
+        print("OK: Dark mode listed (state %s)" % ("on" if dm_state.state else "off"))
+        if not args.bare:
+            # A server that an earlier run of this script used can hold a value for 10 s.
+            # So set it off first, and wait for the state.
+            client.switch_command(key=by_id["dark_mode"].key, state=False)
+            await asyncio.sleep(0.5)
+            dm_state = states.get(by_id["dark_mode"].key)
+            assert dm_state is not None and not dm_state.state, dm_state
+            client.switch_command(key=by_id["dark_mode"].key, state=True)
+            await asyncio.sleep(2.5)   # the poll runs twice: the new value stays
+            dm_state = states.get(by_id["dark_mode"].key)
+            assert dm_state is not None and dm_state.state, dm_state
+            print("OK: Dark mode set off, then on, and it stays (test-esphome.sh checks KIOSK_DARK and the kiosk restart)")
 
         # test-esphome.sh rewrites the fixture's buttons.state "last" line
         # after this point, to simulate a front-key press. Give the daemon's

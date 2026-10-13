@@ -14,8 +14,8 @@ T=${KEEPT:-$(mktemp -d)}; [ -n "${KEEPT:-}" ] || trap 'rm -rf "$T"' EXIT; mkdir 
 cat > "$T/bin/tsx-panelctl" <<'EOF'
 #!/bin/sh
 case "$1" in
-has) case "$2" in ledbar|keyleds) exit 0;; *) exit 1;; esac;;
-get) [ "$2" = backlight-pct ] && { echo 57; exit 0; }; exit 1;;
+has) case "$2" in ledbar|keyleds|dark-mode) exit 0;; *) exit 1;; esac;;
+get) [ "$2" = backlight-pct ] && { echo 57; exit 0; }; [ "$2" = dark-mode ] && { echo off; exit 0; }; exit 1;;
 send) echo "CALL tsx-panelctl $*" >&2;;
 esac
 EOF
@@ -33,7 +33,8 @@ printf '%s\n' 'tsx/tsx-kiosk/ledbar/rgb/set 255,0,0' 'tsx/tsx-kiosk/ledbar/brigh
 	'tsx/tsx-kiosk/backlight/set 0' 'tsx/tsx-kiosk/backlight/set 45.0' 'tsx/tsx-kiosk/bogus/set x' \
 	'tsx/tsx-kiosk/update/set INSTALL' 'tsx/tsx-kiosk/blank_timeout/set 600.0' 'tsx/tsx-kiosk/blank_timeout/set 99999' \
 	'tsx/tsx-kiosk/restart/set PRESS' 'tsx/tsx-kiosk/update_mode/set auto' 'tsx/tsx-kiosk/update_mode/set sometimes' \
-	'tsx/tsx-kiosk/auto_restart/set ON' 'tsx/tsx-kiosk/auto_restart/set maybe' |
+	'tsx/tsx-kiosk/auto_restart/set ON' 'tsx/tsx-kiosk/auto_restart/set maybe' \
+	'tsx/tsx-kiosk/dark_mode/set ON' 'tsx/tsx-kiosk/dark_mode/set maybe' 'tsx/tsx-kiosk/dark_mode/set OFF' 'tsx/tsx-kiosk/dark_mode/set on' |
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled \
 	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
 	TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_PANEL_BOARD_CONF=$TSX_BOARD_DIR/panel-board.conf TSX_BACKLIGHT_DIR=$T/bl \
@@ -42,7 +43,7 @@ sleep 0.3   # let the backgrounded "tsx-autoupdate now &" (update/set) finish lo
 fail=0
 chk() { grep -qF -- "$1" "$T/out" || { echo "FAIL: missing: $1"; fail=1; }; }
 n=0; grep '/config ' "$T/out" | while read -r _ _ t j; do echo "$j" | jq -e . >/dev/null || { echo "FAIL: bad JSON $t"; exit 1; }; done
-n=$(grep -c '/config ' "$T/out"); [ "$n" = 32 ] || { echo "FAIL: $n discovery configs, want 32 (the 7 keys of the board layer give 21)"; fail=1; }
+n=$(grep -c '/config ' "$T/out"); [ "$n" = 33 ] || { echo "FAIL: $n discovery configs, want 33 (the 7 keys of the board layer give 21)"; fail=1; }
 chk 'PUB (retained) tsx/tsx-kiosk/ledbar/state ON'
 chk 'PUB (retained) tsx/tsx-kiosk/ledbar/brightness 102'
 chk 'PUB (retained) tsx/tsx-kiosk/ledbar/rgb 0,0,255'
@@ -75,6 +76,15 @@ cfgu() { grep -F "PUB (retained) homeassistant/$1/config " "$T/out" | sed 's/^[^
 [ "$(cfgu binary_sensor/tsx-kiosk/restart_required | jq -r '[.name, .stat_t, .icon] | join(" ")')" = "Restart required tsx/tsx-kiosk/restart_required/state mdi:restart-alert" ] || { echo "FAIL: the Restart required config"; fail=1; }
 [ "$(cfgu select/tsx-kiosk/update_mode | jq -r '[.name, .cmd_t, .stat_t, (.options | join(",")), .icon] | join(" ")')" = "Update mode tsx/tsx-kiosk/update_mode/set tsx/tsx-kiosk/update_mode/state auto,manual mdi:update" ] || { echo "FAIL: the Update mode config"; fail=1; }
 [ "$(cfgu switch/tsx-kiosk/auto_restart | jq -r '[.name, .cmd_t, .stat_t, .icon] | join(" ")')" = "Automatic restart tsx/tsx-kiosk/auto_restart/set tsx/tsx-kiosk/auto_restart/state mdi:restart" ] || { echo "FAIL: the Automatic restart config"; fail=1; }
+# the dark mode of the browser: a switch where the panel runs the kiosk browser
+chk 'PUB (retained) homeassistant/switch/tsx-kiosk/dark_mode/config {'
+[ "$(cfgu switch/tsx-kiosk/dark_mode | jq -r '[.name, .uniq_id, .cmd_t, .stat_t, .icon] | join(" ")')" = "Dark mode tsx-kiosk_dark_mode tsx/tsx-kiosk/dark_mode/set tsx/tsx-kiosk/dark_mode/state mdi:theme-light-dark" ] || { echo "FAIL: the Dark mode config"; fail=1; }
+chk 'PUB (retained) tsx/tsx-kiosk/dark_mode/state OFF'
+chk 'CALL tsx-panelctl send dark-mode on'
+chk 'CALL tsx-panelctl send dark-mode off'
+[ "$(grep -c 'CALL tsx-panelctl send dark-mode' "$T/out")" = 2 ] || { echo "FAIL: ON and OFF reach tsx-panelctl, maybe and on (lower case) do not"; fail=1; }
+chk 'PUB (retained) tsx/tsx-kiosk/dark_mode/state ON'
+grep -qE 'send dark-mode (maybe|ON|OFF)' "$T/out" && { echo "FAIL: a bad dark mode value reached tsx-panelctl"; fail=1; }
 chk 'PUB (retained) tsx/tsx-kiosk/restart_required/state ON'
 chk 'PUB (retained) tsx/tsx-kiosk/update_mode/state manual'
 chk 'PUB (retained) tsx/tsx-kiosk/auto_restart/state OFF'
@@ -165,6 +175,31 @@ for l in 'restart_required/state OFF' 'update_mode/state auto' 'auto_restart/sta
 done
 grep -q '"restart_required":false,"mode":"auto","auto_restart":true' "$T6/out4" || { echo "FAIL: the default update JSON lacks the new keys"; fail=1; }
 
+# The dark mode follows tsx-panelctl: on while it says on. A panel without the kiosk browser
+# (tsx-panelctl has no dark-mode) gets no switch, and an older discovery topic is cleared.
+cat > "$T6/bin/tsx-panelctl" <<'EOF'
+#!/bin/sh
+case "$1 $2" in
+"has dark-mode") exit 0;;
+"get dark-mode") echo on;;
+*) exit 1;;
+esac
+EOF
+rm -f "$T6/run/update-ha-state.json" "$T6/run/mqtt/hold."*
+upd_run "$T6/out5" < /dev/null
+grep -qxF 'PUB (retained) tsx/tsx-kiosk/dark_mode/state ON' "$T6/out5" || { echo "FAIL: dark mode: tsx-panelctl says on, the state is not ON"; fail=1; }
+echo "OFF $(date +%s)" > "$T6/run/mqtt/hold.dark_mode"
+upd_run "$T6/out6" < /dev/null
+grep -qxF 'PUB (retained) tsx/tsx-kiosk/dark_mode/state OFF' "$T6/out6" || { echo "FAIL: dark mode: a value just set is not held"; fail=1; }
+echo "OFF $(( $(date +%s) - 30 ))" > "$T6/run/mqtt/hold.dark_mode"
+upd_run "$T6/out7" < /dev/null
+grep -qxF 'PUB (retained) tsx/tsx-kiosk/dark_mode/state ON' "$T6/out7" && [ ! -e "$T6/run/mqtt/hold.dark_mode" ] \
+	|| { echo "FAIL: dark mode: a hold older than 10 seconds is not dropped"; fail=1; }
+printf '#!/bin/sh\nexit 1\n' > "$T6/bin/tsx-panelctl"
+upd_run "$T6/out8" < /dev/null
+grep -qx 'PUB (retained) homeassistant/switch/tsx-kiosk/dark_mode/config ' "$T6/out8" || { echo "FAIL: dark mode: no kiosk browser, the switch is not cleared"; fail=1; }
+grep -qF 'dark_mode/state' "$T6/out8" && { echo "FAIL: dark mode: a state is published without the kiosk browser"; fail=1; }
+
 # a board with keys and no key LEDs: the keys stay, the Key LEDs light goes
 printf '#!/bin/sh\ncase "$1" in has) exit 1;; esac\n' > "$T/bin-nokl-panelctl"; mkdir -p "$T/bin-nokl"
 cp "$T/bin-nokl-panelctl" "$T/bin-nokl/tsx-panelctl"; chmod +x "$T/bin-nokl/tsx-panelctl"
@@ -183,6 +218,7 @@ grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/ledbar/config ' "$T/outba
 grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/key_leds/config ' "$T/outbare" || { echo "FAIL: bare: the key LED entity is not cleared"; fail=1; }
 grep -q 'homeassistant/event/' "$T/outbare" && { echo "FAIL: bare: key events announced without keys"; fail=1; }
 grep -qE 'emmc|illuminance' "$T/outbare" && { echo "FAIL: bare: entities announced for parts this panel does not have"; fail=1; }
+grep -qx 'PUB (retained) homeassistant/switch/tsx-kiosk/dark_mode/config ' "$T/outbare" || { echo "FAIL: bare: the dark mode switch is not cleared"; fail=1; }
 grep '/config {' "$T/outbare" | while read -r _ _ t j; do echo "$j" | jq -e . >/dev/null || { echo "FAIL: bad JSON $t"; exit 1; }; done || fail=1
 # The real tsx-panelctl decides on the LED bar: the tool is installed, tsx-ledbard says that a
 # bar with its application is attached (the file ledbar.usb says "app"), and hw.conf does not say

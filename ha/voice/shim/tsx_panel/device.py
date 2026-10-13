@@ -108,6 +108,7 @@ class PanelDevice:
     ledbar_fx: bool = False
     ledbar_leds: bool = False
     ledbar_actions: Optional[ActionsEntity] = None
+    dark_mode: Optional[SwitchEntity] = None
     key_leds_screen_off: Optional[NumberEntity] = None
     plugin_entities: List = field(default_factory=list)
     _server: object = field(default=None, repr=False)
@@ -234,6 +235,15 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         get_state=backend.get_kiosk_url, set_state=backend.set_kiosk_url, icon="mdi:web",
     )
     entities.append(kiosk_url)
+    # dark mode of the browser (panel.conf KIOSK_DARK). A change restarts the
+    # kiosk browser. Only where the panel runs the kiosk browser.
+    dark_mode = None
+    if backend.dark_mode_present():
+        dark_mode = SwitchEntity(
+            server, key_for("dark_mode"), "Dark mode", "dark_mode",
+            get_state=backend.get_dark_mode, set_state=backend.set_dark_mode, icon="mdi:theme-light-dark",
+        )
+        entities.append(dark_mode)
     reload_button = ButtonEntity(
         server, key_for("reload_page"), "Reload page", "reload_page", press=backend.reload_page, icon="mdi:refresh",
     )
@@ -360,7 +370,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         keys=keys, orientation=orientation, _pulse_since=time.time(),
         usb_power=usb_power, presence=presence, distance=distance, poe_class=poe_class,
         emmc_life_a=emmc_life_a, emmc_life_b=emmc_life_b, emmc_eol=emmc_eol, nfc=backend.nfc_present(),
-        ledbar_fx=ledbar_fx, ledbar_leds=ledbar_leds, ledbar_actions=ledbar_actions,
+        ledbar_fx=ledbar_fx, ledbar_leds=ledbar_leds, ledbar_actions=ledbar_actions, dark_mode=dark_mode,
         key_leds_screen_off=key_leds_screen_off, plugin_entities=plugin_entities,
         _server=server, _key_for=key_for, _ledbar_stamp=ledbar_stamp,
     )
@@ -552,7 +562,7 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
                    device.touched_recently, device.update, device.restart_required, device.update_mode,
                    device.auto_restart, device.presence, device.distance, device.usb_power,
                    device.poe_class, device.emmc_life_a, device.emmc_life_b, device.emmc_eol,
-                   device.key_leds_screen_off):
+                   device.key_leds_screen_off, device.dark_mode):
         if entity is None:
             continue
         before = getattr(entity, "_state", None)

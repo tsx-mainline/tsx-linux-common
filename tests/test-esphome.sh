@@ -114,10 +114,19 @@ echo "tsx-config \$*" >> "$F/cmds.log"
 case "\$1 \$2" in
 "set UPDATE_MODE") echo "\$3" > "$F/ua-mode";;
 "set UPDATE_AUTO_RESTART") echo "\$3" > "$F/ua-auto-restart";;
-"apply ") { echo "UPDATE_MODE=\$(cat "$F/ua-mode" 2>/dev/null)"; echo "UPDATE_AUTO_RESTART=\$(cat "$F/ua-auto-restart" 2>/dev/null)"; } > "$F/run/tsx/autoupdate.conf";;
+"set KIOSK_DARK") echo "\$3" > "$F/dark-val";;
+"apply ")
+	{ echo "UPDATE_MODE=\$(cat "$F/ua-mode" 2>/dev/null)"; echo "UPDATE_AUTO_RESTART=\$(cat "$F/ua-auto-restart" 2>/dev/null)"; } > "$F/run/tsx/autoupdate.conf"
+	# the override for kiosk-session: the URL of the fixture and KIOSK_DARK, as the real apply writes them
+	{ echo 'KIOSK_URL="https://ha.example.org/configured"'; [ -s "$F/dark-val" ] && echo "KIOSK_DARK=\"\$(cat "$F/dark-val")\""; true; } > "$F/run/tsx/kiosk.conf";;
 esac
 EOF
-chmod +x "$F/bin/tsx-autoupdate" "$F/bin/tsx-config"
+# The kiosk service: the daemon restarts it when the dark mode changes.
+cat > "$F/bin/rc-service" <<EOF
+#!/bin/sh
+echo "rc-service \$*" >> "$F/cmds.log"
+EOF
+chmod +x "$F/bin/tsx-autoupdate" "$F/bin/tsx-config" "$F/bin/rc-service"
 
 # The base system's tsx-panelctl: the backend sends every command to its FIFO
 # and gets the volume from it. It runs the fake tools above.
@@ -137,6 +146,7 @@ chmod +x "$F/bin/reboot" "$F/bin/amixer" "$F/bin/tsx-panelctl"
 env PATH="$F/bin:$PATH" TSX_RUN_DIR="$F/run/tsx" TSX_REBOOT_BIN="$F/bin/reboot" TSX_IDLED_STATE="$F/run/tsx-idled.state" \
 	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf" TSX_BUTTONS_BOARD_CONF="$F/etc/tsx/buttons-board.conf.missing" \
 	TSX_ALS_CONF="$F/etc/tsx/als.conf.missing" TSX_ASOUND_DIR="$F/proc/asound" \
+	TSX_KIOSK_CONF="$F/etc/kiosk.conf" TSX_RC_SERVICE="$F/bin/rc-service" \
 	sh "$HERE/../base/usr/local/sbin/tsx-panelctl" > "$T/panelctl.log" 2>&1 &
 PIDS="$PIDS $!"
 for _ in $(seq 1 30); do grep -q "listening on" "$T/panelctl.log" 2>/dev/null && break; sleep 0.1; done
@@ -216,7 +226,8 @@ print("OK: PANEL_NAME -> lowercase name + PANEL_NAME friendly name, with the fal
 full_check() {
 	local title=$1 port=$2; shift 2
 	echo "== $title =="
-	: > "$F/cmds.log"; rm -f "$F/run/tsx/brightness" "$F/etc/tsx/boot-verbose" "$F/ua-mode" "$F/ua-auto-restart"
+	: > "$F/cmds.log"; rm -f "$F/run/tsx/brightness" "$F/etc/tsx/boot-verbose" "$F/ua-mode" "$F/ua-auto-restart" "$F/dark-val"
+	echo 'KIOSK_URL="https://ha.example.org/configured"' > "$F/run/tsx/kiosk.conf"
 	echo 120 > "$F/run/tsx/blank-timeout"      # tsx-config apply's file (panel.conf BLANK_TIMEOUT)
 	date +%s > "$F/run/tsx/last-input"        # tsx-idled: a touch just now
 	printf 'leds yes\nled 128 unknown\nlast power short\n' > "$F/run/tsx/buttons.state"
@@ -241,6 +252,10 @@ full_check() {
 	grep -q '^tsx-config set UPDATE_MODE auto$' "$F/cmds.log" 2>/dev/null && grep -q '^tsx-config set UPDATE_AUTO_RESTART on$' "$F/cmds.log" \
 		&& echo "OK: update mode and automatic restart persisted through tsx-config" || { echo "FAIL: tsx-config set UPDATE_MODE auto or UPDATE_AUTO_RESTART on missing"; rc=1; }
 	! grep -q 'UPDATE_MODE sometimes' "$F/cmds.log" || { echo "FAIL: a bad update mode reached tsx-config"; rc=1; }
+	if [[ " $* " != *" --bare "* ]]; then
+		grep -q '^tsx-config set KIOSK_DARK on$' "$F/cmds.log" 2>/dev/null && grep -q '^rc-service kiosk restart$' "$F/cmds.log" \
+			&& echo "OK: dark mode persisted through tsx-config (KIOSK_DARK on) and the kiosk restarted" || { echo "FAIL: tsx-config set KIOSK_DARK on or the kiosk restart missing"; rc=1; }
+	fi
 	grep -q '^tsx-config set ORIENTATION portrait$' "$F/cmds.log" 2>/dev/null && ! grep -q 'ORIENTATION sideways' "$F/cmds.log" \
 		&& echo "OK: orientation persisted through tsx-config (portrait, and the bad option never reached it)" || { echo "FAIL: tsx-config set ORIENTATION portrait missing"; rc=1; }
 }

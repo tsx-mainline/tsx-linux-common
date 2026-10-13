@@ -52,7 +52,12 @@
 #                         update that needs it (tsx-panelctl get auto-restart,
 #                         send auto-restart on|off). panel.conf
 #                         UPDATE_AUTO_RESTART via tsx-config
-# A value that Home Assistant sets (update mode, automatic restart) shows at
+#   switch "Dark mode"    ON = the kiosk browser uses the dark color scheme
+#                         (tsx-panelctl get dark-mode, send dark-mode on|off).
+#                         panel.conf KIOSK_DARK via tsx-config. A change
+#                         restarts the kiosk browser. Only where the panel
+#                         runs the kiosk browser (tsx-panelctl has dark-mode)
+# A value that Home Assistant sets (update mode, automatic restart, dark mode) shows at
 # once and stays for 10 seconds, until the state of tsx-autoupdate has it.
 # State and commands are under $BASE (default tsx/<hostname>). Availability
 # uses LWT.
@@ -149,6 +154,7 @@ has_usbpower() { [ -r "$R/usb-power.state" ]; }
 has_poe() { [ -r "$R/poe.state" ]; }
 has_emmc() { [ -r "$R/emmc.state" ]; }
 has_nfc() { "$PCTL" has nfc >/dev/null 2>&1; }
+has_dark() { "$PCTL" has dark-mode >/dev/null 2>&1; }
 
 keys() {  # names of the "button NAME KEY" lines of the board layer and buttons.conf, each name once
 	cat "$BBCONF" "$BCONF" 2>/dev/null | sed -n 's/^[[:space:]]*button[[:space:]]\{1,\}\([A-Za-z0-9_-]\{1,\}\)[[:space:]].*/\1/p' | awk '!seen[$0]++'
@@ -236,6 +242,13 @@ discovery() {
 	pub -r "$DP/button/$NODE/restart/config" "{\"name\":\"Restart\",\"uniq_id\":\"${NODE}_restart\",\"cmd_t\":\"$BASE/restart/set\",\"pl_prs\":\"PRESS\",\"icon\":\"mdi:restart\",$AV,$DEV}"
 	pub -r "$DP/select/$NODE/update_mode/config" "{\"name\":\"Update mode\",\"uniq_id\":\"${NODE}_update_mode\",\"cmd_t\":\"$BASE/update_mode/set\",\"stat_t\":\"$BASE/update_mode/state\",\"options\":[\"auto\",\"manual\"],\"icon\":\"mdi:update\",$AV,$DEV}"
 	pub -r "$DP/switch/$NODE/auto_restart/config" "{\"name\":\"Automatic restart\",\"uniq_id\":\"${NODE}_auto_restart\",\"cmd_t\":\"$BASE/auto_restart/set\",\"stat_t\":\"$BASE/auto_restart/state\",\"icon\":\"mdi:restart\",$AV,$DEV}"
+	HAS_DARK=0
+	if has_dark; then
+		HAS_DARK=1
+		pub -r "$DP/switch/$NODE/dark_mode/config" "{\"name\":\"Dark mode\",\"uniq_id\":\"${NODE}_dark_mode\",\"cmd_t\":\"$BASE/dark_mode/set\",\"stat_t\":\"$BASE/dark_mode/state\",\"icon\":\"mdi:theme-light-dark\",$AV,$DEV}"
+	else
+		pub -r "$DP/switch/$NODE/dark_mode/config" ""
+	fi
 	for k in $(keys); do
 		pub -r "$DP/event/$NODE/key_$k/config" "{\"name\":\"Key $k\",\"uniq_id\":\"${NODE}_key_$k\",\"stat_t\":\"$BASE/key/$k\",\"evt_typ\":[\"short\",\"long\",\"hold\"],\"dev_cla\":\"button\",$AV,$DEV}"
 		pub -r "$DP/device_automation/$NODE/key_${k}_short/config" "{\"atype\":\"trigger\",\"t\":\"$BASE/trigger/$k/short\",\"type\":\"button_short_press\",\"stype\":\"$k\",\"pl\":\"short\",$DEV}"
@@ -397,6 +410,10 @@ update_mode_state() {  # auto or manual
 	case $v in auto|manual) echo "$v";; *) echo auto;; esac
 }
 
+dark_mode_state() {  # ON or OFF
+	case $("$PCTL" get dark-mode 2>/dev/null | head -n 1) in on) echo ON;; *) echo OFF;; esac
+}
+
 auto_restart_state() {  # ON or OFF
 	v=$("$PCTL" get auto-restart 2>/dev/null | head -n 1)
 	case $v in on) echo ON; return;; off) echo OFF; return;; esac
@@ -417,7 +434,7 @@ update_hold() {
 	else rm -f "$M/hold.$1"; echo "$2"; fi
 }
 
-P_LED= P_KL= P_SCR= P_BL= P_BLK= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_USB= P_POE= P_EMMC= P_RR= P_UM= P_AR=
+P_LED= P_KL= P_SCR= P_BL= P_BLK= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_USB= P_POE= P_EMMC= P_RR= P_UM= P_AR= P_DK= HAS_DARK=0
 publish_states() {  # $1 = force
 	f=${1:-}
 	if [ "$P_BAR" = yes ]; then
@@ -469,6 +486,10 @@ publish_states() {  # $1 = force
 		pub -r "$BASE/update_mode/state" "$v"; P_UM=$v; fi
 	v=$(update_hold auto_restart "$(auto_restart_state)"); if [ "$v" != "$P_AR" ] || [ -n "$f" ]; then
 		pub -r "$BASE/auto_restart/state" "$v"; P_AR=$v; fi
+	if [ "$HAS_DARK" = 1 ]; then
+		v=$(update_hold dark_mode "$(dark_mode_state)"); if [ "$v" != "$P_DK" ] || [ -n "$f" ]; then
+			pub -r "$BASE/dark_mode/state" "$v"; P_DK=$v; fi
+	fi
 }
 
 # The bar comes or goes: tsx-ledbard writes /run/tsx/ledbar.usb. It also writes
@@ -645,6 +666,14 @@ handle() {  # topic payload
 		*) return;;
 		esac
 		update_hold_set auto_restart "$p"; pub -r "$BASE/auto_restart/state" "$p";;
+	dark_mode/set)
+		case $p in
+		ON) "$PCTL" send dark-mode on;;
+		OFF) "$PCTL" send dark-mode off;;
+		*) return;;
+		esac
+		[ "$HAS_DARK" = 1 ] || has_dark || return 0
+		update_hold_set dark_mode "$p"; pub -r "$BASE/dark_mode/state" "$p";;
 	*) return;;
 	esac
 	: > "$M/poke"

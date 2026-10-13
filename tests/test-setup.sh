@@ -494,6 +494,12 @@ out=$(submit '{"KIOSK_URL":"https://ha.example.org","HA_LOGIN_METHOD":"form","OR
 body=$(body_of "$out")
 [ "$(jget errors.ORIENTATION <<<"$body")" != "" ] && ok "unknown ORIENTATION rejected" || bad "ORIENTATION sideways accepted: $out"
 
+for bad_dark in yes 1 On dark; do
+	out=$(submit "{\"KIOSK_URL\":\"https://ha.example.org\",\"HA_LOGIN_METHOD\":\"form\",\"KIOSK_DARK\":\"$bad_dark\"}")
+	body=$(body_of "$out")
+	[ "$(jget errors.KIOSK_DARK <<<"$body")" != "" ] && ok "KIOSK_DARK $bad_dark rejected" || bad "KIOSK_DARK $bad_dark accepted: $out"
+done
+
 # Shell metacharacters. MQTT_PASSWORD has no character restriction in the
 # val_ok of tsx-config, so tsx-config must accept it. The password must also
 # be stored and passed through literally, and never executed. The code uses
@@ -525,7 +531,7 @@ print(json.dumps({
 	'KIOSK_URL': 'https://ha.example.org/lovelace/0',
 	'HA_LOGIN_METHOD': 'token', 'HA_TOKEN': '$TOKEN_VAL',
 	'PANEL_NAME': 'test-panel-1', 'TZ_NAME': 'America/Denver', 'VOICE': 'on', 'WAKE_WORD': 'okay_nabu',
-	'ORIENTATION': 'portrait', 'AUTO_BRIGHTNESS': 'off', 'ALS_SCALE': '2.5',
+	'ORIENTATION': 'portrait', 'KIOSK_DARK': 'on', 'AUTO_BRIGHTNESS': 'off', 'ALS_SCALE': '2.5',
 	'ROOT_PASSWORD': '$ROOTPW', 'SSH_AUTHORIZED_KEY': '$SSHKEY',
 	# fields that the user emptied
 	'MQTT_HOST': '', 'MQTT_PORT': '', 'MQTT_USER': '', 'MQTT_PASSWORD': '', 'BT_PROXY': 'off',
@@ -537,6 +543,8 @@ out=$(submit "$SUBMIT")
 grep -q '^KIOSK_URL="https://ha.example.org/lovelace/0"$' "$CONF" && ok "KIOSK_URL landed in the temp panel.conf" || bad "KIOSK_URL missing from $CONF"
 grep -q '^PANEL_NAME="test-panel-1"$' "$CONF" && ok "PANEL_NAME landed in panel.conf" || bad "PANEL_NAME missing"
 grep -q '^ORIENTATION="portrait"$' "$CONF" && ok "ORIENTATION landed in panel.conf" || bad "ORIENTATION missing"
+grep -q '^KIOSK_DARK="on"$' "$CONF" && ok "KIOSK_DARK landed in panel.conf" || bad "KIOSK_DARK missing"
+grep -qx 'KIOSK_DARK="on"' "$T/prefix/run/tsx/kiosk.conf" "$RUNDIR/kiosk.conf" 2>/dev/null && ok "apply wrote KIOSK_DARK to the kiosk.conf override" || echo "  (kiosk.conf not checked: apply run dir differs)"
 grep -q '^AUTO_BRIGHTNESS="off"$' "$CONF" && grep -q '^ALS_SCALE="2.5"$' "$CONF" && ok "AUTO_BRIGHTNESS and ALS_SCALE landed in panel.conf" || bad "AUTO_BRIGHTNESS or ALS_SCALE missing"
 grep -q '^ALS_AUTO="0"$' "$T/prefix/run/tsx/als.panel" "$RUNDIR/als.panel" 2>/dev/null && ok "apply wrote ALS_AUTO to als.panel" || echo "  (als.panel not checked: apply run dir differs)"
 [ "$(cat "$T/prefix/etc/tsx/orientation" 2>/dev/null)" = portrait ] && ok "apply left /etc/tsx/orientation (portrait) in the prefix" || bad "no orientation file after apply"
@@ -873,7 +881,7 @@ for _ in $(seq 1 50); do grep -q "listening on" "$T/setupd2.log" 2>/dev/null && 
 PORT_HA=$PORT; PORT=$PORT2
 out=$(call GET /setup); page=$(body_of "$out")
 [ "$(status_of "$out")" = 200 ] && ok "base page: GET /setup 200" || bad "base page: $(status_of "$out")"
-for want in 'name="KIOSK_URL"' 'name="PANEL_NAME"' 'name="TZ_NAME"' 'name="ORIENTATION"' 'id="p-blank_timeout"' 'href="/setup/login"' 'name="AUTO_BRIGHTNESS"' 'name="ALS_SCALE"' 'name="ROOT_PASSWORD"' 'name="SSH_AUTHORIZED_KEY"' 'name="KERNEL_FLAVOR"' '<h2>Network</h2>' '<h2>Display</h2>' '<summary>Updates</summary>'; do
+for want in 'name="KIOSK_URL"' 'name="PANEL_NAME"' 'name="TZ_NAME"' 'name="ORIENTATION"' 'name="KIOSK_DARK"' 'id="p-blank_timeout"' 'href="/setup/login"' 'name="AUTO_BRIGHTNESS"' 'name="ALS_SCALE"' 'name="ROOT_PASSWORD"' 'name="SSH_AUTHORIZED_KEY"' 'name="KERNEL_FLAVOR"' '<h2>Network</h2>' '<h2>Display</h2>' '<summary>Updates</summary>'; do
 	case "$page" in *"$want"*) ok "base page has $want";; *) bad "base page lacks $want";; esac
 done
 # The base page names Home Assistant only for "Log in with Home Assistant"
@@ -884,6 +892,15 @@ done
 case "$page" in *'id="submit-btn" type="submit">Save</button>'*) ok "base page: the button says Save";; *) bad "base page: button text";; esac
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget fields.KIOSK_URL <<<"$body")" != "" ] && ok "base state: reports KIOSK_URL" || bad "base state lacks KIOSK_URL"
+# KIOSK_DARK: panel.conf wins. Without the key, the page shows the value of /etc/kiosk.conf.
+[ "$(jget fields.KIOSK_DARK <<<"$body")" = on ] && ok "base state: KIOSK_DARK on from panel.conf" || bad "base state KIOSK_DARK: $(jget fields.KIOSK_DARK <<<"$body")"
+TSX_CONF="$CONF" busybox sh "$TSXCONFIG" unset KIOSK_DARK >/dev/null 2>&1
+printf 'KIOSK_DARK=on\n' > "$T/kiosk.conf"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget fields.KIOSK_DARK <<<"$body")" = on ] && ok "base state: no KIOSK_DARK in panel.conf, the page shows on from /etc/kiosk.conf" || bad "base state KIOSK_DARK (kiosk.conf): $(jget fields.KIOSK_DARK <<<"$body")"
+printf 'KIOSK_URL=""\n' > "$T/kiosk.conf"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget fields.KIOSK_DARK <<<"$body")" = "" ] && ok "base state: no KIOSK_DARK anywhere, no field value (the page shows off)" || bad "base state KIOSK_DARK (none): $(jget fields.KIOSK_DARK <<<"$body")"
 TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set MQTT_HOST 192.0.2.7 >/dev/null 2>&1; TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set VOICE on >/dev/null 2>&1
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget fields.MQTT_HOST <<<"$body")" = "" ] && [ "$(jget fields.VOICE <<<"$body")" = "" ] && ok "base state: reports no MQTT or voice key" || bad "base state shows HA keys: $body"

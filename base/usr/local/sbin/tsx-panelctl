@@ -25,9 +25,10 @@
 #                                     (the lights of the panel app: on or
 #                                     off, the brightness 1 to 100 and R G B
 #                                     0 to 255), update-mode (auto or manual),
-#                                     auto-restart (on or off) and
+#                                     auto-restart (on or off),
 #                                     restart-required (yes or no), see
-#                                     "Updates" below.
+#                                     "Updates" below, and dark-mode (on or
+#                                     off, see "Dark mode" below).
 #                                     It prints nothing and fails when the panel
 #                                     has no value (no sound card, no sensor).
 #   tsx-panelctl has NAME             exit 0 when the panel has that hardware:
@@ -46,10 +47,11 @@
 #                                     have LEDs: "leds yes" in buttons.state),
 #                                     als, sound, presence, usbpower, poe,
 #                                     nfc, panel-app (the panel app owns the
-#                                     screen, see "Panel app" below) or
+#                                     screen, see "Panel app" below),
 #                                     lights (the panel app has lights of
-#                                     the panel). It needs no root (see "LED
-#                                     bar firmware" below).
+#                                     the panel) or dark-mode (the panel
+#                                     runs the kiosk browser). It needs no
+#                                     root (see "LED bar firmware" below).
 #   tsx-panelctl state                print the controls that the panel has,
 #                                     one "NAME VALUE" line each (the setup
 #                                     page reads it): owner (kiosk,
@@ -58,7 +60,7 @@
 #                                     where the panel has the part:
 #                                     dim-timeout, dim-level, als-auto,
 #                                     volume, mute, update-mode, auto-restart,
-#                                     ledbar, keypad-led, lights.
+#                                     dark-mode, ledbar, keypad-led, lights.
 #   tsx-panelctl events               print a line when a value changes, until it
 #                                     is stopped: "button NAME short|long|hold",
 #                                     "lux N", "als-auto on|off", "screen ...",
@@ -119,6 +121,14 @@
 # "update-install" runs "tsx-autoupdate now": it installs at once, in both
 # modes, and restarts the panel when the install needs it and auto-restart is
 # on. With nothing to install and a restart required, it restarts the panel.
+#
+# Dark mode: the browser kiosk shows pages in the dark color scheme (panel.conf
+# KIOSK_DARK, see tsx-config). "get dark-mode" prints on or off: the value
+# of $R/kiosk.conf (tsx-config apply), else KIOSK_DARK of /etc/kiosk.conf, else
+# off. It fails on a panel with no kiosk (no /etc/kiosk.conf) and while the
+# panel app owns the screen. The command "dark-mode on|off" saves KIOSK_DARK
+# in panel.conf (tsx-config set and apply). It restarts the kiosk when the
+# value changes, because the browser reads the flags at its start.
 #
 # LED bar attached: tsx-ledbard (root) writes /run/tsx/ledbar.usb. It holds
 # one word: "app" (the bar runs its application) or "bootloader" (the bar is
@@ -235,6 +245,7 @@ if [ -z "$SS_BIN" ]; then
 	[ -x "$SS_BIN" ] || SS_BIN=/usr/local/bin/sendspin-cli
 fi
 UPDATE_BIN=${TSX_UPDATE_BIN:-tsx-autoupdate}
+RC_SERVICE=${TSX_RC_SERVICE:-rc-service}
 ONESHOT=${TSX_PANELCTL_ONESHOT:-0}
 IDLED_STATE=${TSX_IDLED_STATE:-/run/tsx-idled.state}
 BUTTONS_CONF=${TSX_BUTTONS_CONF:-/etc/tsx/buttons.conf}
@@ -353,9 +364,25 @@ layout_install() {
 	log "layout-install $1: rc $li_rc"
 }
 
-# kiosk_conf_get KEY: the last value of KEY in kiosk.conf, without quotes
+# kiosk_conf_get KEY [FILE]: the last value of KEY in kiosk.conf (or FILE),
+# without quotes
 kiosk_conf_get() {
-	sed -n "s/^$1=//p" "$KIOSK_CONF" 2>/dev/null | tail -n 1 | sed "s/[[:space:]]*#.*//; s/^[\"']//; s/[\"']\$//"
+	sed -n "s/^$1=//p" "${2:-$KIOSK_CONF}" 2>/dev/null | tail -n 1 | sed "s/[[:space:]]*#.*//; s/^[\"']//; s/[\"']\$//"
+}
+
+# kiosk_dark_get: on or off. The override of tsx-config apply wins over
+# /etc/kiosk.conf. Any other word counts as off, as in kiosk-session.
+kiosk_dark_get() {
+	kd=$(kiosk_conf_get KIOSK_DARK "$R/kiosk.conf")
+	[ -n "$kd" ] || kd=$(kiosk_conf_get KIOSK_DARK)
+	if [ "$kd" = on ]; then echo on; else echo off; fi
+}
+
+# kiosk_restart: restart the kiosk service when it runs, in the background
+# (the restart takes seconds, and this loop must go on). The new browser
+# reads KIOSK_DARK again.
+kiosk_restart() {
+	run_detached sh -c '"$1" kiosk status >/dev/null 2>&1 && "$1" kiosk restart >/dev/null 2>&1' sh "$RC_SERVICE"
 }
 
 reject() { log "rejected: $(safe "$*")"; }
@@ -487,6 +514,7 @@ get_value() {
 	update-mode) v=$(update_get mode);;
 	auto-restart) v=$(update_get auto-restart);;
 	restart-required) v=$(field "$R/update.state" restart-required);;
+	dark-mode) has_hw dark-mode && v=$(kiosk_dark_get);;
 	*) echo "tsx-panelctl: unknown value '$1'" >&2; return 2;;
 	esac
 	[ -n "$v" ] || return 1
@@ -527,6 +555,8 @@ has_hw() {
 	nfc) [ -r "$R/nfc.state" ] || [ -d "$NFCSYS/nfc0" ];;
 	panel-app) panel_app_up;;
 	lights) panel_app_up && [ -n "$(field "$PA_RUN/screen.state" lights)" ];;
+	# the kiosk browser: the file of tsx-kiosk exists, and the panel app has not taken the screen
+	dark-mode) [ -r "$KIOSK_CONF" ] && ! panel_app_up;;
 	*) echo "tsx-panelctl: unknown hardware '$1'" >&2; return 2;;
 	esac
 }
@@ -560,7 +590,7 @@ cmd_state() {
 	if has_hw ledbar; then v=$(get_value ledbar 2>/dev/null) || v="0 0 0"; echo "ledbar $v"; fi
 	if has_hw keyleds; then v=$(get_value keypad-led 2>/dev/null) || v=0; echo "keypad-led $v"; fi
 	v=$(get_value lights 2>/dev/null) && echo "lights $v"
-	for n in update-mode auto-restart; do
+	for n in update-mode auto-restart dark-mode; do
 		v=$(get_value "$n" 2>/dev/null) && echo "$n $v"
 	done
 	return 0
@@ -813,6 +843,15 @@ handle() {
 		if { [ "$a1" = on ] || [ "$a1" = off ]; } && [ -z "$a2$a3$a4$rest" ]; then
 			log "auto-restart $a1"; "$CONFIG" set UPDATE_AUTO_RESTART "$a1" && "$CONFIG" apply
 		else reject "auto-restart $a1 $a2 $a3 $a4 $rest"; fi;;
+	dark-mode)
+		# KIOSK_DARK (see "Dark mode" at the top). The browser reads it at
+		# its start, so a change restarts the kiosk.
+		if { [ "$a1" = on ] || [ "$a1" = off ]; } && [ -z "$a2$a3$a4$rest" ]; then
+			has_hw dark-mode || { log "dark-mode $a1: this panel has no kiosk browser"; return 0; }
+			old=$(kiosk_dark_get)
+			log "dark-mode $a1"; "$CONFIG" set KIOSK_DARK "$a1" && "$CONFIG" apply
+			[ "$(kiosk_dark_get)" = "$old" ] || { log "dark-mode: restarting the kiosk"; kiosk_restart; }
+		else reject "dark-mode $a1 $a2 $a3 $a4 $rest"; fi;;
 	update-install)
 		if [ -z "$a1$a2$a3$a4$rest" ]; then
 			log "update-install requested"; run_detached "$UPDATE_BIN" now

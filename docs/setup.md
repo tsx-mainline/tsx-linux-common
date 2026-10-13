@@ -84,7 +84,7 @@ Every POST request must pass these checks:
 
 ### What a remote save does
 
-A save from a remote session writes the changed fields and runs `tsx-config apply`. It restarts the kiosk only when it changes `KIOSK_URL`, `HA_LOGIN_METHOD` or `HA_TOKEN`. A save from the screen of the panel or from a pairing session closes the setup window and restarts the kiosk, as before.
+A save from a remote session writes the changed fields and runs `tsx-config apply`. It restarts the kiosk only when it changes `KIOSK_URL`, `KIOSK_DARK`, `HA_LOGIN_METHOD` or `HA_TOKEN`. A save from the screen of the panel or from a pairing session closes the setup window and restarts the kiosk, as before.
 
 ## Panel section
 
@@ -106,6 +106,21 @@ The *Panel* section has live controls. A control shows only when the panel has t
 These are the backends of the overlay and of the Home Assistant entities. So the page, the overlay and Home Assistant show the same values. On a panel with the panel app, `tsx-panelctl` hands the screen, the brightness and the lights to the app (see "Control from the panel" in [panel-app.md](panel-app.md)).
 
 The times and the two update settings go to `panel.conf` and stay after a reboot. The brightness, the volume and the lights act at once, as the overlay does. The page reads the values every 5 s.
+
+### Dark mode of the browser
+
+The setting `KIOSK_DARK` (`on` or `off`, default `off`) makes the kiosk browser ask pages for the dark color scheme. It adds two Chromium flags: `--force-dark-mode` and `--blink-settings=preferredColorScheme=0`. A page that has a dark theme then uses it. Chromium darkens a page that has none.
+
+Home Assistant uses its dark theme when the theme of the user profile is "Auto". The page also starts with the dark loading screen (`#111111`) and not a white one. `tsx-kiosk-reveal` reads the background color of the page after it painted, so the area behind the page is dark too.
+
+| Where | How |
+|---|---|
+| Setup page | The select *Dark mode of the browser* in the *Display* card. It shows only on a panel with a kiosk browser. |
+| Home Assistant | The switch *Dark mode*. See [esphome.md](esphome.md) "Dark mode". |
+| Command line | `tsx-config set KIOSK_DARK on`, then `tsx-config apply` and `rc-service kiosk restart` |
+| Image default | `KIOSK_DARK=` in `/etc/kiosk.conf`. A value in `panel.conf` wins. |
+
+A save of the setup page that changes the setting restarts the kiosk, also from a remote session. `tsx-panelctl send dark-mode on|off` does the same. `tsx-config apply` alone does not restart the browser. The flags come before `KIOSK_EXTRA_FLAGS`, so a later switch there wins. A panel with the panel app has no browser. The page hides the setting there, and the key has no effect.
 
 ### Update settings
 
