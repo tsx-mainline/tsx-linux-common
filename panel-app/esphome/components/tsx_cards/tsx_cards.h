@@ -29,6 +29,7 @@
 #include "slider_logic.h"
 #include "volume_logic.h"
 #include "update_logic.h"
+#include "lastboot.h"
 
 #ifdef USE_FONT
 #include "esphome/components/font/font.h"
@@ -298,6 +299,8 @@ class TsxCards : public Component {
   /// The text of the layout file in use, its SHA-256 (64 hex digits) and its path.
   const std::string &layout_text() const { return this->layout_text_; }
   std::string layout_hash() const { return this->layout_hash_; }
+  // The time of the last boot, ISO 8601 in UTC (lastboot.h).
+  std::string last_boot();
   std::string layout_source() const { return this->layout_path_; }
   /// The result of the last set_layout: "", "saving", "saved" or "error: TEXT".
   std::string layout_status() const { return this->layout_status_; }
@@ -417,6 +420,7 @@ class TsxCards : public Component {
   std::string layout_path_;
   std::string layout_text_;
   std::string layout_hash_;
+  LastBoot last_boot_;
   std::string layout_error_;
   // set_layout (control.cpp)
   int layout_pid_{-1};

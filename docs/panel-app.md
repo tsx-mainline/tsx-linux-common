@@ -504,6 +504,10 @@ Without that file, the volume of the panel is one mixer control of the sound car
 
 With no player, no card and no control, the Volume number is unknown and the overlay has no volume slider. The app tries to open the control again every 10 s, because the board makes the softvol at boot.
 
+## Last boot
+
+The text sensor "Last boot" (device class `timestamp`, diagnostic) shows the time of the last boot in UTC. The app computes it from the wall clock and `CLOCK_BOOTTIME`, and checks it every 30 s. It sends a state only when the text changes (`lastboot.h`). The value stays while a new one differs by less than 30 s, so the text does not change by a second. It changes at a reboot and once when NTP steps the clock. The kiosk panels have the same sensor (see [esphome.md](esphome.md) "Last boot").
+
 ## Updates
 
 The app shows the state of `tsx-autoupdate` as Home Assistant entities. They are the same as on the kiosk panels (see [autoupdate.md](autoupdate.md)).

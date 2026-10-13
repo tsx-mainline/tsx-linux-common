@@ -53,6 +53,8 @@ The kiosk panels (this device) and the panel app ([panel-app.md](panel-app.md)) 
 | Kiosk URL | text | yes | No | `KIOSK_URL` |
 | Reload page | button | yes | No | |
 | Dark mode | switch | yes | No (no browser) | `KIOSK_DARK` |
+| Last boot | text sensor, timestamp | yes | yes | The clock and the uptime |
+| CPU temperature, Illuminance, Distance | sensor | With the part | No | Live state, with the rate limit of "Sensor rate" |
 | Update | update | yes | yes | The state of `tsx-autoupdate` |
 | Restart required | binary sensor | yes | yes | The state of `tsx-autoupdate` |
 | Restart | button | yes | yes | |
@@ -66,6 +68,30 @@ The kiosk panels (this device) and the panel app ([panel-app.md](panel-app.md)) 
 The Backlight number is the percent of the brightness slider on every family, with the scale of the overlay (`tsx-level.h`): a square for a backlight with more than 64 steps. `tsx-panelctl` maps it to the level of `tsx-idled` (`brightness-pct`, `get backlight-pct`). Before 0.3.4 the number of a kiosk panel had the raw backlight steps.
 
 A setting that Home Assistant changes goes through `tsx-config set` and `tsx-config apply`, so it stays after a reboot. The live states act at once, as the overlay does. The secrets and the settings of the system (the SSH key, the root password, the update source, the reinstall) are not entities. They stay on the setup page, behind its login ([setup.md](setup.md)).
+
+## Sensor rate
+
+Home Assistant stores each state that a panel sends. A sensor that the panel reads every second would add about 3000 states each hour for one sensor. So the sensors that change often send a state only under these rules. The numbers are in one place, `ha/voice/shim/tsx_panel/throttle.py`. `tsx-mqtt` has the same numbers in the variables `THR_*` at its top.
+
+| Rule | Value |
+|---|---|
+| Interval | At most one state in 60 s for one sensor (`MIN_INTERVAL`) |
+| Heartbeat | The last state again after 15 min with no change (`HEARTBEAT`), so Home Assistant sees that the panel is alive |
+| CPU temperature | A new state only when it differs from the last state that went out by more than 1 °C (`CPU_TEMP_DEADBAND`). Home Assistant with imperial units shows 1 °C as 1.8 °F. |
+| Illuminance | More than 5 lux and more than 10 % of the last state that went out (`ILLUMINANCE_DEADBAND`, `ILLUMINANCE_RELATIVE`) |
+| Distance | More than 50 mm (`DISTANCE_DEADBAND`). A change between a distance and "no target" counts as a change. |
+
+The comparison is with the last state that went out, not with the last reading, so a slow drift also goes out. A change that is held by the interval goes out when the interval ends, if the value is still beyond the deadband. A subscriber that asks for the states (Home Assistant after a connect) gets the readings at once.
+
+These entities have no rate limit and stay fast: Presence (the binary sensor), Touched recently, the keys and the key events, Screen, Backlight, Volume (also after a change by a user), Update, Restart required, the switches, selects and numbers of the settings. The panel app sends only changes, with no timer, so its entities need no rate limit.
+
+`tests/test-shim-rate.sh` checks the rules and the numbers of the shim. `tests/mqtt-sensor-rate.sh` checks `tsx-mqtt`.
+
+## Last boot
+
+The sensor "Last boot" (object id `last_boot`, MQTT topic `last_boot/state`, device class `timestamp`, diagnostic) shows the time of the last boot in UTC, for example `2026-10-13T03:01:13+00:00`. It replaces the sensor "Uptime" (object id `uptime`), which changed every second. The entity id changes from `sensor.<device>_uptime` to `sensor.<device>_last_boot`. Home Assistant keeps the old entity as unavailable until you remove it from the entity list of the device. Use a template such as `now() - states('sensor.<device>_last_boot') | as_datetime` for the uptime.
+
+The value is the wall clock minus `/proc/uptime`. The sensor keeps its value while a new value differs by less than 30 s (`BOOT_JITTER`), so the text does not change by a second between two reports. It changes at a reboot. It also changes once when the clock steps, because the panel has no RTC and NTP sets the clock after the boot. The panel app (`lastboot.h`) and `tsx-mqtt` follow the same rule. The tests are `tests/test-shim-rate.sh`, `tests/mqtt-sensor-rate.sh` and `tests/test-panel-app-lastboot.sh`.
 
 ## Dark mode
 

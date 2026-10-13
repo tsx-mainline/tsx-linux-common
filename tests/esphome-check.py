@@ -40,7 +40,7 @@ async def main(args) -> int:
                 fobj.writelines(f"action:{s.name} {s.key}\n" for s in services)
         want = {
             "screen", "backlight", "kiosk_url",
-            "reload_page", "reboot", "cpu_temp", "uptime", "ip_address",
+            "reload_page", "reboot", "cpu_temp", "last_boot", "ip_address",
             "touched_recently", "update", "blank_timeout",
             "restart_required", "update_mode", "auto_restart",
             "verbose_boot", "dark_mode",
@@ -133,6 +133,15 @@ async def main(args) -> int:
         vb_state = states.get(by_id["verbose_boot"].key)
         assert vb_state is not None and vb_state.state, vb_state
         print("OK: verbose boot switch reported off, then set on (test-esphome.sh checks tsx-config)")
+
+        # Last boot replaces Uptime: a timestamp that does not change while the panel runs
+        assert "uptime" not in by_id, "the sensor Uptime is gone (Last boot replaces it)"
+        lb = by_id["last_boot"]
+        assert lb.name == "Last boot" and lb.device_class == "timestamp", lb
+        lb_state = states.get(lb.key)
+        import re as _re
+        assert lb_state is not None and _re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00", lb_state.state), lb_state
+        print("OK: Last boot is a timestamp (%s), the sensor Uptime is gone" % lb_state.state)
 
         touched = states.get(by_id["touched_recently"].key)
         assert touched is not None and touched.state, touched

@@ -57,6 +57,12 @@
 #                         panel.conf KIOSK_DARK via tsx-config. A change
 #                         restarts the kiosk browser. Only where the panel
 #                         runs the kiosk browser (tsx-panelctl has dark-mode)
+#   sensor "Last boot"    the time of the last boot (device class timestamp,
+#                         diagnostic). It changes at a reboot only.
+# Sensor rate: Illuminance and Distance send a state only after a change beyond
+# a deadband, at most once every THR_MIN_INTERVAL seconds, and again after
+# THR_HEARTBEAT seconds when they did not change (see "Sensor rate" in
+# docs/esphome.md). The numbers are the same as in the ESPHome shim.
 # A value that Home Assistant sets (update mode, automatic restart, dark mode) shows at
 # once and stays for 10 seconds, until the state of tsx-autoupdate has it.
 # State and commands are under $BASE (default tsx/<hostname>). Availability
@@ -76,6 +82,9 @@
 # Env overrides for tests: TSX_MQTT_CONF, TSX_RUN_DIR, TSX_IDLED_STATE,
 # TSX_BUTTONS_CONF, TSX_BUTTONS_BOARD_CONF, TSX_KIOSK_CONF, TSX_PANELCTL_BIN, TSX_MQTT_DRY=1 (print
 # instead of publish, read commands from stdin, one pass).
+# In a dry run, the input line "tick" runs one pass of the main loop
+# (publish_states with no force), TSX_PROC_UPTIME names another /proc/uptime
+# and TSX_MQTT_NOW_FILE a file with the epoch seconds that replace the clock.
 # TSX_MQTT_PUB_TIMEOUT=seconds limits each mosquitto_pub connect+publish
 # (default 5), so an unreachable broker cannot hang the script. See pub()
 # and the stop trap below.
@@ -103,6 +112,15 @@ if [ -z "$BROKER" ] && [ "$DRY" != 1 ]; then
 	echo "tsx-mqtt: BROKER not set in $CONF, nothing to do"; exit 0
 fi
 command -v mosquitto_pub >/dev/null || [ "$DRY" = 1 ] || { echo "tsx-mqtt: mosquitto_pub missing (apk add mosquitto-clients)"; exit 1; }
+
+# Sensor rate. The same numbers as ha/voice/shim/tsx_panel/throttle.py.
+THR_MIN_INTERVAL=60     # seconds: at most one state for a throttled sensor in this time
+THR_HEARTBEAT=900       # seconds: the same state again when the sensor did not change
+THR_ILLUMINANCE_ABS=5   # lux
+THR_ILLUMINANCE_REL=0.10   # 10 % of the last state that went out. The larger of the two counts.
+THR_DISTANCE=50         # millimeters
+BOOT_JITTER=30          # seconds: Last boot changes only when the new value differs by this much
+UPTIME_FILE=${TSX_PROC_UPTIME:-/proc/uptime}
 
 HOST=$(hostname)
 NODE=$(printf '%s' "${NODE_ID:-$HOST}" | tr -c 'A-Za-z0-9_-' '_')
@@ -154,6 +172,65 @@ has_usbpower() { [ -r "$R/usb-power.state" ]; }
 has_poe() { [ -r "$R/poe.state" ]; }
 has_emmc() { [ -r "$R/emmc.state" ]; }
 has_nfc() { "$PCTL" has nfc >/dev/null 2>&1; }
+# thr_check NAME VALUE ABS REL: the rate limit of a sensor. VALUE is a number or "none".
+# It prints what to send and succeeds, or it prints nothing and fails. The state
+# of the sensor is in the file $M/thr.NAME ("VALUE UPTIME-SECONDS" of the last
+# state that went out). The clock is the uptime, so a step of the wall clock does
+# not matter. Rules, as in throttle.py: the first value goes out at once. A value
+# goes out when THR_MIN_INTERVAL passed and it differs from the last state by more
+# than the larger of ABS and REL times the last state. The last state goes out
+# again after THR_HEARTBEAT.
+thr_check() {
+	tn=$1; tv=$2
+	tl= tt=
+	[ -r "$M/thr.$tn" ] && read -r tl tt < "$M/thr.$tn"
+	tnow=$(cut -d' ' -f1 "$UPTIME_FILE" 2>/dev/null); tnow=${tnow%%.*}
+	case $tnow in ''|*[!0-9]*) tnow=0;; esac
+	tr=$(awk -v v="$tv" -v lv="$tl" -v lt="$tt" -v now="$tnow" -v a="$3" -v r="$4" -v mi="$THR_MIN_INTERVAL" -v hb="$THR_HEARTBEAT" 'BEGIN {
+		if (lt == "") { print "new"; exit }
+		age = now - lt
+		if (age < 0) { print "new"; exit }
+		if (age >= mi) {
+			if ((v == "none") != (lv == "none")) { print "new"; exit }
+			if (v != "none") {
+				d = v - lv; if (d < 0) d = -d
+				th = lv < 0 ? -lv : lv; th = th * r; if (th < a) th = a
+				if (d > th) { print "new"; exit }
+			}
+		}
+		if (age >= hb) { print "again"; exit }
+		print "hold" }')
+	case $tr in
+	new) echo "$tv $tnow" > "$M/thr.$tn"; echo "$tv";;
+	again) echo "$tl $tnow" > "$M/thr.$tn"; echo "$tl";;
+	*) return 1;;
+	esac
+}
+# thr_reset NAME VALUE: the value went out with a forced publish. Count it as sent.
+thr_reset() {
+	tnow=$(cut -d' ' -f1 "$UPTIME_FILE" 2>/dev/null); tnow=${tnow%%.*}
+	case $tnow in ''|*[!0-9]*) tnow=0;; esac
+	echo "$2 $tnow" > "$M/thr.$1"
+}
+
+# last_boot_state: the time of the last boot, ISO 8601 in UTC. It is the clock minus
+# the uptime. The kept value stays while the new one differs by less than
+# BOOT_JITTER seconds, so the text does not change by a second between two reports.
+last_boot_state() {
+	lb_up=$(cut -d' ' -f1 "$UPTIME_FILE" 2>/dev/null); lb_up=${lb_up%%.*}
+	case $lb_up in ''|*[!0-9]*) return 0;; esac
+	if [ -n "${TSX_MQTT_NOW_FILE:-}" ]; then read -r lb_now < "$TSX_MQTT_NOW_FILE" || lb_now=0; else lb_now=$(date +%s); fi
+	lb_raw=$(( lb_now - lb_up ))
+	lb_k=; [ -r "$M/boot.kept" ] && read -r lb_k < "$M/boot.kept"
+	case $lb_k in *[!0-9]*) lb_k=;; esac
+	if [ -n "$lb_k" ]; then
+		lb_d=$(( lb_raw - lb_k )); [ "$lb_d" -ge 0 ] || lb_d=$(( -lb_d ))
+		[ "$lb_d" -ge "$BOOT_JITTER" ] && lb_k=
+	fi
+	if [ -z "$lb_k" ]; then lb_k=$lb_raw; echo "$lb_k" > "$M/boot.kept"; fi
+	date -u -d "@$lb_k" '+%Y-%m-%dT%H:%M:%S+00:00'
+}
+
 has_dark() { "$PCTL" has dark-mode >/dev/null 2>&1; }
 
 keys() {  # names of the "button NAME KEY" lines of the board layer and buttons.conf, each name once
@@ -243,6 +320,7 @@ discovery() {
 	pub -r "$DP/select/$NODE/update_mode/config" "{\"name\":\"Update mode\",\"uniq_id\":\"${NODE}_update_mode\",\"cmd_t\":\"$BASE/update_mode/set\",\"stat_t\":\"$BASE/update_mode/state\",\"options\":[\"auto\",\"manual\"],\"icon\":\"mdi:update\",$AV,$DEV}"
 	pub -r "$DP/switch/$NODE/auto_restart/config" "{\"name\":\"Automatic restart\",\"uniq_id\":\"${NODE}_auto_restart\",\"cmd_t\":\"$BASE/auto_restart/set\",\"stat_t\":\"$BASE/auto_restart/state\",\"icon\":\"mdi:restart\",$AV,$DEV}"
 	HAS_DARK=0
+	pub -r "$DP/sensor/$NODE/last_boot/config" "{\"name\":\"Last boot\",\"uniq_id\":\"${NODE}_last_boot\",\"stat_t\":\"$BASE/last_boot/state\",\"dev_cla\":\"timestamp\",\"ent_cat\":\"diagnostic\",\"icon\":\"mdi:restart\",$AV,$DEV}"
 	if has_dark; then
 		HAS_DARK=1
 		pub -r "$DP/switch/$NODE/dark_mode/config" "{\"name\":\"Dark mode\",\"uniq_id\":\"${NODE}_dark_mode\",\"cmd_t\":\"$BASE/dark_mode/set\",\"stat_t\":\"$BASE/dark_mode/state\",\"icon\":\"mdi:theme-light-dark\",$AV,$DEV}"
@@ -434,7 +512,7 @@ update_hold() {
 	else rm -f "$M/hold.$1"; echo "$2"; fi
 }
 
-P_LED= P_KL= P_SCR= P_BL= P_BLK= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_USB= P_POE= P_EMMC= P_RR= P_UM= P_AR= P_DK= HAS_DARK=0
+P_LED= P_KL= P_SCR= P_BL= P_BLK= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_USB= P_POE= P_EMMC= P_RR= P_UM= P_AR= P_DK= P_ALSA= P_LB= HAS_DARK=0
 publish_states() {  # $1 = force
 	f=${1:-}
 	if [ "$P_BAR" = yes ]; then
@@ -458,13 +536,25 @@ publish_states() {  # $1 = force
 		pub -r "$BASE/blank_timeout/state" "$v"; P_BT=$v; fi
 	v=$(touched_state); if [ "$v" != "$P_TR" ] || [ -n "${1:-}" ]; then
 		pub -r "$BASE/touched_recently/state" "$v"; P_TR=$v; fi
-	v=$(als_state); if [ -n "$v" ] && { [ "$v" != "$P_ALS" ] || [ -n "${1:-}" ]; }; then
-		set -- $v; pub -r "$BASE/als/lux" "$1"; pub -r "$BASE/als_auto/state" "$2"; P_ALS=$v; fi
+	v=$(als_state); if [ -n "$v" ]; then
+		set -- $v; al_lux=$1; al_auto=$2
+		# the light sensor: the lux go through the rate limit, the switch goes out when it changes
+		if [ -n "$f" ]; then thr_reset illuminance "$al_lux"; pub -r "$BASE/als/lux" "$al_lux"; P_ALS=$al_lux
+		elif al_out=$(thr_check illuminance "$al_lux" "$THR_ILLUMINANCE_ABS" "$THR_ILLUMINANCE_REL"); then pub -r "$BASE/als/lux" "$al_out"; P_ALS=$al_out; fi
+		if [ "$al_auto" != "$P_ALSA" ] || [ -n "$f" ]; then pub -r "$BASE/als_auto/state" "$al_auto"; P_ALSA=$al_auto; fi
+	fi
+	v=$(last_boot_state); if [ -n "$v" ] && { [ "$v" != "$P_LB" ] || [ -n "$f" ]; }; then
+		pub -r "$BASE/last_boot/state" "$v"; P_LB=$v; fi
 	v=$(volume_state); if [ -n "$v" ] && { [ "$v" != "$P_VOL" ] || [ -n "${1:-}" ]; }; then
 		pub -r "$BASE/volume/state" "$v"; P_VOL=$v; fi
 	if has_presence; then
-		v=$(presence_state); if [ -n "$v" ] && { [ "$v" != "$P_PRES" ] || [ -n "$f" ]; }; then
-			set -- $v; pub -r "$BASE/presence/state" "$1"; pub -r "$BASE/presence/distance" "$2"; P_PRES=$v; fi
+		# presence goes out at once. The distance goes through the rate limit.
+		v=$(presence_state); if [ -n "$v" ]; then
+			set -- $v; pr_on=$1; pr_d=$2
+			if [ "$pr_on" != "$P_PRES" ] || [ -n "$f" ]; then pub -r "$BASE/presence/state" "$pr_on"; P_PRES=$pr_on; fi
+			if [ -n "$f" ]; then thr_reset distance "$pr_d"; pub -r "$BASE/presence/distance" "$pr_d"; P_PRESD=$pr_d
+			elif pr_out=$(thr_check distance "$pr_d" "$THR_DISTANCE" 0); then pub -r "$BASE/presence/distance" "$pr_out"; P_PRESD=$pr_out; fi
+		fi
 	fi
 	if has_usbpower; then
 		v=$(usb_state); if [ -n "$v" ] && { [ "$v" != "$P_USB" ] || [ -n "$f" ]; }; then
@@ -715,6 +805,8 @@ if [ "$DRY" = 1 ]; then
 	# A color or a brightness waits for the messages that come with it. Any
 	# other message, and the end of the input, ends the wait.
 	while read -r topic payload; do
+		# a line "tick" is one pass of the main loop (publish what changed). A test changes the state files between two ticks.
+		if [ "$topic" = tick ]; then publish_states; continue; fi
 		handle "$topic" "$payload"
 		case $topic in */ledbar/rgb/set|*/ledbar/brightness/set) ;; *) led_apply;; esac
 	done

@@ -24,7 +24,7 @@ from aioesphomeapi.api_pb2 import (  # pylint: disable=no-name-in-module
 )
 from linux_voice_assistant.entity import LEDLightEntity
 
-from . import plugins
+from . import plugins, throttle
 from .backend import LEDBAR_FX, LEDBAR_LEDS_FX, PanelBackend
 from .entities import (
     ARG_INT,
@@ -89,7 +89,7 @@ class PanelDevice:
     reload_button: ButtonEntity
     reboot_button: ButtonEntity
     cpu_temp: SensorEntity
-    uptime: SensorEntity
+    last_boot: TextSensorEntity
     ip_address: TextSensorEntity
     touched_recently: BinarySensorEntity
     update: UpdateEntity
@@ -204,6 +204,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         illuminance = SensorEntity(
             server, key_for("illuminance"), "Illuminance", "illuminance",
             get_state=backend.get_lux, unit="lx", device_class="illuminance",
+            throttle=throttle.Throttle(deadband=throttle.ILLUMINANCE_DEADBAND, relative=throttle.ILLUMINANCE_RELATIVE),
         )
         entities.append(illuminance)
         als_auto = SwitchEntity(
@@ -257,13 +258,17 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
     cpu_temp = SensorEntity(
         server, key_for("cpu_temp"), "CPU temperature", "cpu_temp",
         get_state=backend.get_cpu_temp, unit="°C", device_class="temperature", accuracy_decimals=1,
+        throttle=throttle.Throttle(deadband=throttle.CPU_TEMP_DEADBAND),
     )
     entities.append(cpu_temp)
-    uptime = SensorEntity(
-        server, key_for("uptime"), "Uptime", "uptime",
-        get_state=backend.get_uptime, unit="s", device_class="duration", icon="mdi:clock-outline",
+    # the time of the last boot. It replaces the sensor "Uptime" (object id
+    # uptime), which changed every second. This one changes at a reboot only.
+    last_boot = TextSensorEntity(
+        server, key_for("last_boot"), "Last boot", "last_boot",
+        get_state=backend.get_last_boot, icon="mdi:restart", device_class="timestamp",
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
     )
-    entities.append(uptime)
+    entities.append(last_boot)
     ip_address = TextSensorEntity(
         server, key_for("ip_address"), "IP address", "ip_address", get_state=backend.get_ip, icon="mdi:ip-network",
     )
@@ -311,6 +316,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         distance = SensorEntity(
             server, key_for("distance"), "Distance", "distance",
             get_state=backend.get_distance, unit="mm", device_class="distance", icon="mdi:ruler",
+            throttle=throttle.Throttle(deadband=throttle.DISTANCE_DEADBAND),
         )
         entities.append(distance)
 
@@ -365,7 +371,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
         backend=backend, entities=entities, ledbar=ledbar, key_leds=key_leds, screen=screen,
         backlight=backlight, blank_timeout=blank_timeout, als_auto=als_auto, illuminance=illuminance, volume=volume,
         verbose_boot=verbose_boot, kiosk_url=kiosk_url, reload_button=reload_button, reboot_button=reboot_button,
-        cpu_temp=cpu_temp, uptime=uptime, ip_address=ip_address, touched_recently=touched_recently,
+        cpu_temp=cpu_temp, last_boot=last_boot, ip_address=ip_address, touched_recently=touched_recently,
         update=update, restart_required=restart_required, update_mode=update_mode, auto_restart=auto_restart,
         keys=keys, orientation=orientation, _pulse_since=time.time(),
         usb_power=usb_power, presence=presence, distance=distance, poe_class=poe_class,
@@ -558,7 +564,7 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
             msgs.append(device.key_leds._state_response())  # pylint: disable=protected-access
 
     for entity in (device.screen, device.backlight, device.blank_timeout, device.als_auto, device.illuminance,
-                   device.volume, device.verbose_boot, device.cpu_temp, device.uptime, device.ip_address,
+                   device.volume, device.verbose_boot, device.cpu_temp, device.last_boot, device.ip_address,
                    device.touched_recently, device.update, device.restart_required, device.update_mode,
                    device.auto_restart, device.presence, device.distance, device.usb_power,
                    device.poe_class, device.emmc_life_a, device.emmc_life_b, device.emmc_eol,
@@ -567,7 +573,11 @@ def poll(device: PanelDevice, broadcast: Callable[[list], None],
             continue
         before = getattr(entity, "_state", None)
         msg = entity.poll()
-        if getattr(entity, "_state", None) != before:
+        # a throttled sensor also sends an unchanged state now and then (the heartbeat)
+        resend = getattr(entity, "_resend", False)
+        if resend:
+            entity._resend = False  # pylint: disable=protected-access
+        if getattr(entity, "_state", None) != before or resend:
             msgs.append(msg)
 
     msgs += plugins.poll(device.plugin_entities)

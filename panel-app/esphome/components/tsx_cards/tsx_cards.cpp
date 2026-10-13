@@ -349,6 +349,14 @@ static long uptime_s() {
   return (long) ts.tv_sec;
 }
 
+// The sensor "Last boot": the wall clock minus the uptime, kept while the two
+// differ by less than BOOT_JITTER_S (lastboot.h).
+std::string TsxCards::last_boot() {
+  timespec up;
+  clock_gettime(CLOCK_BOOTTIME, &up);
+  return this->last_boot_.update((double) ::time(nullptr), (double) up.tv_sec + up.tv_nsec / 1e9);
+}
+
 static bool read_small_file(const std::string &path, std::string &out) {
   FILE *f = fopen(path.c_str(), "r");
   if (f == nullptr)

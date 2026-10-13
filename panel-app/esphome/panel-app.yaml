@@ -216,6 +216,16 @@ text_sensor:
     entity_category: diagnostic
     update_interval: 10s
     lambda: return tsx_cards::text_if_changed(id(panel_layout_hash), id(panel_cards).layout_hash());
+  # The time of the last boot (docs/panel-app.md, "Last boot"). It changes at a
+  # reboot, and once when NTP steps the clock. It sends a state on a change only.
+  - platform: template
+    name: Last boot
+    id: panel_last_boot
+    icon: mdi:restart
+    entity_category: diagnostic
+    device_class: timestamp
+    update_interval: 30s
+    lambda: return tsx_cards::text_if_changed(id(panel_last_boot), id(panel_cards).last_boot());
 
 # Updates (docs/panel-app.md, "Updates"). The state is the file
 # /run/tsx/update.state of tsx-autoupdate. Every action goes through the

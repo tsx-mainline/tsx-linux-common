@@ -43,7 +43,7 @@ sleep 0.3   # let the backgrounded "tsx-autoupdate now &" (update/set) finish lo
 fail=0
 chk() { grep -qF -- "$1" "$T/out" || { echo "FAIL: missing: $1"; fail=1; }; }
 n=0; grep '/config ' "$T/out" | while read -r _ _ t j; do echo "$j" | jq -e . >/dev/null || { echo "FAIL: bad JSON $t"; exit 1; }; done
-n=$(grep -c '/config ' "$T/out"); [ "$n" = 33 ] || { echo "FAIL: $n discovery configs, want 33 (the 7 keys of the board layer give 21)"; fail=1; }
+n=$(grep -c '/config ' "$T/out"); [ "$n" = 34 ] || { echo "FAIL: $n discovery configs, want 34 (the 7 keys of the board layer give 21)"; fail=1; }
 chk 'PUB (retained) tsx/tsx-kiosk/ledbar/state ON'
 chk 'PUB (retained) tsx/tsx-kiosk/ledbar/brightness 102'
 chk 'PUB (retained) tsx/tsx-kiosk/ledbar/rgb 0,0,255'

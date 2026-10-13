@@ -266,17 +266,24 @@ ENTITY_CATEGORY_DIAGNOSTIC = 2
 
 
 class SensorEntity(ESPHomeEntity):
-    """A generic read-only numeric sensor (lux, CPU temp, uptime). A
+    """A generic read-only numeric sensor (lux, CPU temp, distance). A
     get_state that returns None means "no value" (the distance sensor with
-    no target): Home Assistant shows it as unknown."""
+    no target): Home Assistant shows it as unknown.
+
+    throttle: a tsx_panel.throttle.Throttle for a sensor that changes often.
+    The poll then sends a state only when the Throttle says so (a change
+    beyond the deadband, at most once per interval, and a heartbeat). Without
+    it, every change goes out."""
 
     def __init__(self, server, key, name, object_id, get_state, unit="",
-                 device_class="", accuracy_decimals=0, icon="", entity_category=0):
+                 device_class="", accuracy_decimals=0, icon="", entity_category=0, throttle=None):
         ESPHomeEntity.__init__(self, server)
         self.key, self.name, self.object_id = key, name, object_id
         self._get_state = get_state
         self.unit, self.device_class, self.accuracy_decimals, self.icon = unit, device_class, accuracy_decimals, icon
         self.entity_category = entity_category
+        self._throttle = throttle
+        self._resend = False   # a heartbeat is due: send the state again though it did not change
         self._state = 0.0
 
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
@@ -288,12 +295,24 @@ class SensorEntity(ESPHomeEntity):
                 entity_category=self.entity_category,
             )
         elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
-            yield self._state_msg()
+            yield self._state_msg(initial=True)
 
-    def _state_msg(self):
+    def _state_msg(self, initial=False):
         try:
             value = self._get_state()
-            self._state = None if value is None else float(value)
+            reading = None if value is None else float(value)
+            if self._throttle is None:
+                self._state = reading
+            elif initial:
+                # a subscriber asks: the answer is the reading, and it counts as sent
+                self._state = reading
+                self._throttle.reset(reading)
+            else:
+                what = self._throttle.check(reading)
+                if what == self._throttle.PUBLISH:
+                    self._state = reading
+                elif what == self._throttle.REPEAT:
+                    self._resend = True
         except Exception:  # noqa: BLE001
             _LOGGER.debug("%s: read failed", self.name, exc_info=True)
         if self._state is None:

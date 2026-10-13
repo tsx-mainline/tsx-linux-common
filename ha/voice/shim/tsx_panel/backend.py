@@ -57,8 +57,11 @@ import socket
 import subprocess
 import time
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
+
+from . import throttle
 
 _LOGGER = logging.getLogger("tsx_panel.backend")
 
@@ -205,6 +208,10 @@ class PanelBackend:
         self._update_mode_pending: Optional[Tuple[str, float]] = None
         self._auto_restart_pending: Optional[Tuple[bool, float]] = None
         self._dark_mode_pending: Optional[Tuple[bool, float]] = None
+        # the last boot (get_last_boot). Test hooks: TSX_PROC_UPTIME and _wall_clock.
+        self.proc_uptime = Path(_env("TSX_PROC_UPTIME", "/proc/uptime"))
+        self._wall_clock = time.time
+        self._boot: Optional[float] = None
 
     # ---- the seam: tsx-panelctl ---------------------------------------------
     def _panelctl(self, *args, timeout=5):
@@ -783,12 +790,23 @@ class PanelBackend:
         except ValueError:
             return 0.0
 
-    def get_uptime(self) -> float:
-        raw = _read_first_line("/proc/uptime")
+    def get_last_boot(self) -> str:
+        """The time of the last boot as ISO 8601 text with a time zone (UTC), for
+        the sensor "Last boot". It is the wall clock minus the uptime, kept
+        while the two readings differ by less than BOOT_JITTER seconds, so the
+        text does not change by a second between two reports. It changes at a
+        reboot, and once when the clock steps (NTP sync after the boot, the panel
+        has no RTC)."""
+        raw = _read_first_line(self.proc_uptime)
         try:
-            return round(float(raw.split()[0]), 0) if raw else 0.0
+            boot = self._wall_clock() - float(raw.split()[0])
         except (ValueError, IndexError, AttributeError):
-            return 0.0
+            boot = None
+        if boot is not None and (self._boot is None or abs(boot - self._boot) >= throttle.BOOT_JITTER):
+            self._boot = boot
+        if self._boot is None:
+            return ""
+        return datetime.fromtimestamp(round(self._boot), tz=timezone.utc).isoformat(timespec="seconds")
 
     def get_ip(self) -> str:
         try:
