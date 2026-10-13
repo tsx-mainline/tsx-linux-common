@@ -18,7 +18,11 @@
 #   light  "Key LEDs"     brightness 0..255 (tsx-keypad led N|off. Only where the
 #                         keys have LEDs: tsx-panelctl has keyleds)
 #   switch "Screen"       ON = lit, OFF = blanked (tsx-blank)
-#   number "Backlight"    1..BACKLIGHT_MAX of /etc/kiosk.conf (tsx-idled override)
+#   number "Backlight"    1..100 % of the slider, as the ESPHome entity: a set
+#                         goes to tsx-panelctl send brightness-pct (the
+#                         tsx-idled override), the state is tsx-panelctl get
+#                         backlight-pct (also the waiting override of a blank
+#                         screen)
 #   number "Blank timeout"  seconds without input before the screen goes dark,
 #                         0 = never (panel.conf BLANK_TIMEOUT via tsx-config)
 #   binary_sensor "Touched recently"  last real input < 30 s ago (tsx-idled's
@@ -77,7 +81,6 @@ IDLED=${TSX_IDLED_STATE:-/run/tsx-idled.state}
 BCONF=${TSX_BUTTONS_CONF:-/etc/tsx/buttons.conf}
 BBCONF=${TSX_BUTTONS_BOARD_CONF:-/etc/tsx/buttons-board.conf}   # the board layer of the keys
 KCONF=${TSX_KIOSK_CONF:-/etc/kiosk.conf}
-KBCONF=${TSX_PANEL_BOARD_CONF:-/etc/tsx/panel-board.conf}   # the board layer of kiosk.conf
 ACONF=${TSX_ALS_CONF:-/etc/tsx/als.conf}
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 PCTL=${TSX_PANELCTL_BIN:-tsx-panelctl}   # the hardware interface of the base system
@@ -134,19 +137,6 @@ pub() {  # pub [-r] TOPIC PAYLOAD
 }
 
 # ---- helpers ---------------------------------------------------------------
-# The top level of the backlight, for the range of the Home Assistant number.
-# tsx-idled reports it in brightness.state ("max M"). Before that, BACKLIGHT_MAX
-# of kiosk.conf and of the board file, then the max_brightness of the first backlight device.
-BL_MAX=$(sed -n 's/^max //p' "$R/brightness.state" 2>/dev/null | head -n 1)
-case $BL_MAX in ''|*[!0-9]*) BL_MAX=;; esac
-[ -z "$BL_MAX" ] && BL_MAX=$(cat "$KCONF" "$KBCONF" 2>/dev/null | sed -n 's/^BACKLIGHT_MAX=\([0-9][0-9]*\).*/\1/p' | tail -1)
-if [ -z "$BL_MAX" ]; then
-	for _d in "${TSX_BACKLIGHT_DIR:-/sys/class/backlight}"/*; do
-		BL_MAX=$(cat "$_d/max_brightness" 2>/dev/null); break
-	done
-	case $BL_MAX in ''|*[!0-9]*) BL_MAX=;; esac
-fi
-[ -n "$BL_MAX" ] || BL_MAX=31
 # hardware only some panels have: an entity is announced only when it is
 # there, and its discovery topic is cleared otherwise (so Home Assistant
 # drops an entity an older build announced)
@@ -210,7 +200,7 @@ discovery() {
 	if has_keyleds; then pub -r "$DP/light/$NODE/key_leds/config" "{\"name\":\"Key LEDs\",\"uniq_id\":\"${NODE}_key_leds\",\"cmd_t\":\"$BASE/key_leds/set\",\"stat_t\":\"$BASE/key_leds/state\",\"bri_cmd_t\":\"$BASE/key_leds/brightness/set\",\"bri_stat_t\":\"$BASE/key_leds/brightness\",\"bri_scl\":255,\"on_cmd_type\":\"brightness\",\"icon\":\"mdi:gesture-tap-button\",$AV,$DEV}"
 	else pub -r "$DP/light/$NODE/key_leds/config" ""; fi
 	pub -r "$DP/switch/$NODE/screen/config" "{\"name\":\"Screen\",\"uniq_id\":\"${NODE}_screen\",\"cmd_t\":\"$BASE/screen/set\",\"stat_t\":\"$BASE/screen/state\",\"icon\":\"mdi:monitor\",$AV,$DEV}"
-	pub -r "$DP/number/$NODE/backlight/config" "{\"name\":\"Backlight\",\"uniq_id\":\"${NODE}_backlight\",\"cmd_t\":\"$BASE/backlight/set\",\"stat_t\":\"$BASE/backlight/state\",\"min\":1,\"max\":$BL_MAX,\"step\":1,\"mode\":\"slider\",\"icon\":\"mdi:brightness-6\",$AV,$DEV}"
+	pub -r "$DP/number/$NODE/backlight/config" "{\"name\":\"Backlight\",\"uniq_id\":\"${NODE}_backlight\",\"cmd_t\":\"$BASE/backlight/set\",\"stat_t\":\"$BASE/backlight/state\",\"min\":1,\"max\":100,\"step\":1,\"unit_of_meas\":\"%\",\"mode\":\"slider\",\"icon\":\"mdi:brightness-6\",$AV,$DEV}"
 	pub -r "$DP/number/$NODE/blank_timeout/config" "{\"name\":\"Blank timeout\",\"uniq_id\":\"${NODE}_blank_timeout\",\"cmd_t\":\"$BASE/blank_timeout/set\",\"stat_t\":\"$BASE/blank_timeout/state\",\"min\":0,\"max\":86400,\"step\":10,\"unit_of_meas\":\"s\",\"mode\":\"box\",\"icon\":\"mdi:timer-outline\",$AV,$DEV}"
 	pub -r "$DP/binary_sensor/$NODE/touched_recently/config" "{\"name\":\"Touched recently\",\"uniq_id\":\"${NODE}_touched_recently\",\"stat_t\":\"$BASE/touched_recently/state\",\"dev_cla\":\"motion\",\"icon\":\"mdi:gesture-tap\",$AV,$DEV}"
 	if has_als; then
@@ -357,6 +347,26 @@ emmc_state() {  # "LIFE_A LIFE_B EOL"
 	echo "$(emmc_life a) $(emmc_life b) $e"
 }
 
+# backlight_key: BLK gets what a new backlight percent can come with, read
+# with shell built-ins (no process): the override that waits for the wake
+# ($R/brightness) and the backlight of the panel app. The level of a lit
+# screen is in the screen state.
+backlight_key() {
+	bk1=; [ -r "$R/brightness" ] && read -r bk1 _ < "$R/brightness"
+	bk2=
+	if [ -r "$R/panel-app/screen.state" ]; then
+		while read -r bk_k bk_v; do [ "$bk_k" = backlight ] && { bk2=$bk_v; break; }; done < "$R/panel-app/screen.state"
+	fi
+	BLK=$bk1/$bk2
+}
+
+backlight_pct_state() {  # 1..100, the percent of the slider, or nothing
+	v=$("$PCTL" get backlight-pct 2>/dev/null) || v=
+	case $v in ''|*[!0-9]*) return 0;; esac
+	[ "$v" -ge 1 ] && [ "$v" -le 100 ] && echo "$v"
+	return 0
+}
+
 volume_state() {  # "NN" percent of the speaker volume
 	"$PCTL" get volume 2>/dev/null || true
 }
@@ -407,7 +417,7 @@ update_hold() {
 	else rm -f "$M/hold.$1"; echo "$2"; fi
 }
 
-P_LED= P_KL= P_SCR= P_BL= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_USB= P_POE= P_EMMC= P_RR= P_UM= P_AR=
+P_LED= P_KL= P_SCR= P_BL= P_BLK= P_ALS= P_VOL= P_UPD= P_BT= P_TR= P_PRES= P_USB= P_POE= P_EMMC= P_RR= P_UM= P_AR=
 publish_states() {  # $1 = force
 	f=${1:-}
 	if [ "$P_BAR" = yes ]; then
@@ -418,9 +428,14 @@ publish_states() {  # $1 = force
 	fi
 	v=$(key_leds_state); if [ "$v" != "$P_KL" ] || [ -n "${1:-}" ]; then
 		set -- $v; pub -r "$BASE/key_leds/state" "$1"; pub -r "$BASE/key_leds/brightness" "$2"; P_KL=$v; fi
-	v=$(screen_state); if [ "$v" != "$P_SCR" ] || [ -n "${1:-}" ]; then
-		set -- $v; pub -r "$BASE/screen/state" "$1"; P_SCR=$v
-		if [ -n "${2:-}" ] && [ "$2" != none ] && [ "$2" != "$P_BL" ]; then pub -r "$BASE/backlight/state" "$2"; P_BL=$2; fi
+	# The backlight in percent (tsx-panelctl get backlight-pct): asked only when
+	# the screen state, the waiting override or the panel app backlight changes.
+	v=$(screen_state); backlight_key
+	if [ "$v" != "$P_SCR" ] || [ "$BLK" != "$P_BLK" ] || [ -n "$f" ]; then
+		if [ "$v" != "$P_SCR" ] || [ -n "$f" ]; then set -- $v; pub -r "$BASE/screen/state" "$1"; P_SCR=$v; fi
+		P_BLK=$BLK
+		v=$(backlight_pct_state)
+		if [ -n "$v" ] && { [ "$v" != "$P_BL" ] || [ -n "$f" ]; }; then pub -r "$BASE/backlight/state" "$v"; P_BL=$v; fi
 	fi
 	v=$(blank_timeout_state); if [ "$v" != "$P_BT" ] || [ -n "${1:-}" ]; then
 		pub -r "$BASE/blank_timeout/state" "$v"; P_BT=$v; fi
@@ -606,10 +621,11 @@ handle() {  # topic payload
 	screen/set)
 		case $p in ON) "$PCTL" send blank off;; OFF) "$PCTL" send blank on;; esac;;
 	backlight/set)
+		# percent of the slider (1 to 100), as the ESPHome entity
 		p=${p%%.*}; case $p in *[!0-9]*|'') return;; esac
 		[ "${#p}" -le 5 ] || return
-		[ "$p" -ge 1 ] || p=1; [ "$p" -le "$BL_MAX" ] || p=$BL_MAX
-		"$PCTL" send backlight "$p";;      # the base system sets the tsx-idled override and the device
+		[ "$p" -ge 1 ] || p=1; [ "$p" -le 100 ] || p=100
+		"$PCTL" send brightness-pct "$p";;      # the base system maps it to the level of the tsx-idled override
 	blank_timeout/set)
 		p=${p%%.*}; case $p in *[!0-9]*|'') return;; esac
 		[ "${#p}" -le 5 ] && [ "$p" -le 86400 ] || return

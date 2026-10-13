@@ -9,12 +9,13 @@ set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$(dirname "$0")/lib/paths.sh"
 T=${KEEPT:-$(mktemp -d)}; [ -n "${KEEPT:-}" ] || trap 'rm -rf "$T"' EXIT; mkdir -p "$T/bin" "$T/run" "$T/bl/x"
-# the stub of tsx-panelctl: the LED bar and the key LEDs are there, `send` logs, `get volume` has no value
+# the stub of tsx-panelctl: the LED bar and the key LEDs are there, `send` logs, `get volume` has no
+# value, `get backlight-pct` gives 57 (the percent of the slider, not the level 17 of tsx-idled)
 cat > "$T/bin/tsx-panelctl" <<'EOF'
 #!/bin/sh
 case "$1" in
 has) case "$2" in ledbar|keyleds) exit 0;; *) exit 1;; esac;;
-get) exit 1;;
+get) [ "$2" = backlight-pct ] && { echo 57; exit 0; }; exit 1;;
 send) echo "CALL tsx-panelctl $*" >&2;;
 esac
 EOF
@@ -28,7 +29,8 @@ printf '%s' '{"installed_version":"abc123","latest_version":"abc123+2pending","t
 printf 'NODE_ID=tsx-kiosk\nDEVICE_NAME=TSX test\n' > "$T/mqtt.conf"
 printf '%s\n' 'tsx/tsx-kiosk/ledbar/rgb/set 255,0,0' 'tsx/tsx-kiosk/ledbar/brightness/set 128' \
 	'tsx/tsx-kiosk/ledbar/set ON' 'tsx/tsx-kiosk/ledbar/set OFF' 'tsx/tsx-kiosk/key_leds/brightness/set 40' \
-	'tsx/tsx-kiosk/key_leds/set OFF' 'tsx/tsx-kiosk/screen/set OFF' 'tsx/tsx-kiosk/backlight/set 30' 'tsx/tsx-kiosk/bogus/set x' \
+	'tsx/tsx-kiosk/key_leds/set OFF' 'tsx/tsx-kiosk/screen/set OFF' 'tsx/tsx-kiosk/backlight/set 30' 'tsx/tsx-kiosk/backlight/set 150' \
+	'tsx/tsx-kiosk/backlight/set 0' 'tsx/tsx-kiosk/backlight/set 45.0' 'tsx/tsx-kiosk/bogus/set x' \
 	'tsx/tsx-kiosk/update/set INSTALL' 'tsx/tsx-kiosk/blank_timeout/set 600.0' 'tsx/tsx-kiosk/blank_timeout/set 99999' \
 	'tsx/tsx-kiosk/restart/set PRESS' 'tsx/tsx-kiosk/update_mode/set auto' 'tsx/tsx-kiosk/update_mode/set sometimes' \
 	'tsx/tsx-kiosk/auto_restart/set ON' 'tsx/tsx-kiosk/auto_restart/set maybe' |
@@ -46,7 +48,11 @@ chk 'PUB (retained) tsx/tsx-kiosk/ledbar/brightness 102'
 chk 'PUB (retained) tsx/tsx-kiosk/ledbar/rgb 0,0,255'
 chk 'PUB (retained) tsx/tsx-kiosk/key_leds/brightness 128'
 chk 'PUB (retained) tsx/tsx-kiosk/screen/state ON'
-chk 'PUB (retained) tsx/tsx-kiosk/backlight/state 17'
+# the backlight is the percent of the slider (get backlight-pct), as the ESPHome entity
+chk 'PUB (retained) tsx/tsx-kiosk/backlight/state 57'
+grep -qF 'tsx/tsx-kiosk/backlight/state 17' "$T/out" && { echo "FAIL: the raw backlight level was published"; fail=1; }
+[ "$(grep -F 'PUB (retained) homeassistant/number/tsx-kiosk/backlight/config ' "$T/out" | sed 's/^[^{]*//' | jq -r '[.min, .max, .step, .unit_of_meas] | join(" ")')" = "1 100 1 %" ] \
+	|| { echo "FAIL: the Backlight number is not 1..100 %"; fail=1; }
 # The color (255,0,0) and the brightness (128) come one after the other: ONE command with the final
 # color, never the color at full level first (the bar would flash)
 chk 'CALL tsx-panelctl send ledbar set 50 0 0'
@@ -83,7 +89,11 @@ grep -qE 'send (update-mode|auto-restart) (sometimes|maybe)' "$T/out" && { echo 
 chk 'PUB (retained) tsx/tsx-kiosk/blank_timeout/state 120'
 chk 'PUB (retained) tsx/tsx-kiosk/touched_recently/state ON'
 chk 'CALL tsx-panelctl send blank-timeout 600'
-chk 'CALL tsx-panelctl send backlight 15'
+chk 'CALL tsx-panelctl send brightness-pct 30'
+chk 'CALL tsx-panelctl send brightness-pct 100'
+chk 'CALL tsx-panelctl send brightness-pct 1'
+chk 'CALL tsx-panelctl send brightness-pct 45'
+grep -qF 'CALL tsx-panelctl send backlight ' "$T/out" && { echo "FAIL: a raw backlight level was sent"; fail=1; }
 grep -q 'blank-timeout 99999' "$T/out" && { echo "FAIL: blank timeout above 86400 accepted"; fail=1; }
 [ "$(grep -c 'CALL tsx-panelctl send ledbar' "$T/out")" = 2 ] || { echo "FAIL: color and brightness are one command (set 50 0 0) and OFF, and ON after them sends nothing"; fail=1; }
 # the base system sets the backlight (tsx-panelctl backlight), so tsx-mqtt writes no file and no device
