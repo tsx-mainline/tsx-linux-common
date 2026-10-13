@@ -88,7 +88,16 @@
 # __in_window, __needs_reboot, __is_idle and __write_status are internal. They call the
 # matching shell function directly. The host tests use them to check that
 # logic without a real apk, date or reboot.
+#
+# Process starts: the cron tick runs every 15 minutes on a slow CPU. The
+# helpers below read and write the status files with shell built-ins and set
+# variables (fget, set_fields, jesc_to, pkg_version_to) instead of a command
+# substitution with sed or awk. A text that needs no escape is not piped
+# through sed. The output files are the same as before.
 set -u
+NL='
+'
+
 # The board values (TSX_FAMILY, TSX_APK_CATEGORY). Test hook: TSX_BOARD_CONF.
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 
@@ -108,7 +117,21 @@ RUNLEVELS=${TSX_RUNLEVELS:-/etc/runlevels}
 
 STATUS_FIELDS="installed_hash pending_count pending_list reboot_pending in_progress last_check last_install last_result health repo_warning repo_blocked running_version installed_release pending_release boot_id restart_required"
 
-log() { { mkdir -p "$(dirname "$LOG")"; printf '%s tsx-autoupdate: %s\n' "$(now_iso)" "$*" >>"$LOG"; } 2>/dev/null; return 0; }
+# mkdir_once DIR: mkdir -p DIR once for each run.
+MKDIR_DONE=
+mkdir_once() {
+	case " $MKDIR_DONE " in *" $1 "*) return 0;; esac
+	mkdir -p "$1" 2>/dev/null
+	MKDIR_DONE="$MKDIR_DONE $1"
+}
+# parent PATH: the folder of PATH (as dirname) in PARENT.
+parent() {
+	case $1 in
+	*/*) PARENT=${1%/*}; [ -n "$PARENT" ] || PARENT=/;;
+	*) PARENT=.;;
+	esac
+}
+log() { { parent "$LOG"; mkdir_once "$PARENT"; printf '%s tsx-autoupdate: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG"; } 2>/dev/null; return 0; }
 now_iso() { date '+%Y-%m-%dT%H:%M:%S'; }
 nowhhmm() { date '+%H:%M'; }
 
@@ -133,17 +156,17 @@ load_conf() {
 
 # ---- pure logic (host-tested directly via __in_window etc.) ---------------
 
-hhmm2min() {  # "HH:MM" -> minutes since midnight
+hhmm2min() {  # "HH:MM" -> MIN, the minutes since midnight
 	h=${1%%:*}; m=${1#*:}
 	h=${h#0}; [ -n "$h" ] || h=0
 	m=${m#0}; [ -n "$m" ] || m=0
-	echo $((h * 60 + m))
+	MIN=$((h * 60 + m))
 }
 
 in_window() {  # in_window HH:MM start-end  (window may cross midnight)
 	now=$1; w=$2
 	s=${w%-*}; e=${w#*-}
-	ns=$(hhmm2min "$now"); ss=$(hhmm2min "$s"); ee=$(hhmm2min "$e")
+	hhmm2min "$now"; ns=$MIN; hhmm2min "$s"; ss=$MIN; hhmm2min "$e"; ee=$MIN
 	if [ "$ss" -le "$ee" ]; then
 		[ "$ns" -ge "$ss" ] && [ "$ns" -lt "$ee" ]
 	else
@@ -176,21 +199,35 @@ needs_reboot() {  # needs_reboot "pkg1 pkg2 ..." -> exit 0 if any needs a reboot
 
 # ---- status file (flat key/value. Both JSON files are generated from it) --
 
-get_field() { sed -n "s/^$2 //p" "$1" 2>/dev/null | head -1; }
+# fget VAR FILE KEY: set VAR to the value of the first line "KEY value" of
+# FILE, or to nothing. Shell built-ins only (no process).
+fget() {
+	_fg_v=
+	if [ -r "$2" ]; then
+		while IFS= read -r _fg_l || [ -n "$_fg_l" ]; do
+			case $_fg_l in "$3 "*) _fg_v=${_fg_l#"$3 "}; break;; esac
+		done < "$2"
+	fi
+	eval "$1=\$_fg_v"
+}
+
+# get_field FILE KEY: print the value (fget for a command substitution).
+get_field() { fget _gf_v "$1" "$2"; [ -z "$_gf_v" ] || printf '%s\n' "$_gf_v"; }
 
 set_fields() {  # set_fields FILE "k1=v1" "k2=v2" ...
 	f=$1; shift
-	mkdir -p "$(dirname "$f")" 2>/dev/null
+	parent "$f"; mkdir_once "$PARENT"
 	tmp="$f.$$"
-	: > "$tmp"
+	{
 	for k in $STATUS_FIELDS; do
-		v=$(get_field "$f" "$k")
+		fget v "$f" "$k"
 		for kv in "$@"; do
 			ck=${kv%%=*}
 			[ "$ck" = "$k" ] && v=${kv#*=}
 		done
-		printf '%s %s\n' "$k" "$v" >> "$tmp"
+		printf '%s %s\n' "$k" "$v"
 	done
+	} > "$tmp"
 	mv "$tmp" "$f"
 }
 
@@ -198,9 +235,29 @@ set_fields() {  # set_fields FILE "k1=v1" "k2=v2" ...
 # each newline becomes the two characters \n (JSON has no raw newline).
 jesc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk 'BEGIN { ORS = "" } NR > 1 { print "\\n" } { print }'; }
 
+# jesc_to VAR TEXT: VAR gets jesc TEXT. A text with no backslash, quote or
+# newline needs no escape and starts no process.
+jesc_to() {
+	case $2 in
+	*\\*|*\"*|*"$NL"*) _je_v=$(jesc "$2");;
+	*) _je_v=$2;;
+	esac
+	eval "$1=\$_je_v"
+}
+
 # esc_nl TEXT: the text with a backslash doubled and each newline written as
 # \n. The panel app reads the summary line of update.state this way.
 esc_nl() { printf '%s' "$1" | sed 's/\\/\\\\/g' | awk 'BEGIN { ORS = "" } NR > 1 { print "\\n" } { print }'; }
+
+# esc_nl_to VAR TEXT: VAR gets esc_nl TEXT, with no process for a text that
+# has no backslash and no newline.
+esc_nl_to() {
+	case $2 in
+	*\\*|*"$NL"*) _en_v=$(esc_nl "$2");;
+	*) _en_v=$2;;
+	esac
+	eval "$1=\$_en_v"
+}
 
 # md_list "a (x -> y); b (x -> y)": a Markdown list, one package on each line.
 md_list() { printf '%s\n' "$1" | tr ';' '\n' | sed 's/^ *//; s/ *$//; /^$/d; s/^/- /'; }
@@ -215,20 +272,24 @@ md_list() { printf '%s\n' "$1" | tr ';' '\n' | sed 's/^ *//; s/ *$//; /^$/d; s/^
 # changes. So an install that leaves the versions as they are would look
 # the same. The title and the latest version say "restart required", and the
 # notes tell the reason when the dialog opens again.
+HOST=
 compute_view() {
 	f=$STATE/fields
-	run=$(get_field "$f" running_version)
-	inst=$(get_field "$f" installed_release)
+	fget run "$f" running_version
+	fget inst "$f" installed_release
 	[ -n "$run" ] || run=$inst
 	[ -n "$run" ] || run=unknown
 	[ -n "$inst" ] || inst=$run
-	pcount=$(get_field "$f" pending_count); [ -n "$pcount" ] || pcount=0
-	plist=$(get_field "$f" pending_list)
-	prel=$(get_field "$f" pending_release)
-	rb=$(get_field "$f" reboot_pending)
-	ipg=$(get_field "$f" in_progress)
-	host=$(hostname 2>/dev/null); [ -n "$host" ] || host=tsx
-	V_RESTART=0; [ "$(get_field "$f" restart_required)" = 1 ] && V_RESTART=1
+	fget pcount "$f" pending_count; [ -n "$pcount" ] || pcount=0
+	fget plist "$f" pending_list
+	fget prel "$f" pending_release
+	fget rb "$f" reboot_pending
+	fget ipg "$f" in_progress
+	# The host name once for each run.
+	[ -n "$HOST" ] || { HOST=$(hostname 2>/dev/null); [ -n "$HOST" ] || HOST=tsx; }
+	host=$HOST
+	fget rr "$f" restart_required
+	V_RESTART=0; [ "$rr" = 1 ] && V_RESTART=1
 	V_INSTALLED=$run
 	V_TITLE="TSX $host packages"
 	nl='
@@ -257,85 +318,83 @@ compute_view() {
 	else
 		V_LATEST=$run
 	fi
-	rw=$(get_field "$f" repo_warning)
+	fget rw "$f" repo_warning
 	[ -n "$rw" ] && paras="${paras:+$paras$nl$nl}WARNING: $rw"
 	[ -n "$paras" ] || paras="up to date"
 	V_SUMMARY=$paras
 	return 0
 }
 
-write_update_json() {
+# write_update_json, write_ha_json: compute the view, then write. write_status
+# computes the view once and writes all status files.
+write_update_json() { compute_view; write_update_json_body; }
+write_ha_json() { compute_view; write_ha_json_body; }
+write_status() { compute_view; write_update_json_body; write_ha_json_body; }
+
+# tf VAR VALUE: VAR gets true when VALUE is 1, else false.
+tf() { if [ "$2" = 1 ]; then eval "$1=true"; else eval "$1=false"; fi; }
+
+write_update_json_body() {
 	f=$STATE/fields
-	compute_view
-	installed=$(get_field "$f" installed_hash)
-	pcount=$(get_field "$f" pending_count); [ -n "$pcount" ] || pcount=0
-	plist=$(get_field "$f" pending_list)
-	rb=$(get_field "$f" reboot_pending); [ "$rb" = 1 ] && rbj=true || rbj=false
-	ip=$(get_field "$f" in_progress); [ "$ip" = 1 ] && ipj=true || ipj=false
-	[ "$V_RESTART" = 1 ] && rrj=true || rrj=false
+	fget installed "$f" installed_hash
+	fget pcount "$f" pending_count; [ -n "$pcount" ] || pcount=0
+	fget plist "$f" pending_list
+	fget rb "$f" reboot_pending; tf rbj "$rb"
+	fget ip "$f" in_progress; tf ipj "$ip"
+	tf rrj "$V_RESTART"
+	ar=0; [ "$AUTO_RESTART" = on ] && ar=1; tf arj "$ar"
 	items=
 	oldifs=$IFS; IFS=';'
 	for it in $plist; do
-		it=$(printf '%s' "$it" | sed 's/^ *//;s/ *$//')
+		# the item without the spaces at its start and end
+		while :; do case $it in " "*) it=${it# };; *" ") it=${it% };; *) break;; esac; done
 		[ -n "$it" ] || continue
-		items="${items:+$items,}\"$(jesc "$it")\""
+		jesc_to j "$it"
+		items="${items:+$items,}\"$j\""
 	done
 	IFS=$oldifs
-	mkdir -p "$RUN" "$STATE" 2>/dev/null
+	mkdir_once "$RUN"; mkdir_once "$STATE"
 	out="$RUN/update.json"
-	{
-		printf '{'
-		printf '"installed_version":"%s",' "$(jesc "$V_INSTALLED")"
-		printf '"latest_version":"%s",' "$(jesc "$V_LATEST")"
-		printf '"package_hash":"%s",' "$(jesc "$installed")"
-		printf '"mode":"%s",' "$MODE"
-		printf '"auto_restart":%s,' "$([ "$AUTO_RESTART" = on ] && echo true || echo false)"
-		printf '"pending_count":%s,' "$pcount"
-		printf '"pending":[%s],' "$items"
-		printf '"reboot_pending":%s,' "$rbj"
-		printf '"restart_required":%s,' "$rrj"
-		printf '"in_progress":%s,' "$ipj"
-		printf '"last_check":"%s",' "$(jesc "$(get_field "$f" last_check)")"
-		printf '"last_install":"%s",' "$(jesc "$(get_field "$f" last_install)")"
-		printf '"last_result":"%s",' "$(jesc "$(get_field "$f" last_result)")"
-		printf '"health":"%s",' "$(jesc "$(get_field "$f" health)")"
-		printf '"repo_warning":"%s"' "$(jesc "$(get_field "$f" repo_warning)")"
-		printf '}\n'
-	} > "$out"
-	cp -f "$out" "$STATE/update.json" 2>/dev/null
+	jesc_to j_inst "$V_INSTALLED"; jesc_to j_latest "$V_LATEST"; jesc_to j_hash "$installed"
+	fget v "$f" last_check; jesc_to j_lc "$v"
+	fget v "$f" last_install; jesc_to j_li "$v"
+	fget v "$f" last_result; jesc_to j_lr "$v"
+	fget v "$f" health; jesc_to j_health "$v"
+	fget v "$f" repo_warning; jesc_to j_rw "$v"
+	json="{\"installed_version\":\"$j_inst\",\"latest_version\":\"$j_latest\",\"package_hash\":\"$j_hash\","
+	json="$json\"mode\":\"$MODE\",\"auto_restart\":$arj,\"pending_count\":$pcount,\"pending\":[$items],"
+	json="$json\"reboot_pending\":$rbj,\"restart_required\":$rrj,\"in_progress\":$ipj,"
+	json="$json\"last_check\":\"$j_lc\",\"last_install\":\"$j_li\",\"last_result\":\"$j_lr\","
+	json="$json\"health\":\"$j_health\",\"repo_warning\":\"$j_rw\"}"
+	printf '%s\n' "$json" > "$out"
+	# the persistent copy (as cp -f did: an error is not reported)
+	{ printf '%s\n' "$json" > "$STATE/update.json"; } 2>/dev/null
 }
 
 # update-ha-state.json (tsx-mqtt, the ESPHome shim) and update.state (the
 # panel app, tsx-panelctl). Both say the same. The summary is Markdown with
 # one package on each line. In update.state it is one line: a newline is the
 # two characters \n and a backslash is doubled (see esc_nl).
-write_ha_json() {
+write_ha_json_body() {
 	f=$STATE/fields
-	compute_view
-	ip=$(get_field "$f" in_progress); [ "$ip" = 1 ] && ipj=true || ipj=false
-	mkdir -p "$RUN" 2>/dev/null
-	{
-		printf '{'
-		printf '"installed_version":"%s",' "$(jesc "$V_INSTALLED")"
-		printf '"latest_version":"%s",' "$(jesc "$V_LATEST")"
-		printf '"title":"%s",' "$(jesc "$V_TITLE")"
-		printf '"release_summary":"%s",' "$(jesc "$V_SUMMARY")"
-		printf '"in_progress":%s,' "$ipj"
-		printf '"restart_required":%s,' "$([ "$V_RESTART" = 1 ] && echo true || echo false)"
-		printf '"mode":"%s",' "$MODE"
-		printf '"auto_restart":%s' "$([ "$AUTO_RESTART" = on ] && echo true || echo false)"
-		printf '}\n'
-	} > "$RUN/update-ha-state.json.$$" && mv "$RUN/update-ha-state.json.$$" "$RUN/update-ha-state.json"
-	{
-		printf 'installed %s\n' "$V_INSTALLED"
-		printf 'latest %s\n' "$V_LATEST"
-		printf 'title %s\n' "$(printf '%s' "$V_TITLE" | tr '\n' ' ')"
-		printf 'summary %s\n' "$(esc_nl "$V_SUMMARY")"
-		printf 'in-progress %s\n' "$([ "$ip" = 1 ] && echo yes || echo no)"
-		printf 'restart-required %s\n' "$([ "$V_RESTART" = 1 ] && echo yes || echo no)"
-		printf 'mode %s\n' "$MODE"
-		printf 'auto-restart %s\n' "$AUTO_RESTART"
-	} > "$RUN/update.state.$$" && mv "$RUN/update.state.$$" "$RUN/update.state"
+	fget ip "$f" in_progress; tf ipj "$ip"
+	tf rrj "$V_RESTART"
+	ar=0; [ "$AUTO_RESTART" = on ] && ar=1; tf arj "$ar"
+	mkdir_once "$RUN"
+	jesc_to j_inst "$V_INSTALLED"; jesc_to j_latest "$V_LATEST"
+	jesc_to j_title "$V_TITLE"; jesc_to j_sum "$V_SUMMARY"
+	printf '%s\n' "{\"installed_version\":\"$j_inst\",\"latest_version\":\"$j_latest\",\"title\":\"$j_title\",\"release_summary\":\"$j_sum\",\"in_progress\":$ipj,\"restart_required\":$rrj,\"mode\":\"$MODE\",\"auto_restart\":$arj}" \
+		> "$RUN/update-ha-state.json.$$" && mv "$RUN/update-ha-state.json.$$" "$RUN/update-ha-state.json"
+	case $V_TITLE in
+	*"$NL"*) title=$(printf '%s' "$V_TITLE" | tr '\n' ' ');;
+	*) title=$V_TITLE;;
+	esac
+	esc_nl_to sum "$V_SUMMARY"
+	ipt=no; [ "$ip" = 1 ] && ipt=yes
+	rrt=no; [ "$V_RESTART" = 1 ] && rrt=yes
+	printf 'installed %s\nlatest %s\ntitle %s\nsummary %s\nin-progress %s\nrestart-required %s\nmode %s\nauto-restart %s\n' \
+		"$V_INSTALLED" "$V_LATEST" "$title" "$sum" "$ipt" "$rrt" "$MODE" "$AUTO_RESTART" \
+		> "$RUN/update.state.$$" && mv "$RUN/update.state.$$" "$RUN/update.state"
 	chmod 644 "$RUN/update-ha-state.json" "$RUN/update.state" 2>/dev/null
 	return 0
 }
@@ -350,6 +409,8 @@ write_ha_json() {
 # unavailable, so a check still sees what the others offer).
 classify_repos() {
 	REPO_WARNING= REPO_BLOCKED=0 APK_FORCE= ours= others=
+	# Only a line about an index can name a repository (no process otherwise).
+	case $1 in *APKINDEX.tar.gz:*) ;; *) return 0;; esac
 	for u in $(printf '%s\n' "$1" | sed -nE 's#^(WARNING|ERROR): .* ([a-z]+://[^ ]*|/[^ ]*)/[^/ ]+/APKINDEX\.tar\.gz: .*#\2#p' | sort -u); do
 		case $u in
 		*/common|*/"$TSX_APK_CATEGORY") ours="${ours:+$ours, }$u";;
@@ -371,19 +432,55 @@ classify_repos() {
 # the revision (tsx-fam-board-0.3.5-r0 gives 0.3.5). A subpackage such as
 # tsx-fam-board-ha does not match: a digit must follow the name.
 pkg_version() {
-	printf '%s\n' "$2" | sed -n "s/^$1-\([0-9][^ ]*\)-r[0-9][0-9]*\$/\1/p" | head -n 1
+	pkg_version_to _pv_out "$1" "$2"; [ -z "$_pv_out" ] || printf '%s\n' "$_pv_out"
 }
 
-# release_pkg APK_INFO_TEXT: the package that carries the release number: the
-# board package of the family, else tsx-base.
-release_pkg() {
-	if [ -n "$(pkg_version "tsx-$TSX_FAMILY-board" "$1")" ]; then echo "tsx-$TSX_FAMILY-board"; else echo tsx-base; fi
+# pkg_version_to VAR PKG LIST: VAR gets pkg_version PKG LIST, with shell
+# built-ins only. A line matches "PKG-<version>-r<digits>": the version starts
+# with a digit and has no space.
+pkg_version_to() {
+	_pv_v=
+	_pv_ifs=$IFS; IFS=$NL; set -f
+	for _pv_l in $3; do
+		case $_pv_l in "$2"-[0-9]*) ;; *) continue;; esac
+		_pv_x=${_pv_l#"$2"-}
+		case $_pv_x in *-r*) ;; *) continue;; esac
+		_pv_r=${_pv_x##*-r}
+		case $_pv_r in ''|*[!0-9]*) continue;; esac
+		_pv_x=${_pv_x%-r*}
+		case $_pv_x in *" "*) continue;; esac
+		_pv_v=$_pv_x; break
+	done
+	set +f; IFS=$_pv_ifs
+	eval "$1=\$_pv_v"
 }
 
-installed_release() {
-	iv=$(apk info -v 2>/dev/null)
-	v=$(pkg_version "$(release_pkg "$iv")" "$iv")
-	printf '%s\n' "${v:-unknown}"
+# release_pkg_to VAR APK_INFO_TEXT: VAR gets the package that carries the
+# release number: the board package of the family, else tsx-base.
+release_pkg_to() {
+	pkg_version_to _rp_v "tsx-$TSX_FAMILY-board" "$2"
+	if [ -n "$_rp_v" ]; then eval "$1=tsx-\$TSX_FAMILY-board"; else eval "$1=tsx-base"; fi
+}
+release_pkg() { release_pkg_to _rp_out "$1"; echo "$_rp_out"; }
+
+# installed_release_to VAR [APK_INFO_TEXT]: VAR gets the installed release.
+# Without the text, it runs apk info -v.
+installed_release_to() {
+	if [ $# -ge 2 ]; then _ir_iv=$2; else _ir_iv=$(apk info -v 2>/dev/null); fi
+	release_pkg_to _ir_p "$_ir_iv"
+	pkg_version_to _ir_v "$_ir_p" "$_ir_iv"
+	eval "$1=\${_ir_v:-unknown}"
+}
+installed_release() { installed_release_to _ir_out; printf '%s\n' "$_ir_out"; }
+
+# read_all VAR FILE: VAR gets the lines of FILE without their newlines, one
+# after the other (as tr -d '\n' < FILE). Built-ins only.
+read_all() {
+	_ra_v=
+	if [ -r "$2" ]; then
+		while IFS= read -r _ra_l || [ -n "$_ra_l" ]; do _ra_v=$_ra_v$_ra_l; done < "$2"
+	fi
+	eval "$1=\$_ra_v"
 }
 
 # ensure_boot: record the running release once for each boot. The packages
@@ -391,21 +488,33 @@ installed_release() {
 # the state "restart required". boot_id comes from the kernel.
 ensure_boot() {
 	f=$STATE/fields
-	cur=$(tr -d '\n' < "$BOOT_ID_FILE" 2>/dev/null)
-	if [ -n "$(get_field "$f" running_version)" ] && { [ -z "$cur" ] || [ "$cur" = "$(get_field "$f" boot_id)" ]; }; then
+	read_all cur "$BOOT_ID_FILE"
+	fget eb_run "$f" running_version; fget eb_id "$f" boot_id
+	if [ -n "$eb_run" ] && { [ -z "$cur" ] || [ "$cur" = "$eb_id" ]; }; then
 		return 0
 	fi
-	rel=$(installed_release)
+	installed_release_to rel
 	set_fields "$f" boot_id="$cur" running_version="$rel" installed_release="$rel" restart_required=0
 	log "boot: running release $rel"
 }
 
-installed_hash() {
-	bid=; [ -r "$BUILD_ID_FILE" ] && bid=$(tr -d '\n' < "$BUILD_ID_FILE" 2>/dev/null)
-	h=$(apk info -v 2>/dev/null | sort | sha256sum 2>/dev/null | cut -c1-12)
+# installed_hash_to VAR [APK_INFO_TEXT]: VAR gets "<build-id>+<hash>" (or the
+# hash alone): the hash is the sha256 of the sorted lines of apk info -v.
+# The text of an apk info -v that already ran gives the same hash, so the
+# check runs apk info -v once.
+installed_hash_to() {
+	read_all bid "$BUILD_ID_FILE"
+	if [ $# -lt 2 ]; then
+		h=$(apk info -v 2>/dev/null | sort | sha256sum 2>/dev/null | cut -c1-12)
+	elif [ -n "$2" ]; then
+		h=$(printf '%s\n' "$2" | sort | sha256sum 2>/dev/null | cut -c1-12)
+	else
+		h=$(: | sort | sha256sum 2>/dev/null | cut -c1-12)
+	fi
 	[ -n "$h" ] || h=unknown
-	if [ -n "$bid" ]; then printf '%s+%s\n' "$bid" "$h"; else printf '%s\n' "$h"; fi
+	if [ -n "$bid" ]; then eval "$1=\$bid+\$h"; else eval "$1=\$h"; fi
 }
+installed_hash() { installed_hash_to _ih_out; printf '%s\n' "$_ih_out"; }
 
 # The screen is idle when the screen service wrote "blank" (tsx-idled or the
 # panel app). With no state file (an older panel app), the screen is idle
@@ -437,7 +546,7 @@ pending_packages() {
 # ---- the daily check + install ---------------------------------------------
 
 do_check() {
-	mkdir -p "$RUN" "$STATE" 2>/dev/null
+	mkdir_once "$RUN"; mkdir_once "$STATE"
 	ensure_boot
 	log "apk update"
 	upd=$(apk update 2>&1) || log "WARNING: apk update reported errors"
@@ -445,19 +554,26 @@ do_check() {
 	classify_repos "$upd"
 	[ -n "$REPO_WARNING" ] && log "WARNING: $REPO_WARNING"
 	sim=$(apk upgrade --simulate $APK_FORCE 2>>"$LOG")
-	pkglist=$(pending_packages "$sim")
-	names=$(printf '%s\n' "$pkglist" | sed -n 's/^\([^ ]*\).*/\1/p')
-	pcount=0; [ -n "$pkglist" ] && pcount=$(printf '%s\n' "$pkglist" | grep -c .)
-	rb=0; needs_reboot "$names" && rb=1
+	# Nothing to install: no line of the simulation can match (no process).
+	case $sim in *Upgrading*|*Downgrading*|*Replacing*|*Installing*) pkglist=$(pending_packages "$sim");; *) pkglist=;; esac
+	names= pcount=0 rb=0
+	if [ -n "$pkglist" ]; then
+		names=$(printf '%s\n' "$pkglist" | sed -n 's/^\([^ ]*\).*/\1/p')
+		pcount=$(printf '%s\n' "$pkglist" | grep -c .)
+		needs_reboot "$names" && rb=1
+	fi
 
 	iv=$(apk info -v 2>/dev/null)
-	rpkg=$(release_pkg "$iv")
-	irel=$(pkg_version "$rpkg" "$iv"); [ -n "$irel" ] || irel=unknown
-	prel=$(printf '%s\n' "$pkglist" | awk -v p="$rpkg" '$1 == p { print $3; exit }' | sed 's/-r[0-9]*$//')
-
-	plist=$(printf '%s\n' "$pkglist" | sed -n 's/^\([^ ]*\) \([^ ]*\) \([^ ]*\)$/\1 (\2 -> \3)/p' | tr '\n' ';' | sed 's/;$//; s/;/; /g')
+	release_pkg_to rpkg "$iv"
+	pkg_version_to irel "$rpkg" "$iv"; [ -n "$irel" ] || irel=unknown
+	prel= plist=
+	if [ -n "$pkglist" ]; then
+		prel=$(printf '%s\n' "$pkglist" | awk -v p="$rpkg" '$1 == p { print $3; exit }' | sed 's/-r[0-9]*$//')
+		plist=$(printf '%s\n' "$pkglist" | sed -n 's/^\([^ ]*\) \([^ ]*\) \([^ ]*\)$/\1 (\2 -> \3)/p' | tr '\n' ';' | sed 's/;$//; s/;/; /g')
+	fi
+	installed_hash_to ihash "$iv"
 	set_fields "$STATE/fields" \
-		installed_hash="$(installed_hash)" \
+		installed_hash="$ihash" \
 		installed_release="$irel" \
 		pending_release="$prel" \
 		pending_count="$pcount" \
@@ -465,8 +581,8 @@ do_check() {
 		reboot_pending="$rb" \
 		repo_warning="$REPO_WARNING" \
 		repo_blocked="$REPO_BLOCKED" \
-		last_check="$(now_iso)"
-	write_update_json; write_ha_json
+		last_check="$(date '+%Y-%m-%dT%H:%M:%S')"
+	write_status
 	log "check: $pcount pending, restart_needed=$rb, mode=$MODE${REPO_WARNING:+, repositories: $REPO_WARNING}"
 }
 
@@ -474,8 +590,9 @@ do_check() {
 # boot that an update restarted the panel, and if the panel app had Home
 # Assistant.
 do_restart() {
-	mkdir -p "$STATE" 2>/dev/null
-	printf 'panel_app_ha %s\n' "$(get_field "$APP_STATE" ha)" > "$STATE/reboot-marker"
+	mkdir_once "$STATE"
+	fget app_ha "$APP_STATE" ha
+	printf 'panel_app_ha %s\n' "$app_ha" > "$STATE/reboot-marker"
 	sync
 	reboot
 }
@@ -485,12 +602,13 @@ do_restart() {
 do_install() {
 	how=$1
 	f=$STATE/fields
-	pcount=$(get_field "$f" pending_count); [ -n "$pcount" ] || pcount=0
-	need_rb=$(get_field "$f" reboot_pending)  # the writers below reuse rb
+	fget pcount "$f" pending_count; [ -n "$pcount" ] || pcount=0
+	fget need_rb "$f" reboot_pending  # the writers below reuse rb
 	if [ "$pcount" = 0 ]; then
 		# Nothing to install. An install from Home Assistant on the entry
 		# "restart required" restarts the panel.
-		if [ "$how" = now ] && [ "$(get_field "$f" restart_required)" = 1 ]; then
+		fget di_rr "$f" restart_required
+		if [ "$how" = now ] && [ "$di_rr" = 1 ]; then
 			log "restart required: restarting on request"
 			do_restart
 		else
@@ -498,32 +616,36 @@ do_install() {
 		fi
 		return 0
 	fi
-	if [ "$(get_field "$f" repo_blocked)" = 1 ]; then
-		log "install: not installing: $(get_field "$f" repo_warning)"
+	fget di_blocked "$f" repo_blocked; fget di_rw "$f" repo_warning
+	if [ "$di_blocked" = 1 ]; then
+		log "install: not installing: $di_rw"
 		return 0
 	fi
 	# If only the repositories of this project are unavailable, install what the others offer.
-	[ -n "$(get_field "$f" repo_warning)" ] && APK_FORCE=--force-missing-repositories
-	set_fields "$f" in_progress=1; write_update_json; write_ha_json
+	[ -n "$di_rw" ] && APK_FORCE=--force-missing-repositories
+	set_fields "$f" in_progress=1; write_status
 	log "installing ($how, pending=$pcount restart_needed=$need_rb)"
 	apk upgrade ${APK_FORCE:-} >>"$LOG" 2>&1; rc=$?
 	[ $rc -eq 0 ] || log "apk upgrade FAILED rc=$rc"
+	iv=$(apk info -v 2>/dev/null)
+	installed_hash_to ihash "$iv"
 	if [ $rc -eq 0 ]; then
 		# Installed: nothing is pending now. The restart is what remains.
-		rr=$(get_field "$f" restart_required); [ "$need_rb" = 1 ] && rr=1
-		set_fields "$f" in_progress=0 installed_hash="$(installed_hash)" installed_release="$(installed_release)" \
+		fget rr "$f" restart_required; [ "$need_rb" = 1 ] && rr=1
+		installed_release_to irel "$iv"
+		set_fields "$f" in_progress=0 installed_hash="$ihash" installed_release="$irel" \
 			pending_count=0 pending_list= pending_release= reboot_pending=0 \
 			restart_required="$rr" \
-			last_install="$(now_iso)" last_result=ok
+			last_install="$(date '+%Y-%m-%dT%H:%M:%S')" last_result=ok
 	else
-		set_fields "$f" in_progress=0 installed_hash="$(installed_hash)" last_install="$(now_iso)" \
+		set_fields "$f" in_progress=0 installed_hash="$ihash" last_install="$(date '+%Y-%m-%dT%H:%M:%S')" \
 			last_result="apk upgrade rc=$rc"
 	fi
-	write_update_json; write_ha_json
+	write_status
 	[ $rc -eq 0 ] && [ "$need_rb" = 1 ] || return 0
 	if [ "${AUTO_RESTART:-on}" != on ]; then
 		log "restart required, but AUTO_RESTART=off: staying up"
-	elif [ "$how" = auto ] && ! in_window "$(nowhhmm)" "${WINDOW:-03:00-05:00}"; then
+	elif [ "$how" = auto ] && ! in_window "$(date '+%H:%M')" "${WINDOW:-03:00-05:00}"; then
 		log "restart required, but outside the window: staying up"
 	else
 		log "restarting for a kernel, musl, openrc, busybox or tsx package update"
@@ -539,12 +661,13 @@ do_tick() {
 		return 0
 	fi
 	idle=0; is_idle && idle=1
-	inwin=0; in_window "$(nowhhmm)" "$WINDOW" && inwin=1
+	inwin=0; in_window "$(date '+%H:%M')" "$WINDOW" && inwin=1
 	if [ "$inwin" = 1 ] && [ "$idle" = 1 ]; then
-		pc=$(get_field "$STATE/fields" pending_count)
+		fget pc "$STATE/fields" pending_count
+		fget dt_rr "$STATE/fields" restart_required
 		if [ "${pc:-0}" -gt 0 ] 2>/dev/null; then
 			do_install auto
-		elif [ "$AUTO_RESTART" = on ] && [ "$(get_field "$STATE/fields" restart_required)" = 1 ]; then
+		elif [ "$AUTO_RESTART" = on ] && [ "$dt_rr" = 1 ]; then
 			# A restart that an earlier install left open, with AUTO_RESTART now on.
 			log "restart required from an earlier install: restarting"
 			do_restart
@@ -625,7 +748,7 @@ cmd_healthcheck() {
 	rm -f "$STATE/reboot-marker"
 	ok=1 msg=
 	set_fields "$STATE/fields" health=checking
-	write_update_json; write_ha_json
+	write_status
 	# The kiosk is not in every image profile (see the "Profiles" docs of the
 	# board repository). The
 	# console profile has no kiosk service and no page to reach.
@@ -654,7 +777,7 @@ cmd_healthcheck() {
 	fi
 	health=OK; [ "$ok" = 1 ] || health="FAILED: $msg"
 	set_fields "$STATE/fields" health="$health"
-	write_update_json; write_ha_json
+	write_status
 	log "post-update health check: $health"
 }
 
@@ -663,11 +786,11 @@ main() {
 	__in_window) shift; in_window "$@";;
 	__needs_reboot) shift; needs_reboot "$@";;
 	__is_idle) is_idle;;
-	__write_status) load_conf; write_update_json; write_ha_json;;
+	__write_status) load_conf; write_status;;
 	now) load_conf; do_check; do_install now;;
 	check) load_conf; do_check;;
-	refresh) load_conf; mkdir -p "$RUN" "$STATE" 2>/dev/null; ensure_boot; write_update_json; write_ha_json;;
-	boot) load_conf; mkdir -p "$RUN" "$STATE" 2>/dev/null; ensure_boot; write_update_json; write_ha_json;;
+	refresh) load_conf; mkdir_once "$RUN"; mkdir_once "$STATE"; ensure_boot; write_status;;
+	boot) load_conf; mkdir_once "$RUN"; mkdir_once "$STATE"; ensure_boot; write_status;;
 	get) load_conf
 		case "${2:-}" in
 		mode) echo "$MODE";;
