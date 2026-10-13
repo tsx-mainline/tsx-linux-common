@@ -224,6 +224,7 @@ tsx_board_ledbar_map() {
 |---|---|---|
 | The log says `LED bar not found yet (USB 14be:001b)` | The bar is not plugged in. | Plug in the bar. |
 | The bar stays dark. The log says `LED drivers did not start after 3 restarts`. | The LED driver chips do not start. | Unplug the bar and plug it in again. |
+| The answers of `tsx-ledbar console` are cut off. The kernel log says `irq NN: nobody cared` and `Disabling IRQ #NN` for the USB controller of the bar. | An interrupt storm on the USB port of the bar, for example from a fault on the USB lines or the 5 V of the bar. The kernel then serves the port only every 100 ms. | Remove the fault, then restart the panel. The kernel turns the interrupt on again only at a restart. |
 | The bar stays dark. The log says `bootloader mode (USB 14be:001a)`. | The controller runs the bootloader only. | Follow the log line. See "Bootloader mode". |
 | Home Assistant shows no LED bar light. | No bar with its application is attached, or `LEDBAR=no`. | Run `cat /run/tsx/ledbar.usb` and `tsx-panelctl has ledbar; echo $?`. The file must say `app`. |
 | `tsx-ledbar fx` refuses | The bar has the stock firmware. | Load the TSX-LEDBAR firmware with the package `tsx-ledbar-fw`. |

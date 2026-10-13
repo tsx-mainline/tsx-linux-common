@@ -67,6 +67,7 @@
 #include <strings.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #ifndef NO_LIBUSB
 #include <libusb-1.0/libusb.h>
@@ -303,6 +304,7 @@ static libusb_context *uctx;
 static libusb_device_handle *uh;
 static unsigned char ep_out, ep_in;
 static int out_int, in_int;
+static int in_size = 64;	/* wMaxPacketSize of the IN endpoint */
 static int usb_iface = IO_IFACE;	/* the interface that usb_open() claimed */
 
 static void usb_close(void)
@@ -332,7 +334,10 @@ static int usb_open(int iface)
 			const struct libusb_endpoint_descriptor *ed = &id->endpoint[e];
 			int t = ed->bmAttributes & 3;
 			if (t != LIBUSB_TRANSFER_TYPE_BULK && t != LIBUSB_TRANSFER_TYPE_INTERRUPT) continue;
-			if ((ed->bEndpointAddress & 0x80) && !ep_in) { ep_in = ed->bEndpointAddress; in_int = t == LIBUSB_TRANSFER_TYPE_INTERRUPT; }
+			if ((ed->bEndpointAddress & 0x80) && !ep_in) {
+				ep_in = ed->bEndpointAddress; in_int = t == LIBUSB_TRANSFER_TYPE_INTERRUPT;
+				if (ed->wMaxPacketSize >= 8 && ed->wMaxPacketSize <= 512) in_size = ed->wMaxPacketSize;
+			}
 			else if (!(ed->bEndpointAddress & 0x80) && !ep_out) { ep_out = ed->bEndpointAddress; out_int = t == LIBUSB_TRANSFER_TYPE_INTERRUPT; }
 		}
 	}
@@ -373,8 +378,10 @@ static int usb_read_loop(int ms)
 	unsigned char in[512]; int got, left = ms;
 	while (left > 0) {
 		int step = left < 250 ? left : 250;
-		r = usb_xfer(ep_in, in_int, in, sizeof in, &got, step);
-		if (!r && got > 0) hexline(stdout, in, got);
+		got = 0;
+		r = usb_xfer(ep_in, in_int, in, in_size, &got, step);
+		/* a read that timed out can still have a packet */
+		if ((!r || r == LIBUSB_ERROR_TIMEOUT) && got > 0) hexline(stdout, in, got);
 		else if (r && r != LIBUSB_ERROR_TIMEOUT) { fprintf(stderr, "tsx-ledbar: usb read: %s\n", libusb_strerror(r)); return -EIO; }
 		fflush(stdout);
 		left -= step;
@@ -388,7 +395,17 @@ static int usb_read_loop(int ms)
  * With ANS, the answer goes there (N bytes at most) instead, and the first
  * full line ends it. The STM32 can drop off the bus during the answer
  * ("reboot"). That ends the answer and is no error.
+ *
+ * Each read asks for one packet (wMaxPacketSize of the IN endpoint). A
+ * read of more waits for a short packet, and the stock firmware sends
+ * full packets of 64 bytes: the end of such an answer stayed in the host
+ * until the read timed out. A read that times out can still have data
+ * (libusb gives the bytes that came before the time limit), and the
+ * answer keeps them. The first read waits for the whole time, the next
+ * reads wait for the quiet time, so the host cancels few reads: a
+ * cancelled read can lose a packet that is on its way.
  */
+#define CONSOLE_QUIET_MS 300
 static int usb_console(const char *line, int ms, char *ans, size_t ans_n)
 {
 	int r = usb_open(CONSOLE_IFACE), got;
@@ -397,25 +414,33 @@ static int usb_console(const char *line, int ms, char *ans, size_t ans_n)
 	if (r) return r;
 	if (!ep_in) die("console: no IN endpoint");
 	unsigned char in[512], out[MAXPKT];
-	while (!usb_xfer(ep_in, in_int, in, sizeof in, &got, 100) && got > 0)
+	while (!usb_xfer(ep_in, in_int, in, in_size, &got, 100) && got > 0)
 		;
 	int n = snprintf((char *)out, sizeof out, "%s\r\n", line);
 	if (n >= (int)sizeof out) die("console: line too long");
 	r = usb_xfer(ep_out, out_int, out, n, &got, 1000);
 	if (r) { fprintf(stderr, "tsx-ledbar: console write: %s\n", libusb_strerror(r)); return -EIO; }
-	int quiet = 0, any = 0;
-	for (int left = ms; left > 0; left -= 100) {
-		r = usb_xfer(ep_in, in_int, in, sizeof in, &got, 100);
+	struct timespec t0;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	int any = 0;
+	for (;;) {
+		struct timespec t;
+		clock_gettime(CLOCK_MONOTONIC, &t);
+		long left = ms - ((t.tv_sec - t0.tv_sec) * 1000L + (t.tv_nsec - t0.tv_nsec) / 1000000L);
+		if (left <= 0) break;
+		int wait = any && left > CONSOLE_QUIET_MS ? CONSOLE_QUIET_MS : (int)left;
+		got = 0;
+		r = usb_xfer(ep_in, in_int, in, in_size, &got, wait);
 		if (r && r != LIBUSB_ERROR_TIMEOUT) break;
-		if (!r && got > 0) {
-			for (int i = 0; i < got; i++) {
-				if (in[i] == '\r') continue;
-				if (!ans) putchar(in[i]);
-				else if (alen + 1 < ans_n) { ans[alen++] = in[i]; ans[alen] = 0; }
-			}
-			any = 1; quiet = 0;
-			if (ans && alen && ans[alen - 1] == '\n') break;
-		} else if (any && (quiet += 100) >= 300) break;
+		for (int i = 0; i < got; i++) {
+			if (in[i] == '\r') continue;
+			if (!ans) putchar(in[i]);
+			else if (alen + 1 < ans_n) { ans[alen++] = in[i]; ans[alen] = 0; }
+		}
+		if (got > 0) any = 1;
+		if (ans && alen && ans[alen - 1] == '\n') break;
+		/* quiet: a time-out with no data after the answer started */
+		if (r == LIBUSB_ERROR_TIMEOUT && got == 0 && any) break;
 	}
 	if (!ans) putchar('\n');
 	return 0;
