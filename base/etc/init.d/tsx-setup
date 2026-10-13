@@ -47,16 +47,41 @@ select_eth0_mac() {
 	printf '%s\n' "$mac"
 }
 
+# default_tz: the time zone that the card tool of a family wrote to the data
+# partition (TSX_TZ_DEFAULT_FILE, /data/tsx/timezone: one zone name in the first
+# line). The panel uses it only while panel.conf has no TZ_NAME. The file is not
+# a setting of panel.conf on purpose: a panel with no kiosk counts as
+# configured when panel.conf has any key, and the setup page must stay open
+# until the first save. A name with a character outside the set of
+# tsx-config, or one that starts with a slash, gives nothing.
+default_tz() {
+	tzf=${TSX_TZ_DEFAULT_FILE:-/data/tsx/timezone}
+	[ -r "$tzf" ] || return 0
+	z=$(head -n 1 "$tzf" 2>/dev/null | tr -d ' \r')
+	case "$z" in ''|*[!A-Za-z0-9_+/-]*|/*) return 0;; esac
+	printf '%s\n' "$z"
+}
+
+# apply_tz: set /etc/localtime and /etc/timezone from TZ_NAME (panel.conf,
+# through /run/tsx/kiosk.conf), else from default_tz. A zone with no file in the
+# zoneinfo folder changes nothing. Test hooks: TSX_ZONEINFO_DIR, TSX_LOCALTIME
+# and TSX_TIMEZONE_FILE.
+apply_tz() {
+	[ -n "${TZ_NAME:-}" ] || TZ_NAME=$(default_tz)
+	zi=${TSX_ZONEINFO_DIR:-/usr/share/zoneinfo}
+	if [ -n "${TZ_NAME:-}" ] && [ -f "$zi/$TZ_NAME" ]; then
+		ln -sf "$zi/$TZ_NAME" "${TSX_LOCALTIME:-/etc/localtime}"
+		echo "$TZ_NAME" > "${TSX_TIMEZONE_FILE:-/etc/timezone}"
+	fi
+}
+
 start() {
 	ebegin "TSX setup"
 	# Boot splash status line (does nothing when the text console has the screen)
 	/usr/local/bin/tsx-splash -s "starting services" -p 30 status 2>/dev/null
 	[ -r /etc/kiosk.conf ] && . /etc/kiosk.conf   # kiosk and ha profiles only
 	[ -r /run/tsx/kiosk.conf ] && . /run/tsx/kiosk.conf   # panel.conf overrides (tsx-config apply)
-	if [ -n "${TZ_NAME:-}" ] && [ -f "/usr/share/zoneinfo/$TZ_NAME" ]; then
-		ln -sf "/usr/share/zoneinfo/$TZ_NAME" /etc/localtime
-		echo "$TZ_NAME" > /etc/timezone
-	fi
+	apply_tz
 	mac=$(select_eth0_mac)
 	# On some boards eth0 sits behind a USB hub and can appear a moment after boot.
 	i=0; while [ ! -e /sys/class/net/eth0 ] && [ $i -lt 20 ]; do sleep 0.5; i=$((i + 1)); done

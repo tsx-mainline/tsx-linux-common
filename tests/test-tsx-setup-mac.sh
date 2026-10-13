@@ -80,5 +80,27 @@ OUT=$(run_setup "$BADMAC" "$MF5")
 GOT=$(echo "$OUT" | sed -n 's/^MAC=//p')
 [ "$GOT" = "02:66:77:88:99:aa" ] && ok "a malformed board MAC falls back to the persisted MAC" || bad "malformed board MAC accepted: got $GOT"
 
+echo "== the time zone: panel.conf, else the zone from the card tool, else nothing =="
+ZI="$W/zoneinfo"; mkdir -p "$ZI/America" "$ZI/Etc"
+echo Denver > "$ZI/America/Denver"; echo Berlin > "$ZI/Europe_Berlin"; echo UTC > "$ZI/UTC"
+# run_tz TZ_NAME DEFAULT-FILE-TEXT|NOFILE: call apply_tz only. Prints the zone behind /etc/localtime and /etc/timezone.
+run_tz() {
+	rm -f "$W/localtime" "$W/timezone" "$W/tzdefault"
+	[ "$2" = NOFILE ] || printf '%b' "$2" > "$W/tzdefault"
+	TZ_NAME="$1" TSX_TZ_DEFAULT_FILE="$W/tzdefault" TSX_ZONEINFO_DIR="$ZI" TSX_LOCALTIME="$W/localtime" TSX_TIMEZONE_FILE="$W/timezone" busybox sh -c '
+		. "'"$SCRIPT"'"
+		apply_tz
+		echo "LINK=$(readlink "$TSX_LOCALTIME" 2>/dev/null | sed "s#.*/zoneinfo/##") FILE=$(cat "$TSX_TIMEZONE_FILE" 2>/dev/null)"
+	' 2>&1
+}
+[ "$(run_tz '' 'America/Denver\n')" = "LINK=America/Denver FILE=America/Denver" ] && ok "no TZ_NAME: the zone of the card tool is used" || bad "card zone: $(run_tz '' 'America/Denver\n')"
+[ "$(run_tz UTC 'America/Denver\n')" = "LINK=UTC FILE=UTC" ] && ok "TZ_NAME of panel.conf wins over the zone of the card tool" || bad "TZ_NAME wins: $(run_tz UTC 'America/Denver\n')"
+[ "$(run_tz '' NOFILE)" = "LINK= FILE=" ] && ok "no TZ_NAME and no file: the zone stays as the image has it" || bad "no zone: $(run_tz '' NOFILE)"
+[ "$(run_tz '' 'America/Denver\r\nignored\n')" = "LINK=America/Denver FILE=America/Denver" ] && ok "only the first line counts, a CR is ignored" || bad "first line: $(run_tz '' 'America/Denver\r\nignored\n')"
+for bad_tz in '../etc/passwd' '/usr/share/zoneinfo/UTC' 'Europe Berlin' 'America/Nowhere' '' ';reboot'; do
+	[ "$(run_tz '' "$bad_tz\n")" = "LINK= FILE=" ] && ok "a bad zone in the file is ignored: '$bad_tz'" || bad "bad zone '$bad_tz': $(run_tz '' "$bad_tz\n")"
+done
+[ "$(run_tz 'America/Nowhere' 'America/Denver\n')" = "LINK= FILE=" ] && ok "a TZ_NAME with no zone file changes nothing (as before)" || bad "unknown TZ_NAME: $(run_tz 'America/Nowhere' 'America/Denver\n')"
+
 echo "== $N ok, $F failed =="
 [ $F = 0 ] && echo "PASS test-tsx-setup-mac" || { echo "FAIL test-tsx-setup-mac"; exit 1; }

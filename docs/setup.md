@@ -122,6 +122,12 @@ Home Assistant uses its dark theme when the theme of the user profile is "Auto".
 
 A save of the setup page that changes the setting restarts the kiosk, also from a remote session. `tsx-panelctl send dark-mode on|off` does the same. `tsx-config apply` alone does not restart the browser. The flags come before `KIOSK_EXTRA_FLAGS`, so a later switch there wins. A panel with the panel app has no browser. The page hides the setting there, and the key has no effect.
 
+### Time zone
+
+`TZ_NAME` of `panel.conf` sets the time zone. The page sets it with the *Time zone* select. Some tools write a first zone before the first save. The installer of a kiosk panel and the card tool of the panel app write `TZ_NAME` or a default file. The update window of `tsx-autoupdate` uses the local time, so a panel with the wrong zone updates at the wrong hour.
+
+A card tool can also write the first line of the file `/data/tsx/timezone`, with one zone name. `tsx-setup` uses that zone at boot while `panel.conf` has no `TZ_NAME`. The file is not a key of `panel.conf` on purpose. A panel with no kiosk counts as configured when `panel.conf` has any key. The setup page, the pairing code and the bar on the screen must stay until the first save. A zone with a character outside `A-Z a-z 0-9 _ + / -`, or one that starts with a slash, is ignored. The first save of the setup page writes `TZ_NAME`, and this value wins from then on.
+
 ### Update settings
 
 The *Update mode* select and the *Automatic restart* box set how the panel installs updates. The page shows them only when `tsx-panelctl state` has the lines `update-mode` and `auto-restart`. The Home Assistant entities with the same names, "Update mode" (a select) and "Automatic restart" (a switch), show and change the same two settings.
