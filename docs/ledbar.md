@@ -110,7 +110,9 @@ Home Assistant removes an entity that the device does not list. A removed light 
 
 ## Start check
 
-At power-up, the STM32 can fail to start its three LED driver chips. Then no color lights. When the bar appears, `tsx-ledbard` asks the bar console for the state of each chip (`tsx-ledbar console 'tlcoutmode red 0'`). If a chip did not start, the daemon restarts the STM32 (`tsx-ledbar console reboot`) and checks again, at most 3 times.
+At power-up, the STM32 can fail to start its three LED driver chips. Then no color lights. When the bar appears, `tsx-ledbard` asks the bar console for the state of each chip (`tsx-ledbar console 'tlcoutmode red 0'`). An answer that is not clear gets one more try. If a chip did not start, the daemon restarts the STM32 (`tsx-ledbar console reboot`) and checks again, at most 3 times. When only some chips start, the other colors work. The daemon then logs the colors with no chip: `No LED driver chip for green after 3 restarts. The other colors work`.
+
+With TSX-LEDBAR 0.1.6 and later, the daemon logs the state of each chip and the start steps from `STATUS`, for example `LED driver chips: red ok, green BAD(nack), blue ok. Start: probe red blue (5 rounds), ...`. When a chip did not start, it also logs the levels of the bus pins. The firmware README tells what the words mean and how to diagnose a bar with `I2CSCAN` and `PINTEST`.
 
 Then the daemon sends the settings of the firmware and sets the color. The color is `BOOT_COLOR` after the first start of the service. After a plug-in, it is the wanted color.
 
@@ -223,7 +225,8 @@ tsx_board_ledbar_map() {
 | Symptom | Cause | Fix |
 |---|---|---|
 | The log says `LED bar not found yet (USB 14be:001b)` | The bar is not plugged in. | Plug in the bar. |
-| The bar stays dark. The log says `LED drivers did not start after 3 restarts`. | The LED driver chips do not start. | Unplug the bar and plug it in again. |
+| The bar stays dark. The log says `LED drivers did not start after 3 restarts`. | The LED driver chips do not start. | Unplug the bar and plug it in again. With TSX-LEDBAR 0.1.6 and later, read the `LED driver chips` and `LED driver bus` log lines, and run `tsx-ledbar console I2CSCAN`. |
+| One color stays dark. The log says `No LED driver chip for COLOR`. | The chip of that color does not answer. | Run `tsx-ledbar console I2CSCAN`. |
 | The answers of `tsx-ledbar console` are cut off. The kernel log says `irq NN: nobody cared` and `Disabling IRQ #NN` for the USB controller of the bar. | An interrupt storm on the USB port of the bar, for example from a fault on the USB lines or the 5 V of the bar. The kernel then serves the port only every 100 ms. | Remove the fault, then restart the panel. The kernel turns the interrupt on again only at a restart. |
 | The bar stays dark. The log says `bootloader mode (USB 14be:001a)`. | The controller runs the bootloader only. | Follow the log line. See "Bootloader mode". |
 | Home Assistant shows no LED bar light. | No bar with its application is attached, or `LEDBAR=no`. | Run `cat /run/tsx/ledbar.usb` and `tsx-panelctl has ledbar; echo $?`. The file must say `app`. |

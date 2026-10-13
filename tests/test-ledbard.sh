@@ -5,7 +5,10 @@
 # USB device number, as on the panel. No compiler and no hardware needed.
 #
 # Fake console: the chips report "not initialized" until the bar had
-# OK_AFTER restarts (file $T/ok_after). "silent" gives no answer.
+# OK_AFTER restarts (file $T/ok_after). "silent" gives no answer. The colors
+# in the file $T/bad_colors never start. The file $T/flaky holds a number:
+# so many tlcoutmode answers come out empty first (a cut answer).
+# "console STATUS" prints the file $T/status.
 # Fake firmware: "tsx-ledbar fw" prints the file $T/fw (stock by default).
 # With the file $T/fw_fail it exits with 1, as the tool does without a bar.
 # "console CAPS" prints the file $T/caps. "console LEDMAP ..." answers as
@@ -59,10 +62,18 @@ console)
 		*) echo "no LED map \$2"; echo "maps FAKE-LB outputs";;
 		esac
 		exit 0;;
+	STATUS) cat "\$T/status" 2>/dev/null; exit 0;;
 	"tlcoutmode "*)
 		[ "\$(cat "\$T/ok_after")" = silent ] && exit 0
-		if [ "\$r" -ge "\$(cat "\$T/ok_after")" ]; then
-			set -- \$2
+		f=\$(cat "\$T/flaky" 2>/dev/null)
+		if [ "\${f:-0}" -gt 0 ]; then
+			echo \$((f - 1)) > "\$T/flaky"
+			exit 0
+		fi
+		set -- \$2
+		if grep -qw "\$2" "\$T/bad_colors" 2>/dev/null; then
+			echo "LED driver not initialized!"
+		elif [ "\$r" -ge "\$(cat "\$T/ok_after")" ]; then
 			echo "\$2 LED driver - led-0 output mode is:3"
 		else
 			echo "LED driver not initialized!"
@@ -96,7 +107,7 @@ OWN15="firmware TSX-LEDBAR [v0.1.5]
 effects yes"
 CAPS14="tsx-ledbar fade blink breathe rainbow smooth cap status leds16 chase fill spectrum split"
 CAPS15="$CAPS14 ledmap"
-reset() { echo 0 > "$T/reboots"; echo "$1" > "$T/ok_after"; : > "$T/calls"; rm -f "$T/no_reenum"; echo "$STOCK" > "$T/fw"; : > "$T/caps"; }
+reset() { echo 0 > "$T/reboots"; echo "$1" > "$T/ok_after"; : > "$T/calls"; rm -f "$T/no_reenum" "$T/bad_colors" "$T/flaky" "$T/status"; echo "$STOCK" > "$T/fw"; : > "$T/caps"; }
 reboots() { cat "$T/reboots"; }
 ncalls() { grep -c "^$1" "$T/calls"; }
 
@@ -693,6 +704,54 @@ $SH "$D" check >/dev/null 2>&1
 [ "$(cat "$USBF")" = kept ] && ok "attached file: check without a bar keeps the file" || bad "attached file: check changed the file"
 rm -f "$USBF"
 unset TSX_LEDBAR_GONE
+
+# 13. one chip never starts: the restarts, then the other colors work
+plug 5
+reset 0; echo green > "$T/bad_colors"
+out=$($SH "$D" check 2>&1); rc=$?
+[ $rc = 0 ] && [ "$(reboots)" = 3 ] && ok "one chip bad: rc 0 after three restarts" || bad "one chip bad: rc $rc, $(reboots) reboots"
+echo "$out" | grep -q "LED drivers did not start (green). Restarting the LED bar controller (try 1 of 3)" && ok "one chip bad: restart line names green" || bad "one chip bad: log: $out"
+echo "$out" | grep -q "No LED driver chip for green after 3 restarts. The other colors work" && ok "one chip bad: final line" || bad "one chip bad: log: $out"
+echo "$out" | grep -q "stays dark" && bad "one chip bad: says dark" || ok "one chip bad: not dark"
+reset 0; printf 'red\nblue\n' > "$T/bad_colors"
+out=$($SH "$D" check 2>&1)
+echo "$out" | grep -q "No LED driver chip for red blue after 3 restarts" && ok "two chips bad: final line" || bad "two chips bad: log: $out"
+
+# 14. a cut answer gets one more try: no restart, no "cannot read"
+reset 0; echo 1 > "$T/flaky"
+out=$($SH "$D" check 2>&1); rc=$?
+[ $rc = 0 ] && [ "$(reboots)" = 0 ] && ! echo "$out" | grep -q "cannot read" && ok "cut answer: one more try, chips ok" || bad "cut answer: rc $rc, $(reboots) reboots, log $out"
+[ "$(ncalls 'console tlcoutmode red 0')" = 2 ] && ok "cut answer: red asked twice" || bad "cut answer: $(ncalls 'console tlcoutmode red 0') red checks"
+reset 0; echo 2 > "$T/flaky"
+out=$($SH "$D" check 2>&1)
+echo "$out" | grep -q "cannot read the LED driver state" && [ "$(reboots)" = 0 ] && ok "two cut answers: cannot read, no restart" || bad "two cut answers: log $out"
+
+# 15. TSX-LEDBAR 0.1.6: the chip states and the start steps from STATUS
+OWN16="firmware TSX-LEDBAR [v0.1.6]
+effects yes"
+reset 0; echo "$OWN16" > "$T/fw"; echo "$CAPS15 i2cscan" > "$T/caps"
+cat > "$T/status" <<'EOS'
+level 0 0 0 control 0 0 0 blink 0 0 0
+chips ok BAD(nack) ok uptime 7570 ms start 12 fails 0 reset flags 0x14000000 errors 4
+variant 1 map FAKE-LB panel
+start probe red blue (5 rounds), reset red blue (5 pulses), recovery none, 610 ms
+pins power-up SDA 1 SCL 1 RESET 1, idle SDA 1 SCL 1 RESET 1, after reset SDA 1 SCL 1 RESET 1, now SDA 1 SCL 1 RESET 1
+EOS
+out=$($SH "$D" check 2>&1)
+echo "$out" | grep -q "LED driver chips: red ok, green BAD(nack), blue ok. Start: probe red blue (5 rounds), reset red blue (5 pulses), recovery none, 610 ms" && ok "0.1.6: chips line logged" || bad "0.1.6: log: $out"
+echo "$out" | grep -q "LED driver bus: pins power-up SDA 1 SCL 1 RESET 1, idle" && ok "0.1.6: pins logged for a bad chip" || bad "0.1.6: no pins line: $out"
+reset 0; echo "$OWN16" > "$T/fw"; echo "$CAPS15 i2cscan" > "$T/caps"
+printf 'chips ok ok ok uptime 7570 ms start 1 fails 0 reset flags 0x0C000000 errors 0\nstart probe red green blue (1 rounds), reset not needed (0 pulses), recovery not needed, 7 ms\npins power-up SDA 1\n' > "$T/status"
+out=$($SH "$D" check 2>&1)
+echo "$out" | grep -q "LED driver chips: red ok, green ok, blue ok. Start: probe red green blue (1 rounds)" && ! echo "$out" | grep -q "LED driver bus" && ok "0.1.6 good bar: chips line, no pins line" || bad "0.1.6 good bar: log: $out"
+reset 0; echo "$OWN15" > "$T/fw"; echo "$CAPS15" > "$T/caps"
+printf 'chips ok ok ok uptime 7570 ms start 1 fails 0 reset flags 0x0C000000 errors 0\n' > "$T/status"
+out=$($SH "$D" check 2>&1)
+echo "$out" | grep -q "LED driver chips" && bad "0.1.5: chips line logged: $out" || ok "0.1.5: no chips line"
+[ "$(ncalls 'console STATUS')" = 0 ] && ok "0.1.5: no STATUS sent" || bad "0.1.5: STATUS sent"
+reset 0
+out=$($SH "$D" check 2>&1)
+[ "$(ncalls 'console STATUS')" = 0 ] && ok "stock firmware: no STATUS sent" || bad "stock firmware: STATUS sent"
 
 [ $fail = 0 ] && echo "PASS tsx-ledbard host test"
 exit $fail

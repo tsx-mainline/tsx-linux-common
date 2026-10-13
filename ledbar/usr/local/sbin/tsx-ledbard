@@ -5,7 +5,10 @@
 # checks that the STM32 of the bar started its three LED driver chips. At
 # power-up the chips sometimes do not start, and then no color can light.
 # A restart of the STM32 through its console fixes this. The daemon tries
-# this at most TSX_LEDBAR_TRIES times (default 3). Then it sets the color:
+# this at most TSX_LEDBAR_TRIES times (default 3). When only some chips
+# start, the other colors work, and the daemon logs the colors that do not.
+# The bar firmware TSX-LEDBAR 0.1.6 and later reports the state of each chip
+# in STATUS: the daemon logs it after the check. Then it sets the color:
 # BOOT_COLOR of /etc/tsx/ledbar.conf the first time, the wanted color after
 # a plug-in. The STM32 starts with all colors off.
 #
@@ -220,8 +223,24 @@ usb_drop() {
 	[ ! -e "$USB_FILE" ] || rm -f "$USB_FILE"
 }
 
+# chips_log: with TSX-LEDBAR 0.1.6 and later ("i2cscan" in CAPS), log the
+# state of each LED driver chip and the start steps of the bar from STATUS
+# ("chips ok BAD(nack) ok", "start probe ..."). When a chip did not start,
+# also log the pin levels. Older firmware gets no STATUS.
+chips_log() {
+	case " $fw_caps " in *" i2cscan "*) ;; *) return 0;; esac
+	cl_ans=$(tsx-ledbar console STATUS 2>/dev/null)
+	cl_chips=$(echo "$cl_ans" | sed -n 's/^chips \([^ ]*\) \([^ ]*\) \([^ ]*\) uptime .*/red \1, green \2, blue \3/p' | head -n 1)
+	cl_start=$(echo "$cl_ans" | sed -n 's/^start //p' | head -n 1)
+	[ -n "$cl_chips" ] && [ -n "$cl_start" ] || return 0
+	log "LED driver chips: $cl_chips. Start: $cl_start"
+	case $cl_chips in
+	*BAD*) log "LED driver bus: $(echo "$cl_ans" | grep '^pins ' | head -n 1)";;
+	esac
+}
+
 # Log the firmware of the bar and write the firmware file. With TSX-LEDBAR,
-# send the LED map and the effect settings.
+# send the LED map and the effect settings, and log the state of the chips.
 fx_setup() {
 	fw_out=$(tsx-ledbar fw 2>/dev/null); fw_rc=$?
 	fw_name=$(echo "$fw_out" | sed -n 's/^firmware //p')
@@ -236,6 +255,7 @@ fx_setup() {
 	case $fw_out in
 	*"effects yes"*)
 		log "LED bar firmware $fw_name, effects on"
+		chips_log
 		map_setup
 		if [ -n "$smooth" ]; then tsx-ledbar fx smooth "$smooth" >/dev/null || log "FX_SMOOTH=$smooth failed"; fi
 		if [ -n "$cap" ]; then tsx-ledbar fx cap "$cap" >/dev/null || log "FX_CAP=$cap failed"; fi;;
@@ -289,17 +309,30 @@ wait_led() {
 	done
 }
 
-# Set DRV to ok, bad (a chip did not start) or unknown (no clear answer).
-check_drivers() {
-	for color in red green blue; do
-		answer=$(tsx-ledbar console "tlcoutmode $color 0" 2>&1) || { DRV=unknown; return; }
-		case $answer in
-		*"not initialized"*) DRV=bad; return;;
-		*"output mode is"*) ;;
-		*) DRV=unknown; return;;
+# drv_answer COLOR: the state of the LED driver chip of COLOR from the
+# console: ok, bad or unknown. An answer that is not clear (cut off, or
+# empty) gets one more try.
+drv_answer() {
+	for da_try in 1 2; do
+		da_ans=$(tsx-ledbar console "tlcoutmode $1 0" 2>&1) || da_ans=
+		case $da_ans in
+		*"not initialized"*) echo bad; return;;
+		*"output mode is"*) echo ok; return;;
 		esac
 	done
-	DRV=ok
+	echo unknown
+}
+
+# Set DRV to ok, bad (a chip did not start) or unknown (no clear answer).
+# DRV_BAD lists the colors of the chips that did not start.
+check_drivers() {
+	DRV=ok DRV_BAD=
+	for color in red green blue; do
+		case $(drv_answer $color) in
+		bad) DRV=bad DRV_BAD="${DRV_BAD:+$DRV_BAD }$color";;
+		unknown) DRV=unknown DRV_BAD=; return;;
+		esac
+	done
 }
 
 # Wait for the bar to come back with a new USB number after a restart.
@@ -330,11 +363,15 @@ recover() {
 			return 0;;
 		esac
 		if [ $restarts -ge "$TRIES" ]; then
-			log "LED drivers did not start after $TRIES restarts. The LED bar stays dark. Unplug the LED bar and plug it in again"
-			return 1
+			if [ "$DRV_BAD" = "red green blue" ]; then
+				log "LED drivers did not start after $TRIES restarts. The LED bar stays dark. Unplug the LED bar and plug it in again"
+				return 1
+			fi
+			log "No LED driver chip for $DRV_BAD after $TRIES restarts. The other colors work"
+			return 0
 		fi
 		restarts=$((restarts + 1))
-		log "LED drivers did not start. Restarting the LED bar controller (try $restarts of $TRIES)"
+		log "LED drivers did not start ($DRV_BAD). Restarting the LED bar controller (try $restarts of $TRIES)"
 		old_bar=$BAR
 		tsx-ledbar console reboot 500 >/dev/null 2>&1
 		if ! wait_new "$old_bar"; then
