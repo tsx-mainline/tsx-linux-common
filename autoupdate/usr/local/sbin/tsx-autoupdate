@@ -83,7 +83,7 @@
 # Env overrides (for host tests only. See tests/test-autoupdate*.sh):
 #   TSX_AUTOUPDATE_CONF TSX_AUTOUPDATE_OVERRIDE TSX_BOOT_ID_FILE TSX_RUN_DIR TSX_STATE_DIR TSX_LOG TSX_IDLED_STATE
 #   TSX_KIOSK_CONF TSX_BUILD_ID_FILE TSX_INITD TSX_BACKLIGHT_CLASS
-#   TSX_PANEL_APP_STATE TSX_HEALTH_POLL TSX_RUNLEVELS
+#   TSX_PANEL_APP_STATE TSX_HEALTH_POLL TSX_RUNLEVELS TSX_LEDBAR_FW_PENDING
 #
 # __in_window, __needs_reboot, __is_idle and __write_status are internal. They call the
 # matching shell function directly. The host tests use them to check that
@@ -114,6 +114,9 @@ BACKLIGHT_CLASS=${TSX_BACKLIGHT_CLASS:-/sys/class/backlight}
 APP_STATE=${TSX_PANEL_APP_STATE:-$RUN/panel-app.state}
 INITD=${TSX_INITD:-/etc/init.d}
 RUNLEVELS=${TSX_RUNLEVELS:-/etc/runlevels}
+# The package tsx-ledbar-fw writes this file when an upgrade brings a newer
+# image for the LED bar. The upgrade never loads the bar.
+LEDBAR_PENDING=${TSX_LEDBAR_FW_PENDING:-/data/tsx/ledbar-fw.pending}
 
 STATUS_FIELDS="installed_hash pending_count pending_list reboot_pending in_progress last_check last_install last_result health repo_warning repo_blocked running_version installed_release pending_release boot_id restart_required"
 
@@ -183,7 +186,10 @@ in_window() {  # in_window HH:MM start-end  (window may cross midnight)
 # window is simpler and safer than a restart of single services: the
 # services depend on each other, and a restart of the kiosk or the ESPHome
 # device in the middle of the night has more ways to fail. tsx-keys (a public
-# key) and tsx-ledbar-fw (a tool for a person) have no running code. The
+# key) and tsx-ledbar-fw (a tool for a person) have no running code. An
+# upgrade of tsx-ledbar-fw loads nothing into the LED bar: it only records a
+# newer image (/data/tsx/ledbar-fw.pending), and a person loads it with
+# tsx-ledbar-fw-install. The
 # kernel package of another family needs no reboot here. The list holds the
 # upgraded packages and the new ones (a new dependency of a tsx-* package).
 needs_reboot() {  # needs_reboot "pkg1 pkg2 ..." -> exit 0 if any needs a reboot
@@ -700,6 +706,14 @@ cmd_status() {
 	echo "health:         ${hl:-none yet (the check runs after a restart that an update starts)}"
 	rw=$(get_field "$f" repo_warning)
 	echo "repositories:   ${rw:-ok}"
+	# A newer image for the LED bar waits for a person (shown only then).
+	if [ -r "$LEDBAR_PENDING" ]; then
+		lo= ln=
+		while IFS== read -r k v; do
+			case $k in old) lo=$v;; new) ln=$v;; esac
+		done < "$LEDBAR_PENDING"
+		echo "LED bar image:  newer image waiting (${lo:-?} -> ${ln:-?}). Run tsx-ledbar-fw-install to load it."
+	fi
 	return 0
 }
 

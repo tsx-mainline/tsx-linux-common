@@ -132,7 +132,7 @@ The bar controller can stop in its stock bootloader (USB `14be:001a`). It then r
 | The package is not installed | Logs one line. It tells you to run `apk add tsx-ledbar-fw` and to restart the service. |
 | The package is installed, but its `tsx-ledbar-fw-install` has no `--recover-image` | Logs one line. It tells you to run `apk upgrade tsx-ledbar-fw` and to restart the service. |
 
-- The marker file `/data/tsx/ledbar-fw.installed` shows that the panel is set up for TSX-LEDBAR. `tsx-ledbar-fw-install` writes it and `tsx-ledbar-fw-uninstall` removes it. A recovery does not change it.
+- The marker file `/data/tsx/ledbar-fw.installed` shows that the panel is set up for TSX-LEDBAR. `tsx-ledbar-fw-install` writes it and `tsx-ledbar-fw-uninstall` removes it. A recovery does not change it. While the file exists, an upgrade of the package `tsx-ledbar-fw` does not load a new image into the bar. It writes `/data/tsx/ledbar-fw.pending`, and `tsx-autoupdate status` shows a line for it. Run `tsx-ledbar-fw-install` to load the image.
 - If no image exists, the daemon logs one line and does nothing else.
 - The daemon tries once for each start of the service. It does not try again after a failed load. It also does not try again when the bar returns to the bootloader later. To try again, run `rc-service tsx-ledbar restart`. You can also load an image by hand with `tsx-ledbar-fw-install` or `tsx-ledbar-fw-uninstall`.
 - The load does not stop the `tsx-ledbar` service. It restarts `tsx-esphome` and `tsx-voice` when they run, because these services read the firmware name of the bar only at start.

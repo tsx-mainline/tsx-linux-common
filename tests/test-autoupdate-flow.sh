@@ -185,6 +185,15 @@ out=$(PATH="$T/bin:$PATH" TSX_AUTOUPDATE_CONF="$T/autoupdate.conf" TSX_RUN_DIR="
 echo "$out" | grep -q '^health: *none yet' || { echo "FAIL: 8a: status health line is blank or wrong: $(echo "$out" | grep '^health')"; fail=1; }
 echo "$out" | grep -q '^last install: *never$' || { echo "FAIL: 8a: status last install line: $(echo "$out" | grep '^last install')"; fail=1; }
 
+# ---- 8b: status shows a newer LED bar image that waits for a person ---------
+# (the package tsx-ledbar-fw writes the file after an upgrade and loads nothing)
+out=$(TSX_LEDBAR_FW_PENDING="$T/no-pending" run status)
+echo "$out" | grep -q '^LED bar image' && { echo "FAIL: 8b: status shows an LED bar line without a pending file"; fail=1; }
+printf 'old=tsx-ledbar 0.1.7\nnew=tsx-ledbar 0.1.8\ndate=2026-10-13 10:00:00\n' > "$T/ledbar-pending"
+out=$(TSX_LEDBAR_FW_PENDING="$T/ledbar-pending" run status)
+echo "$out" | grep -q '^LED bar image: *newer image waiting (tsx-ledbar 0.1.7 -> tsx-ledbar 0.1.8). Run tsx-ledbar-fw-install to load it.$' || { echo "FAIL: 8b: status LED bar line: $(echo "$out" | grep '^LED bar')"; fail=1; }
+grep -q 'ledbar-fw' "$T/calls" "$T/apk.calls" && { echo "FAIL: 8b: status called something for the LED bar"; fail=1; }
+
 # ---- 9: post-reboot health check, OK then FAILED ---------------------------
 : > "$T/state/reboot-marker"
 cat > "$T/bin/curl" <<EOF

@@ -104,7 +104,11 @@ These packages need a restart of the panel after the install. The rule applies t
 
 - The kernel package of the board family: `tsx-<family>-kernel*` (`TSX_FAMILY` of the board file). The kernel package of another family needs no restart.
 - `linux*`, `musl*`, `openrc*` and `busybox*`.
-- Every other `tsx-*` package, except `tsx-keys` (a public key) and `tsx-ledbar-fw` (a tool). A running service keeps the code that it started with until it starts again.
+- Every other `tsx-*` package, except `tsx-keys` (a public key) and `tsx-ledbar-fw` (a tool). An upgrade of `tsx-ledbar-fw` never loads the LED bar: see [LED bar image](#led-bar-image). A running service keeps the code that it started with until it starts again.
+
+## LED bar image
+
+The package `tsx-ledbar-fw` can hold a newer firmware image for the LED bar. An upgrade never loads it, also not in the update window. A load that stops half way, for example by a power loss, can leave a bar that USB cannot recover. When the panel is set up for the TSX-LEDBAR firmware and the bar does not run the packaged version, the upgrade writes `/data/tsx/ledbar-fw.pending`. `tsx-autoupdate status` then shows the line `LED bar image`. To load the image, run `tsx-ledbar-fw-install` by hand. Run `tsx-ledbar-fw-install --status` to see the bar and the packaged image.
 
 ## Health check
 
@@ -138,7 +142,7 @@ The panel app writes `/run/tsx/panel-app.state` at its start, at its first frame
 | `tsx-autoupdate refresh` | Write the status files again from the saved state and the settings. It calls no `apk`. |
 | `tsx-autoupdate boot` | Record the running release. The service calls it at each boot. |
 | `tsx-autoupdate get mode\|auto-restart` | Print a setting |
-| `tsx-autoupdate status` | The mode, the versions, the pending packages, "restart required", the last install, the health result and the repository state |
+| `tsx-autoupdate status` | The mode, the versions, the pending packages, "restart required", the last install, the health result, the repository state and, when one waits, a newer LED bar image |
 
 | File | Contents |
 |---|---|
