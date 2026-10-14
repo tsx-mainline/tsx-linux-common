@@ -392,6 +392,16 @@ const STORED = {
   p.submit(); await flush();
   ok(same(p.lastSubmit().fields, { KIOSK_DARK: "on" }), "off to on is sent: " + JSON.stringify(p.lastSubmit().fields));
 
+  console.log("== orientation: the default of the board shows, a save does not send it, a change is sent ==");
+  p = load({ state: stateWith(Object.assign({}, STORED, { ORIENTATION: "portrait" })), status: {} });
+  await flush();
+  ok(p.$("f-orient").value === "portrait", "the state gives portrait (the default of the board): portrait shows");
+  p.submit(); await flush();
+  ok(same(p.lastSubmit().fields, {}), "an unchanged orientation is not sent: " + JSON.stringify(p.lastSubmit().fields));
+  p.$("f-orient").value = "landscape";
+  p.submit(); await flush();
+  ok(same(p.lastSubmit().fields, { ORIENTATION: "landscape" }), "a change to landscape is sent: " + JSON.stringify(p.lastSubmit().fields));
+
 
   console.log("== CSRF: every POST sends the token of the state, a GET sends none ==");
   p = load({ state: stateWith(STORED, { csrf: "tok-123" }), status: {} });

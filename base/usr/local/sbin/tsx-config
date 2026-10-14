@@ -87,7 +87,10 @@
 #   /etc/tsx/boot-verbose on the root file system. The initramfs reads it,
 #   because it cannot read /data.
 # ORIENTATION (landscape | portrait | landscape-flipped | portrait-flipped):
-#   how the panel hangs, see tsx-orientation. Apply keeps
+#   how the panel hangs, see tsx-orientation. Without a value, a board
+#   that reports a hardware orientation sets the default: ORIENTATION_HW
+#   (landscape | portrait | unknown) in /run/tsx/hw.conf. A value in
+#   panel.conf, also landscape, wins. Apply keeps
 #   /etc/tsx/orientation on the root file system for the initramfs, the
 #   splash, the kiosk and tsx-buttons, and turns the running kiosk at once.
 # BT_PROXY (on|off|empty, default empty = the board default): the Bluetooth
@@ -973,7 +976,14 @@ apply() {
 	# initramfs, tsx-splash, kiosk-session and tsx-buttons. Absent =
 	# landscape). Only written when it changes. A change turns the running
 	# kiosk at once (tsx-orientation apply: sway transform + touch mapping).
+	# No ORIENTATION in panel.conf: the hardware orientation of a board that
+	# reports one (ORIENTATION_HW in hw.conf). A value in panel.conf, also
+	# landscape, wins. A board without the key stays landscape.
 	or=$(cfg_get ORIENTATION) || or=
+	if [ -z "$or" ]; then
+		or=$(hw_get ORIENTATION_HW)
+		case "$or" in landscape|portrait|landscape-flipped|portrait-flipped) ;; *) or= ;; esac
+	fi
 	[ "$or" = landscape ] && or=
 	orf=$PREFIX/etc/tsx/orientation
 	orcur=$(cat "$orf" 2>/dev/null) || orcur=

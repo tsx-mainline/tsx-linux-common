@@ -170,6 +170,8 @@ RUN_DIR = os.environ.get("TSX_RUN_DIR", "/run/tsx")
 HW_CONF_PATH = os.environ.get("TSX_HW_CONF", os.path.join(RUN_DIR, "hw.conf"))
 CONF_PATH = os.environ.get("TSX_SETUP_CONF", "/etc/tsx/setup.conf")
 KIOSK_CONF_PATH = os.environ.get("TSX_KIOSK_CONF", "/etc/kiosk.conf")
+# the names that tsx-config accepts for ORIENTATION
+ORIENTATIONS = ("landscape", "portrait", "landscape-flipped", "portrait-flipped")
 NO_ZEROCONF = os.environ.get("TSX_SETUP_NO_ZEROCONF", "0") == "1"
 PLUGIN_DIR = os.environ.get("TSX_SETUP_PLUGIN_DIR", "/usr/local/share/tsx/setup.d")
 STATE_DIR = os.environ.get("TSX_SETUP_STATE_DIR", "/run/tsx-setup")
@@ -1471,6 +1473,12 @@ class Handler(BaseHTTPRequestHandler):
             kd = load_conf(KIOSK_CONF_PATH).get("KIOSK_DARK")
             if kd in ("on", "off"):
                 fields["KIOSK_DARK"] = kd
+        if not fields.get("ORIENTATION"):
+            # not in panel.conf: a board that reports a hardware orientation
+            # (ORIENTATION_HW in hw.conf) sets the default that the page shows
+            hw_or = load_conf(HW_CONF_PATH).get("ORIENTATION_HW")
+            if hw_or in ORIENTATIONS:
+                fields["ORIENTATION"] = hw_or
         sess = None if loop else self._session()
         resp = {
             "need_pairing": False,

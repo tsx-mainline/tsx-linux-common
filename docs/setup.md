@@ -107,6 +107,12 @@ These are the backends of the overlay and of the Home Assistant entities. So the
 
 The times and the two update settings go to `panel.conf` and stay after a reboot. The brightness, the volume and the lights act at once, as the overlay does. The page reads the values every 5 s.
 
+### Screen orientation
+
+The setting `ORIENTATION` is `landscape`, `portrait`, `landscape-flipped` or `portrait-flipped`. `tsx-config apply` writes `/etc/tsx/orientation`, and the kiosk turns at once.
+
+Some boards report the hardware orientation of the unit. The `tsx-hw` of such a board writes `ORIENTATION_HW=landscape`, `portrait` or `unknown` to `/run/tsx/hw.conf`. The value is the default of `ORIENTATION`. If `panel.conf` has no `ORIENTATION`, `tsx-config apply` uses `ORIENTATION_HW`, and the setup page shows it. A value in `panel.conf`, also `landscape`, always wins. A board that does not write the key, and the value `unknown`, give `landscape`.
+
 ### Dark mode of the browser
 
 The setting `KIOSK_DARK` (`on` or `off`, default `off`) makes the kiosk browser ask pages for the dark color scheme. It adds two Chromium flags: `--force-dark-mode` and `--blink-settings=preferredColorScheme=0`. A page that has a dark theme then uses it. Chromium darkens a page that has none.

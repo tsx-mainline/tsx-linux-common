@@ -310,6 +310,35 @@ set_ ORIENTATION landscape >/dev/null; applyo
 set_ ORIENTATION landscape-flipped >/dev/null; applyo
 TSX_CONF="$CFG" busybox sh "$SCRIPT" unset ORIENTATION >/dev/null; applyo
 [ ! -e "$FX/etc/tsx/orientation" ] && [ "$(lives)" = 5 ] && ok "unset again: file removed, kiosk turned back" || bad "unset: $(lives)"
+echo "== ORIENTATION default: ORIENTATION_HW in hw.conf, for a board that reports a hardware orientation =="
+mkdir -p "$FX/run/tsx"
+orhw() { printf 'MIC=yes\nORIENTATION_HW=%s\nREASON=\n' "$1" > "$FX/run/tsx/hw.conf"; }
+ofile() { cat "$FX/etc/tsx/orientation" 2>/dev/null || echo none; }
+orhw landscape; applyo
+[ "$(ofile)" = none ] && [ "$(lives)" = 5 ] && ok "ORIENTATION_HW=landscape, no ORIENTATION: no file, kiosk not touched (as before)" || bad "landscape unit: $(ofile) $(lives)"
+orhw portrait; applyo
+[ "$(ofile)" = portrait ] && [ "$(lives)" = 6 ] && grep -q '^tsx-orientation apply portrait$' "$W/orient.log" \
+	&& ok "ORIENTATION_HW=portrait, no ORIENTATION: /etc/tsx/orientation = portrait, the kiosk turned" || bad "portrait unit: $(ofile) $(lives)"
+touch -d '2000-01-01' "$FX/etc/tsx/orientation"; applyo
+[ "$(stat -c %Y "$FX/etc/tsx/orientation")" = "$(date -d 2000-01-01 +%s)" ] && [ "$(lives)" = 6 ] \
+	&& ok "second apply: file not rewritten, kiosk not touched" || bad "second apply: $(lives)"
+set_ ORIENTATION landscape >/dev/null; applyo
+[ "$(ofile)" = none ] && [ "$(lives)" = 7 ] && ok "ORIENTATION=landscape in panel.conf wins over ORIENTATION_HW=portrait (file removed)" || bad "explicit landscape: $(ofile) $(lives)"
+set_ ORIENTATION landscape-flipped >/dev/null; applyo
+[ "$(ofile)" = landscape-flipped ] && ok "ORIENTATION=landscape-flipped in panel.conf wins over ORIENTATION_HW" || bad "explicit flipped: $(ofile)"
+TSX_CONF="$CFG" busybox sh "$SCRIPT" unset ORIENTATION >/dev/null; applyo
+[ "$(ofile)" = portrait ] && ok "ORIENTATION removed again: back to ORIENTATION_HW" || bad "unset: $(ofile)"
+orhw unknown; applyo
+[ "$(ofile)" = none ] && ok "ORIENTATION_HW=unknown: landscape" || bad "unknown: $(ofile)"
+orhw portrait-flipped; applyo
+[ "$(ofile)" = portrait-flipped ] && ok "ORIENTATION_HW=portrait-flipped: the board can report a flipped unit" || bad "portrait-flipped hw: $(ofile)"
+orhw sideways; applyo
+[ "$(ofile)" = none ] && ok "an unknown ORIENTATION_HW name is ignored (landscape)" || bad "bad hw value: $(ofile)"
+orhw portrait; applyo; rm -f "$FX/run/tsx/hw.conf"; applyo
+[ "$(ofile)" = none ] && ok "no hw.conf: landscape" || bad "no hw.conf: $(ofile)"
+printf 'MIC=yes\nREASON=\n' > "$FX/run/tsx/hw.conf"; applyo
+[ "$(ofile)" = none ] && [ "$(lives)" -ge 8 ] && ok "a hw.conf without the key (a board with no hardware orientation): landscape, nothing changes" || bad "no key: $(ofile)"
+rm -f "$FX/run/tsx/hw.conf"
 echo "== BT_PROXY / BT_ACTIVE / BT_MAC: /run/tsx/bt.conf, tsx-bt follows the key =="
 btl() { grep -c "tsx-bt $1" "$W/rc.log" 2>/dev/null || true; }
 applyp

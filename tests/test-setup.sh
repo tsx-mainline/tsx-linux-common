@@ -846,6 +846,35 @@ out=$(submit '{"KIOSK_URL":"https://ha.example.org/lovelace/0","HA_LOGIN_METHOD"
 grep -q '^PRESENCE_WAKE="on"$' "$CONF" && grep -q '^PRESENCE_HOLD_S="45"$' "$CONF" && ok "PRESENCE=no: a submit leaves the presence keys as they are" || bad "PRESENCE=no submit changed them: $(grep -E '^PRESENCE_' "$CONF" | tr '\n' ' ')"
 rm -f "$RUNDIR/hw.conf"
 
+echo "== ORIENTATION_HW (hw.conf): without ORIENTATION in panel.conf, the page shows the hardware orientation =="
+cp "$CONF" "$T/panel.conf.before-orientation"
+TSX_CONF="$CONF" busybox sh "$TSXCONFIG" unset ORIENTATION >/dev/null 2>&1
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget fields.ORIENTATION <<<"$body")" = "" ] && ok "no ORIENTATION and no hw.conf: the state has no value (the page shows landscape)" || bad "no hw.conf: $(jget fields.ORIENTATION <<<"$body")"
+printf 'MIC=yes\nBT=yes\nORIENTATION_HW=portrait\n' > "$RUNDIR/hw.conf"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget fields.ORIENTATION <<<"$body")" = portrait ] && ok "ORIENTATION_HW=portrait: the state shows portrait as the default" || bad "portrait unit: $(jget fields.ORIENTATION <<<"$body")"
+printf 'MIC=yes\nBT=yes\nORIENTATION_HW=landscape\n' > "$RUNDIR/hw.conf"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget fields.ORIENTATION <<<"$body")" = landscape ] && ok "ORIENTATION_HW=landscape: the state shows landscape" || bad "landscape unit: $(jget fields.ORIENTATION <<<"$body")"
+printf 'MIC=yes\nBT=yes\nORIENTATION_HW=unknown\n' > "$RUNDIR/hw.conf"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget fields.ORIENTATION <<<"$body")" = "" ] && ok "ORIENTATION_HW=unknown: no default" || bad "unknown: $(jget fields.ORIENTATION <<<"$body")"
+printf 'MIC=yes\nBT=yes\nORIENTATION_HW=sideways\n' > "$RUNDIR/hw.conf"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget fields.ORIENTATION <<<"$body")" = "" ] && ok "an unknown ORIENTATION_HW name: no default" || bad "bad name: $(jget fields.ORIENTATION <<<"$body")"
+printf 'MIC=yes\nBT=yes\n' > "$RUNDIR/hw.conf"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget fields.ORIENTATION <<<"$body")" = "" ] && ok "a hw.conf without the key (a board with no hardware orientation): no default" || bad "no key: $(jget fields.ORIENTATION <<<"$body")"
+printf 'MIC=yes\nBT=yes\nORIENTATION_HW=portrait\n' > "$RUNDIR/hw.conf"
+TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set ORIENTATION landscape-flipped >/dev/null 2>&1
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget fields.ORIENTATION <<<"$body")" = landscape-flipped ] && ok "a value in panel.conf wins over ORIENTATION_HW" || bad "panel.conf value: $(jget fields.ORIENTATION <<<"$body")"
+TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set ORIENTATION landscape >/dev/null 2>&1
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget fields.ORIENTATION <<<"$body")" = landscape ] && ok "ORIENTATION=landscape in panel.conf wins over ORIENTATION_HW=portrait" || bad "explicit landscape: $(jget fields.ORIENTATION <<<"$body")"
+rm -f "$RUNDIR/hw.conf"; cp "$T/panel.conf.before-orientation" "$CONF"
+
 # ---- 8. unconfigured trigger, from tsx-kiosk-url's own point of view ----
 echo "== tsx-kiosk-url: unconfigured always shows setup =="
 R=$(TSX_SETUP_CONF="$T/setup.conf" TSX_RUN_DIR="$RUNDIR" busybox sh "$KIOSKURL" "")
