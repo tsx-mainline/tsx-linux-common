@@ -173,7 +173,11 @@ class Backend:
     parts = dict.fromkeys(PARTS, True)
     keys = KEY_NAMES
 
+    pir = False   # PRESENCE=pir: a presence sensor with no distance
+
     def __getattr__(self, name):
+        if name == "distance_present":
+            return lambda: self.parts["presence"] and not self.pir
         if name.endswith("_present"):
             return lambda: self.parts[name[:-len("_present")]]
         values = {"get_ledbar": (False, 255, 255, 255, 255), "get_ledbar_last": None,
@@ -247,6 +251,11 @@ check("all parts off: only the fixed entities",
       sorted((i, REF[i]) for i in ("screen", "backlight", "blank_timeout", "orientation", "verbose_boot", "kiosk_url",
                                    "reload_page", "reboot", "cpu_temp", "last_boot", "ip_address", "touched_recently",
                                    "update", "restart_required", "update_mode", "auto_restart")))
+Backend.pir = True
+pir_ids = listed(standalone(ALL).entities)
+check("PRESENCE=pir: no distance entity, every other key is the same",
+      (sorted(set(REF) - set(pir_ids)), {i: k for i, k in pir_ids.items() if REF[i] != k}), (["distance"], {}))
+Backend.pir = False
 set_bt(True)
 check("Bluetooth proxy on: the same keys", (bluetooth.PROXY.enabled(), listed(standalone(ALL).entities)), (True, REF))
 

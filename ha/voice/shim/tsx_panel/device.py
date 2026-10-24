@@ -313,6 +313,7 @@ def build_entities(server, backend: PanelBackend, taken=()) -> PanelDevice:
             get_state=backend.get_presence, device_class="occupancy", icon="mdi:account-eye",
         )
         entities.append(presence)
+    if backend.distance_present():
         distance = SensorEntity(
             server, key_for("distance"), "Distance", "distance",
             get_state=backend.get_distance, unit="mm", device_class="distance", icon="mdi:ruler",

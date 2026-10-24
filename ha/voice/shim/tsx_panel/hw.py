@@ -6,6 +6,23 @@ Test hooks: TSX_HW_CONF, else TSX_RUN_DIR/hw.conf.
 """
 
 import os
+import sys
+
+# tsx_presence (tsx-base): the one rule that maps PRESENCE to a sensor kind.
+# On the panel it is in /usr/local/lib/tsx. A checkout has it in base/.
+for _lib in (os.environ.get("TSX_BASE_LIB_DIR", "/usr/local/lib/tsx"),
+             os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", "..",
+                          "base", "usr", "local", "lib", "tsx")):
+    if _lib not in sys.path:
+        sys.path.append(_lib)
+try:
+    import tsx_presence  # noqa: E402  pylint: disable=wrong-import-position
+except ImportError:  # a rootfs without the helper file keeps no, pir and tof (no warning)
+    class tsx_presence:  # noqa: N801  pylint: disable=invalid-name,too-few-public-methods
+        @staticmethod
+        def kind(raw, warn=True):  # pylint: disable=unused-argument
+            raw = (raw or "").strip()
+            return raw if raw in ("no", "pir") else "tof"
 
 
 def conf_path():
@@ -40,3 +57,9 @@ def reason_tail(path=None):
     a missing part. A panel with no REASON gets "" (a short message)."""
     text = get("REASON", path)
     return " (%s)" % text if text else ""
+
+
+def presence_kind(path=None):
+    """The kind of the presence sensor: "no", "tof" or "pir" (PRESENCE of
+    hw.conf, see tsx_presence). A missing key is "tof"."""
+    return tsx_presence.kind(get("PRESENCE", path))

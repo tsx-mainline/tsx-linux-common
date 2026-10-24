@@ -61,7 +61,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
-from . import throttle
+from . import hw, throttle
 
 _LOGGER = logging.getLogger("tsx_panel.backend")
 
@@ -646,8 +646,19 @@ class PanelBackend:
         self._ctl("als", "auto", "on" if on else "off")
 
     # ---- presence (the distance sensor) ---------------------------
+    def presence_kind(self) -> str:
+        """no, tof or pir (PRESENCE of hw.conf)."""
+        return hw.presence_kind()
+
     def presence_present(self) -> bool:
-        return (self.run_dir / "presence.state").is_file()
+        """The presence sensor (motion): the board writes presence.state and
+        hw.conf does not say PRESENCE=no."""
+        return self.presence_kind() != "no" and (self.run_dir / "presence.state").is_file()
+
+    def distance_present(self) -> bool:
+        """The distance sensor: a time-of-flight sensor (PRESENCE=tof). A
+        motion sensor (pir) has no distance."""
+        return self.presence_kind() == "tof" and self.presence_present()
 
     def get_presence(self) -> bool:
         return (_field(self.run_dir / "presence.state", "present") or "off").split()[0] == "on"

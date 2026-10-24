@@ -97,6 +97,17 @@ BBCONF=${TSX_BUTTONS_BOARD_CONF:-/etc/tsx/buttons-board.conf}   # the board laye
 KCONF=${TSX_KIOSK_CONF:-/etc/kiosk.conf}
 ACONF=${TSX_ALS_CONF:-/etc/tsx/als.conf}
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
+# presence_kind: the one rule that maps PRESENCE of hw.conf to no, tof or pir.
+# It is in tsx-base: /usr/local/lib/tsx on the panel, base/ in a checkout.
+PKIND=${TSX_PRESENCE_KIND_SH:-/usr/local/lib/tsx/presence-kind.sh}
+[ -r "$PKIND" ] || PKIND=$(dirname "$0")/../../../../base/usr/local/lib/tsx/presence-kind.sh
+if [ -r "$PKIND" ]; then
+	. "$PKIND"
+else
+	# A rootfs without the helper file keeps no, pir and tof (no warning)
+	presence_kind() { [ "${1:-}" = -q ] && shift; case "${1:-}" in no|pir) echo "$1";; *) echo tof;; esac; }
+fi
+HWCONF=${TSX_HW_CONF:-$R/hw.conf}
 PCTL=${TSX_PANELCTL_BIN:-tsx-panelctl}   # the hardware interface of the base system
 DRY=${TSX_MQTT_DRY:-0}
 PUBTO=${TSX_MQTT_PUB_TIMEOUT:-5}
@@ -130,6 +141,8 @@ DNAME=${DEVICE_NAME:-TSX $HOST}
 M=$R/mqtt
 mkdir -p "$M" && chmod 700 "$M"
 log() { echo "$(date '+%F %T') tsx-mqtt: $*"; }
+# an unknown PRESENCE in hw.conf counts as no: say it once
+presence_kind "$(sed -n 's/^PRESENCE=//p' "$HWCONF" 2>/dev/null | tail -n 1)" 2>&1 >/dev/null | while IFS= read -r w; do log "$w"; done
 
 # Put the mosquitto client options in files (XDG_CONFIG_HOME), not on the command line.
 export XDG_CONFIG_HOME=$M
@@ -167,7 +180,11 @@ has_ledbar() { "$PCTL" has ledbar >/dev/null 2>&1; }
 has_sound() { "$PCTL" has sound >/dev/null 2>&1; }
 has_keyleds() { "$PCTL" has keyleds >/dev/null 2>&1; }
 has_als() { [ -r "$ACONF" ] || [ -r "$R/als.state" ]; }
-has_presence() { [ -r "$R/presence.state" ]; }
+# The kind of the presence sensor: PRESENCE of hw.conf (no, tof or pir)
+pres_kind() { presence_kind -q "$(sed -n 's/^PRESENCE=//p' "$HWCONF" 2>/dev/null | tail -n 1)"; }
+has_presence() { [ -r "$R/presence.state" ] && [ "$(pres_kind)" != no ]; }
+# the distance: a tof sensor only. A pir sensor sees motion and no distance.
+has_distance() { has_presence && [ "$(pres_kind)" = tof ]; }
 has_usbpower() { [ -r "$R/usb-power.state" ]; }
 has_poe() { [ -r "$R/poe.state" ]; }
 has_emmc() { [ -r "$R/emmc.state" ]; }
@@ -295,7 +312,12 @@ discovery() {
 	fi
 	if has_presence; then
 		pub -r "$DP/binary_sensor/$NODE/presence/config" "{\"name\":\"Presence\",\"uniq_id\":\"${NODE}_presence\",\"stat_t\":\"$BASE/presence/state\",\"dev_cla\":\"occupancy\",\"icon\":\"mdi:account-eye\",$AV,$DEV}"
+	fi
+	if has_distance; then
 		pub -r "$DP/sensor/$NODE/distance/config" "{\"name\":\"Distance\",\"uniq_id\":\"${NODE}_distance\",\"stat_t\":\"$BASE/presence/distance\",\"val_tpl\":\"{{ none if value == 'none' else value | int }}\",\"dev_cla\":\"distance\",\"unit_of_meas\":\"mm\",\"stat_cla\":\"measurement\",\"icon\":\"mdi:ruler\",$AV,$DEV}"
+	elif has_presence; then
+		# a pir sensor: clear a distance sensor that an older build announced
+		pub -r "$DP/sensor/$NODE/distance/config" ""
 	fi
 	if has_usbpower; then
 		pub -r "$DP/switch/$NODE/usb_power/config" "{\"name\":\"USB power\",\"uniq_id\":\"${NODE}_usb_power\",\"cmd_t\":\"$BASE/usb_power/set\",\"stat_t\":\"$BASE/usb_power/state\",\"icon\":\"mdi:usb-port\",$AV,$DEV}"
@@ -552,8 +574,10 @@ publish_states() {  # $1 = force
 		v=$(presence_state); if [ -n "$v" ]; then
 			set -- $v; pr_on=$1; pr_d=$2
 			if [ "$pr_on" != "$P_PRES" ] || [ -n "$f" ]; then pub -r "$BASE/presence/state" "$pr_on"; P_PRES=$pr_on; fi
-			if [ -n "$f" ]; then thr_reset distance "$pr_d"; pub -r "$BASE/presence/distance" "$pr_d"; P_PRESD=$pr_d
-			elif pr_out=$(thr_check distance "$pr_d" "$THR_DISTANCE" 0); then pub -r "$BASE/presence/distance" "$pr_out"; P_PRESD=$pr_out; fi
+			if has_distance; then
+				if [ -n "$f" ]; then thr_reset distance "$pr_d"; pub -r "$BASE/presence/distance" "$pr_d"; P_PRESD=$pr_d
+				elif pr_out=$(thr_check distance "$pr_d" "$THR_DISTANCE" 0); then pub -r "$BASE/presence/distance" "$pr_out"; P_PRESD=$pr_out; fi
+			fi
 		fi
 	fi
 	if has_usbpower; then

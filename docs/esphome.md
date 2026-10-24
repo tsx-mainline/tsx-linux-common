@@ -54,7 +54,8 @@ The kiosk panels (this device) and the panel app ([panel-app.md](panel-app.md)) 
 | Reload page | button | yes | No | |
 | Dark mode | switch | yes | No (no browser) | `KIOSK_DARK` |
 | Last boot | text sensor, timestamp | yes | yes | The clock and the uptime |
-| CPU temperature, Illuminance, Distance | sensor | With the part | No | Live state, with the rate limit of "Sensor rate" |
+| CPU temperature, Illuminance, Distance | sensor | With the part | No | Live state, with the rate limit of "Sensor rate". Distance exists for `PRESENCE=tof` only (see below) |
+| Presence | binary sensor, occupancy | With the part | No | `/run/tsx/presence.state`. For `PRESENCE=tof` and `pir` (see below) |
 | Update | update | yes | yes | The state of `tsx-autoupdate` |
 | Restart required | binary sensor | yes | yes | The state of `tsx-autoupdate` |
 | Restart | button | yes | yes | |
@@ -84,6 +85,18 @@ Home Assistant stores each state that a panel sends. A sensor that the panel rea
 The comparison is with the last state that went out, not with the last reading, so a slow drift also goes out. A change that is held by the interval goes out when the interval ends, if the value is still beyond the deadband. A subscriber that asks for the states (Home Assistant after a connect) gets the readings at once.
 
 These entities have no rate limit and stay fast: Presence (the binary sensor), Touched recently, the keys and the key events, Screen, Backlight, Volume (also after a change by a user), Update, Restart required, the switches, selects and numbers of the settings. The panel app sends only changes, with no timer, so its entities need no rate limit.
+
+### Presence and distance
+
+The `tsx-hw` of the board writes the kind of the presence sensor to `PRESENCE` in `hw.conf` (see [Presence sensor kind](layout.md#presence-sensor-kind)). The shim lists the entities like this:
+
+| `PRESENCE` | Presence | Distance |
+|---|---|---|
+| `no` | no | no |
+| `tof`, `yes`, missing key | yes | yes |
+| `pir` | yes | no |
+
+An entity needs `/run/tsx/presence.state` too. The object ids `presence` and `distance` and their keys do not change with the kind. `tsx-mqtt` follows the same rule, and clears the Distance discovery topic with `pir`.
 
 `tests/test-shim-rate.sh` checks the rules and the numbers of the shim. `tests/mqtt-sensor-rate.sh` checks `tsx-mqtt`.
 

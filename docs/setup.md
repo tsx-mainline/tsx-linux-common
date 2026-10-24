@@ -107,6 +107,18 @@ These are the backends of the overlay and of the Home Assistant entities. So the
 
 The times and the two update settings go to `panel.conf` and stay after a reboot. The brightness, the volume and the lights act at once, as the overlay does. The page reads the values every 5 s.
 
+### Presence fields
+
+The *Sensors* section has the fields `PRESENCE_WAKE`, `PRESENCE_HOLD_S` and `PRESENCE_DISTANCE_MM`. The key `PRESENCE` in `/run/tsx/hw.conf` (written by the `tsx-hw` of the board) decides which fields show:
+
+| `PRESENCE` | Fields |
+|---|---|
+| `tof`, `yes`, missing key | Wake, hold time and near distance |
+| `pir` | Wake and hold time. The distance field is hidden, because a motion sensor does not measure a distance. |
+| `no` | None |
+
+An unknown value counts as `no`. A save leaves the hidden keys as they are. The rule is in [layout.md](layout.md#presence-sensor-kind).
+
 ### Screen orientation
 
 The setting `ORIENTATION` is `landscape`, `portrait`, `landscape-flipped` or `portrait-flipped`. `tsx-config apply` writes `/etc/tsx/orientation`, and the kiosk turns at once.
@@ -183,11 +195,12 @@ The *Install* button of the update entity in Home Assistant works in both modes.
 | `setup/usr/local/sbin/tsx-setupd` | The server. It runs as the user `tsx-setup`, with no privilege. |
 | `setup/usr/local/lib/tsx/setup_ha_login.py` | The Home Assistant side of the login: the code exchange, the websocket API and the revoke. Standard library only. |
 | `setup/usr/local/sbin/tsx-setup-helper` | The root helper with a fixed command set. |
+| `base/usr/local/lib/tsx/tsx_presence.py` | The kind of the presence sensor (`PRESENCE` in `hw.conf`). `tsx-setupd` finds it in `/usr/local/lib/tsx`, or in `base/` of a checkout. |
 
 ## Tests
 
 | Test | What it checks |
 |---|---|
 | `tests/test-setup-login.sh` | The login against a fake Home Assistant (`tests/fake-ha.py`): the redirect, the return, the admin check, the refusal of a user who is not an administrator, a replayed or foreign return, the revoke of the refresh token, CSRF, the session list, a revoke, a logout, the expiry, the rate limit, the Panel section and the allowlist of the helper |
-| `tests/test-setup.sh` | The pairing code, the save, the revision and the helper |
+| `tests/test-setup.sh` | The pairing code, the save, the revision and the helper. The presence fields for `tof`, `pir`, `yes` and `no` |
 | `tests/test-setup-page.sh` | The script of the page in node: the fields, the gate, the session bar, the Panel section and the CSRF header |

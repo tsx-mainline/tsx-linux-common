@@ -114,13 +114,15 @@
 #   calibration of the unit, for example a factor for the front glass). Apply
 #   writes it to /run/tsx/als.panel and to /run/tsx/sensors.conf. The curve
 #   and the timing stay in /etc/tsx/als.conf.
-# PRESENCE_WAKE (on|off): wake the screen when the distance sensor sees
-#   someone near. PRESENCE_DISTANCE_MM (how close counts as near, 100 to
+# PRESENCE_WAKE (on|off): wake the screen when the presence sensor sees
+#   someone near. PRESENCE_HOLD_S (seconds without a target before "away",
+#   1 to 3600). PRESENCE_DISTANCE_MM (how close counts as near, 100 to
 #   4000, default the threshold of the unit). PRESENCE_MIN_MM (closer than
-#   this is the front window, 0 to 1000). PRESENCE_HOLD_S (seconds without a
-#   target before "away", 1 to 3600). Only a board with a distance sensor
-#   uses these four keys. Apply writes them to /run/tsx/sensors.conf for the
-#   sensor daemon of the board.
+#   this is the front window, 0 to 1000). The sensor kind is PRESENCE of
+#   hw.conf: tof (presence and distance) uses all four keys, pir (motion
+#   only) uses PRESENCE_WAKE and PRESENCE_HOLD_S, no uses none. Apply writes
+#   the keys that the kind uses to /run/tsx/sensors.conf for the sensor
+#   daemon of the board.
 # UPDATE_MODE (auto|manual): when tsx-autoupdate installs updates. auto
 #   installs inside the update window while the screen is idle. manual only
 #   checks and shows the update in Home Assistant. An install from Home
@@ -162,6 +164,16 @@ HW_CONF=${TSX_HW_CONF:-$RUN/hw.conf}
 BOARD=${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}
 [ -r "$BOARD" ] || BOARD=$(dirname "$0")/../lib/tsx/board.sh
 . "$BOARD"
+# presence_kind: the one rule that maps PRESENCE of hw.conf to no, tof or pir.
+PKIND=${TSX_PRESENCE_KIND_SH:-/usr/local/lib/tsx/presence-kind.sh}
+[ -r "$PKIND" ] || PKIND=$(dirname "$0")/../lib/tsx/presence-kind.sh
+if [ -r "$PKIND" ]; then
+	. "$PKIND"
+else
+	# A copy of this script without the helper (the installer stages the script
+	# alone) keeps no, pir and tof. It does not warn about an unknown value.
+	presence_kind() { [ "${1:-}" = -q ] && shift; case "${1:-}" in no|pir) echo "$1";; *) echo tof;; esac; }
+fi
 
 KNOWN_KEYS="PANEL_NAME KIOSK_URL KIOSK_DARK HA_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_API_KEY HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR APK_URL BLANK_TIMEOUT KEY_LED_BLANK BOOT_VERBOSE ORIENTATION BT_PROXY BT_ACTIVE BT_MAC PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE UPDATE_MODE UPDATE_AUTO_RESTART ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 SECRET_KEYS="HA_TOKEN HA_API_KEY MQTT_PASSWORD ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
@@ -199,10 +211,13 @@ hw_missing() {
 		echo "this panel has no Bluetooth module$(hw_why)";;
 	BT_MAC) [ "$TSX_BT_MAC_SETTABLE" = no ] || return 1
 		echo "this board takes the Bluetooth address from the controller";;
-	# The distance sensor is not on every board. tsx-hw of the board writes
-	# PRESENCE=no for a panel without one.
-	PRESENCE_WAKE|PRESENCE_DISTANCE_MM|PRESENCE_MIN_MM|PRESENCE_HOLD_S)
-		[ "$(hw_get PRESENCE)" = no ] || return 1
+	# The presence sensor is not on every board. tsx-hw of the board writes
+	# PRESENCE=no, tof or pir. A pir sensor (motion only) has no distance.
+	PRESENCE_WAKE|PRESENCE_HOLD_S)
+		[ "$(presence_kind -q "$(hw_get PRESENCE)")" = no ] || return 1
+		echo "this panel has no distance sensor";;
+	PRESENCE_DISTANCE_MM|PRESENCE_MIN_MM)
+		[ "$(presence_kind -q "$(hw_get PRESENCE)")" != tof ] || return 1
 		echo "this panel has no distance sensor";;
 	# ALS=no or LIGHT=no: a board names its light sensor part either way
 	AUTO_BRIGHTNESS|ALS_SCALE) [ "$(hw_get ALS)" = no ] || [ "$(hw_get LIGHT)" = no ] || return 1
@@ -939,6 +954,7 @@ apply() {
 	# reload at the first apply after boot, because it has not started then
 	# and reads the file itself. Without such a service, the file is only
 	# a file. A key of a part that the panel does not have stays out.
+	presence_kind "$(hw_get PRESENCE)" 2>&1 >/dev/null | while IFS= read -r pkw; do log "$pkw"; done
 	{
 		for k in PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE; do
 			sv=$(cfg_get "$k") || sv=

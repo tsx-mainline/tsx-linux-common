@@ -837,6 +837,13 @@ case "$page" in *'id="presence-wrap"'*'name="PRESENCE_WAKE"'*'name="PRESENCE_DIS
 printf 'MIC=yes\nBT=yes\nPRESENCE=yes\n' > "$RUNDIR/hw.conf"
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.PRESENCE_WAKE <<<"$body")" = "" ] && ok "PRESENCE=yes: the presence fields are available" || bad "PRESENCE=yes: unavailable = $(jget unavailable <<<"$body")"
+printf 'MIC=yes\nBT=yes\nPRESENCE=tof\n' > "$RUNDIR/hw.conf"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget unavailable.PRESENCE_WAKE <<<"$body")$(jget unavailable.PRESENCE_DISTANCE_MM <<<"$body")" = "" ] && ok "PRESENCE=tof: the presence and distance fields are available" || bad "PRESENCE=tof: unavailable = $(jget unavailable <<<"$body")"
+printf 'MIC=yes\nBT=yes\nPRESENCE=pir\n' > "$RUNDIR/hw.conf"
+out=$(call GET /setup/api/state); body=$(body_of "$out")
+[ "$(jget unavailable.PRESENCE_WAKE <<<"$body")" = "" ] && [ "$(jget unavailable.PRESENCE_DISTANCE_MM <<<"$body")" = "no distance sensor on this panel" ] \
+	&& ok "PRESENCE=pir: the wake field is available, the distance field is not" || bad "PRESENCE=pir: unavailable = $(jget unavailable <<<"$body")"
 printf 'MIC=yes\nBT=yes\nPRESENCE=no\nREASON=\n' > "$RUNDIR/hw.conf"
 TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set PRESENCE_WAKE on >/dev/null 2>&1; TSX_CONF="$CONF" busybox sh "$TSXCONFIG" set PRESENCE_HOLD_S 45 >/dev/null 2>&1
 out=$(call GET /setup/api/state); body=$(body_of "$out")
