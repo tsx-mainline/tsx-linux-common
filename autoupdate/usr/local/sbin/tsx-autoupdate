@@ -14,14 +14,15 @@
 #
 # The restart rule: after an install, the panel needs a restart if the
 # upgrade changed or added the kernel, musl, openrc or busybox, or a tsx-*
-# package (the services and shared code of the panel). With AUTO_RESTART=on
+# package or a package of the board prefix (the services and shared code of
+# the panel). With AUTO_RESTART=on
 # the panel restarts right after the install. An automatic install restarts
 # only inside the window, and an install from Home Assistant also outside it.
 # With AUTO_RESTART=off the state "restart required" stays until the next
 # boot. Then the install button of Home Assistant restarts the panel.
 #
 # Versions: Home Assistant shows release numbers, not the package hash. The
-# release is the version of the board package tsx-<family>-board (tsx-base if
+# release is the version of the board package PREFIX-board (tsx-base if
 # the panel has no board package). The installed version is the release that
 # RUNS: tsx-autoupdate records it at each boot. After an install that needs a
 # restart, the latest version is "<release> (restart required)" and the title
@@ -98,8 +99,11 @@ set -u
 NL='
 '
 
-# The board values (TSX_FAMILY, TSX_APK_CATEGORY). Test hook: TSX_BOARD_CONF.
+# The board values (TSX_FAMILY, TSX_APK_CATEGORY, TSX_PKG_PREFIX). Test hook:
+# TSX_BOARD_CONF. TSX_PKG_PREFIX is the start of the package names of the
+# board family. Without it, the prefix is tsx-$TSX_FAMILY.
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
+TSX_PKG_PREFIX=${TSX_PKG_PREFIX:-tsx-$TSX_FAMILY}
 
 CONF=${TSX_AUTOUPDATE_CONF:-/etc/tsx/autoupdate.conf}
 RUN=${TSX_RUN_DIR:-/run/tsx}
@@ -177,8 +181,8 @@ in_window() {  # in_window HH:MM start-end  (window may cross midnight)
 	fi
 }
 
-# The package of the kernel, musl, openrc and busybox, and every tsx-* package
-# except two, need a reboot. The tsx-* packages hold the services, the init
+# The package of the kernel, musl, openrc and busybox, every tsx-* package
+# except two and every package of the board prefix need a reboot. The tsx-* packages hold the services, the init
 # scripts and the shared code of the panel (tsx-base, tsx-ha, tsx-ledbar,
 # tsx-kiosk, the board package). An upgrade writes the new files, but the
 # running services keep the old code until they start again. So the panel would
@@ -195,9 +199,9 @@ in_window() {  # in_window HH:MM start-end  (window may cross midnight)
 needs_reboot() {  # needs_reboot "pkg1 pkg2 ..." -> exit 0 if any needs a reboot
 	for n in $1; do
 		case $n in
-		linux*|musl*|openrc*|busybox*|tsx-$TSX_FAMILY-kernel*) return 0;;
+		linux*|musl*|openrc*|busybox*|"$TSX_PKG_PREFIX"-kernel*) return 0;;
 		tsx-*-kernel*|tsx-keys|tsx-ledbar-fw) ;;
-		tsx-*) return 0;;
+		tsx-*|"$TSX_PKG_PREFIX"-*) return 0;;
 		esac
 	done
 	return 1
@@ -464,8 +468,8 @@ pkg_version_to() {
 # release_pkg_to VAR APK_INFO_TEXT: VAR gets the package that carries the
 # release number: the board package of the family, else tsx-base.
 release_pkg_to() {
-	pkg_version_to _rp_v "tsx-$TSX_FAMILY-board" "$2"
-	if [ -n "$_rp_v" ]; then eval "$1=tsx-\$TSX_FAMILY-board"; else eval "$1=tsx-base"; fi
+	pkg_version_to _rp_v "$TSX_PKG_PREFIX-board" "$2"
+	if [ -n "$_rp_v" ]; then eval "$1=\$TSX_PKG_PREFIX-board"; else eval "$1=tsx-base"; fi
 }
 release_pkg() { release_pkg_to _rp_out "$1"; echo "$_rp_out"; }
 

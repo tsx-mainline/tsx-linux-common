@@ -77,6 +77,7 @@ Every name in this table is optional. The neutral default applies when a board d
 
 | Name | Used by | Meaning |
 |---|---|---|
+| `TSX_PKG_PREFIX` | `tsx-autoupdate` | The start of the package names of the board family, for example `acme` for the packages `acme-board` and `acme-kernel-lts`. Default: `tsx-$TSX_FAMILY`, so a family with `tsx-<family>-*` packages sets nothing. `tsx-autoupdate` takes the board package `PREFIX-board` as the source of the release number, and the packages `PREFIX-kernel*` as the kernel. Every package `PREFIX-*` needs a restart after an upgrade, like a `tsx-*` package |
 | `TSX_SERIAL_CONSOLE` | `serial.sh`, `tsx-config` service | Serial console name, for example `ttyS0`. Without it, `serial.sh` reads `/proc/consoles`. Root can log in on this console only when `/etc/securetty` lists it. The board package ships that file (see "Serial login") |
 | `TSX_RENDER_ENV` | `kiosk-session` | `NAME=value` words for the GPU driver |
 | `TSX_BROWSER_GL_FLAGS` | `kiosk-session` | Extra Chromium flags for GPU rendering |

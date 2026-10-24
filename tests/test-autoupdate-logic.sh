@@ -33,6 +33,17 @@ sh "$BIN" __needs_reboot "tsx-fake-kernel-lts"; chk $? 0 "the kernel package of 
 sh "$BIN" __needs_reboot "tsx-fake-kernel-stable"; chk $? 0 "the stable kernel package of the board needs a reboot"
 sh "$BIN" __needs_reboot "tsx-other-kernel-lts"; chk $? 1 "the kernel package of another family needs none"
 
+# ---- TSX_PKG_PREFIX replaces tsx-$TSX_FAMILY in the package names of the board
+export TSX_PKG_PREFIX=cp
+sh "$BIN" __needs_reboot "cp-kernel-lts"; chk $? 0 "prefix cp: cp-kernel-lts needs a reboot"
+sh "$BIN" __needs_reboot "cp-board"; chk $? 0 "prefix cp: cp-board needs a reboot"
+sh "$BIN" __needs_reboot "cp-other-kernel-lts"; chk $? 0 "prefix cp: any cp-* package needs a reboot"
+sh "$BIN" __needs_reboot "tsx-fake-kernel-lts"; chk $? 1 "prefix cp: tsx-fake-kernel-lts is the kernel of another family"
+sh "$BIN" __needs_reboot "cpfoo"; chk $? 1 "prefix cp: a name that only starts with cp needs none"
+sh "$BIN" __needs_reboot "tsx-ha"; chk $? 0 "prefix cp: tsx-ha still needs a reboot"
+unset TSX_PKG_PREFIX
+sh "$BIN" __needs_reboot "cp-kernel-lts"; chk $? 1 "default prefix: cp-kernel-lts needs none"
+
 # ---- a tsx-* package changes services and shared code: the panel must not run half old, half new code
 for pkg in tsx-base tsx-ha tsx-ledbar tsx-kiosk tsx-buttons tsx-idled tsx-setup tsx-autoupdate tsx-splash tsx-rescue-ui tsx-fake-board tsx-fake-board-ha; do
 	sh "$BIN" __needs_reboot "chromium $pkg"; chk $? 0 "$pkg needs a reboot (running services keep the old code)"

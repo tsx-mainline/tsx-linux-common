@@ -16,6 +16,8 @@
 #   TSX_FAKE_NO_MAC     any value: the board gives no MAC
 #   TSX_CONFIG_RELOAD   the services that tsx-config apply reloads when the
 #                       sensor settings change (default "fakesvc1 fakesvc2")
+#   TSX_PKG_PREFIX      not set here, so the default tsx-$TSX_FAMILY applies.
+#                       A test sets it in the environment to try another prefix.
 
 TSX_FAMILY=${TSX_FAMILY:-fake}
 TSX_APK_CATEGORY=${TSX_APK_CATEGORY:-fake}

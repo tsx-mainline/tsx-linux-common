@@ -54,7 +54,7 @@ If an earlier install left "restart required" and `AUTO_RESTART` is on later, th
 
 ## Versions
 
-Home Assistant shows release numbers, for example `0.3.5`. The release number is the version of the board package `tsx-<family>-board` (`tsx-xx50-board`, `tsx-xx60-board`). A panel without that package uses the version of `tsx-base`.
+Home Assistant shows release numbers, for example `0.3.5`. The release number is the version of the board package `PREFIX-board` (`PREFIX` is `TSX_PKG_PREFIX`, default `tsx-<family>`, for example `tsx-xx50-board`). A panel without that package uses the version of `tsx-base`.
 
 | Field | Value |
 |---|---|
@@ -102,9 +102,9 @@ If the file does not exist (a panel app that does not write it), the screen is i
 
 These packages need a restart of the panel after the install. The rule applies to an upgrade and to a new package.
 
-- The kernel package of the board family: `tsx-<family>-kernel*` (`TSX_FAMILY` of the board file). The kernel package of another family needs no restart.
+- The kernel package of the board family: `PREFIX-kernel*`. `PREFIX` is `TSX_PKG_PREFIX` of the board file. Without that value, it is `tsx-<family>` (`TSX_FAMILY` of the board file). The kernel package of another family needs no restart.
 - `linux*`, `musl*`, `openrc*` and `busybox*`.
-- Every other `tsx-*` package, except `tsx-keys` (a public key) and `tsx-ledbar-fw` (a tool). An upgrade of `tsx-ledbar-fw` never loads the LED bar: see [LED bar image](#led-bar-image). A running service keeps the code that it started with until it starts again.
+- Every other `tsx-*` package and every `PREFIX-*` package, except `tsx-keys` (a public key) and `tsx-ledbar-fw` (a tool). An upgrade of `tsx-ledbar-fw` never loads the LED bar: see [LED bar image](#led-bar-image). A running service keeps the code that it started with until it starts again.
 
 ## LED bar image
 

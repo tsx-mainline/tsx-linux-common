@@ -32,7 +32,8 @@ case "\$1 \${2:-}" in
 	exit "\${APK_UPGRADE_RC:-0}";;
 "info -v") printf 'libfoo-%s-r0\nmusl-1.2.5-r0\ntsx-base-%s-r0\n' "\${LIBFOO_INSTALLED:-1.0.0}" "\$(cat "$T/base.ver")"
 	# the board package and one of its subpackages (a digit must follow the name)
-	[ -f "$T/board.ver" ] && printf 'tsx-fake-board-%s-r2\ntsx-fake-board-ha-9.9.9-r0\n' "\$(cat "$T/board.ver")"
+	# BOARDPKG names the board package (a test of TSX_PKG_PREFIX sets it)
+	[ -f "$T/board.ver" ] && printf '%s-%s-r2\n%s-ha-9.9.9-r0\n' "\${BOARDPKG:-tsx-fake-board}" "\$(cat "$T/board.ver")" "\${BOARDPKG:-tsx-fake-board}"
 	exit 0;;
 esac
 exit 0
@@ -568,6 +569,25 @@ ha .release_summary | tail -1 | grep -q '^WARNING: tsx-aports repository unreach
 ha .release_summary | sed -n 4p | grep -q '^$' || { echo "FAIL: 20i: no blank line before the warning"; fail=1; }
 : > "$T/update.txt"
 conf auto on
+
+# 20j: TSX_PKG_PREFIX names the packages of the board family
+# Without the value, the prefix is tsx-$TSX_FAMILY. The made-up board does not set it.
+reset_state 22
+printf '(1/2) Upgrading cp-board (0.3.5-r2 -> 0.3.6-r0)\n(2/2) Upgrading tsx-base (0.3.5-r0 -> 0.3.6-r0)\n' > "$T/sim.txt"
+NOWDATE=2026-02-06 NOWHHMM=12:00 run check >/dev/null
+chk "$(ha .installed_version)/$(ha .latest_version)" "0.3.5/0.3.5 + 2 packages" "20j: default prefix: cp-board is not the board package"
+TSX_PKG_PREFIX=cp BOARDPKG=cp-board NOWDATE=2026-02-06 NOWHHMM=12:01 run check >/dev/null
+chk "$(ha .installed_version)/$(ha .latest_version)" 0.3.5/0.3.6 "20j: prefix cp: cp-board carries the release"
+printf '(1/1) Upgrading cp-board (0.3.5-r2 -> 0.3.6-r0)\n' > "$T/sim.txt"
+TSX_PKG_PREFIX=cp BOARDPKG=cp-board NOWDATE=2026-02-06 NOWHHMM=12:02 run check >/dev/null
+chk "$(jf "$T/run/update.json" .reboot_pending)" true "20j: prefix cp: a package of the prefix needs a restart"
+printf '(1/1) Upgrading cp-kernel-lts (6.18.54-r1 -> 6.18.55-r0)\n' > "$T/sim.txt"
+TSX_PKG_PREFIX=cp NOWDATE=2026-02-06 NOWHHMM=12:03 run check >/dev/null
+chk "$(jf "$T/run/update.json" .reboot_pending)" true "20j: prefix cp: the kernel package of the prefix needs a restart"
+printf '(1/1) Upgrading tsx-fake-board (0.3.5-r2 -> 0.3.6-r0)\n' > "$T/sim.txt"
+TSX_PKG_PREFIX=cp NOWDATE=2026-02-06 NOWHHMM=12:04 run check >/dev/null
+chk "$(ha .latest_version)" "0.3.5 + 1 package" "20j: prefix cp: tsx-fake-board is not the board package"
+reset_state 23
 
 # ---- 14: no Chromium call at all ------------------------------------------------
 grep -qi chromium "$T/apk.calls" "$T/calls" "$T/tsx-autoupdate.log" && { echo "FAIL: 14: a Chromium call or log line"; fail=1; }
