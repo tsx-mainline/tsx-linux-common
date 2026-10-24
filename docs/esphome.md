@@ -92,8 +92,8 @@ The `tsx-hw` of the board writes the kind of the presence sensor to `PRESENCE` i
 
 | `PRESENCE` | Presence | Distance |
 |---|---|---|
-| `no` | no | no |
-| `tof`, `yes`, missing key | yes | yes |
+| `no`, missing key | no | no |
+| `tof`, `yes` | yes | yes |
 | `pir` | yes | no |
 
 An entity needs `/run/tsx/presence.state` too. The object ids `presence` and `distance` and their keys do not change with the kind. `tsx-mqtt` follows the same rule, and clears the Distance discovery topic with `pir`.

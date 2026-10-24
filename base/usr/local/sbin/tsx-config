@@ -155,7 +155,8 @@ SEED=${TSX_CONF_SEED:-/etc/tsx/panel.conf.seed}
 # absolute.
 PREFIX=${TSX_APPLY_PREFIX:-}
 # The hardware facts of the panel (tsx-hw detect, at boot). A missing file
-# (host tooling, an early boot) means a panel with all parts.
+# (host tooling, an early boot) means a panel with all parts. The exception
+# is the presence sensor: a missing PRESENCE key means no sensor.
 HW_CONF=${TSX_HW_CONF:-$RUN/hw.conf}
 # The board values (TSX_FAMILY, TSX_APK_CATEGORY, TSX_BT_PROXY_DEFAULT,
 # TSX_BT_MAC_SETTABLE, TSX_CONFIG_RELOAD). Test hook: TSX_BOARD_CONF. The installer runs this
@@ -171,8 +172,9 @@ if [ -r "$PKIND" ]; then
 	. "$PKIND"
 else
 	# A copy of this script without the helper (the installer stages the script
-	# alone) keeps no, pir and tof. It does not warn about an unknown value.
-	presence_kind() { [ "${1:-}" = -q ] && shift; case "${1:-}" in no|pir) echo "$1";; *) echo tof;; esac; }
+	# alone) keeps the rule of presence-kind.sh, the authority: pir, tof and
+	# yes, and everything else is no. It does not warn about an unknown value.
+	presence_kind() { [ "${1:-}" = -q ] && shift; case "${1:-}" in pir) echo pir;; tof|yes) echo tof;; *) echo no;; esac; }
 fi
 
 KNOWN_KEYS="PANEL_NAME KIOSK_URL KIOSK_DARK HA_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_API_KEY HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR APK_URL BLANK_TIMEOUT KEY_LED_BLANK BOOT_VERBOSE ORIENTATION BT_PROXY BT_ACTIVE BT_MAC PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE UPDATE_MODE UPDATE_AUTO_RESTART ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"

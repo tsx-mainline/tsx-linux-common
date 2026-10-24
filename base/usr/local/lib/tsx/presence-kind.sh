@@ -8,15 +8,19 @@
 #   no            no sensor
 #   tof           time-of-flight sensor: presence and distance
 #   pir           motion sensor: presence only
-#   yes, empty    tof (yes is the old name. A missing key means the part is there.)
+#   yes           tof (yes is the old name)
+#   empty         no, with no warning (a missing key means no sensor)
 #   other         no, with a warning on stderr (-q turns the warning off)
+#
+# This file is the authority. The small copies in tsx-config, tsx-mqtt,
+# tsx-setupd and the ESPHome shim (hw.py) keep the same rule, with no warning.
 presence_kind() {
 	_pk_q=0
 	if [ "${1:-}" = -q ]; then _pk_q=1; shift; fi
 	case "${1:-}" in
-	no) echo no;;
+	no|"") echo no;;
 	pir) echo pir;;
-	tof|yes|"") echo tof;;
+	tof|yes) echo tof;;
 	*)
 		[ "$_pk_q" = 1 ] || echo "WARNING: PRESENCE=$1 in hw.conf is not no, tof, pir or yes. Treated as no." >&2
 		echo no;;

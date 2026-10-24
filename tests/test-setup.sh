@@ -778,7 +778,7 @@ fi
 # ---- 5b. a panel without a microphone or a Bluetooth module (hw.conf, REASON)
 echo "== no microphone, no Bluetooth module (hw.conf): the page says why =="
 out=$(call GET /setup/api/state); body=$(body_of "$out")
-[ "$(jget unavailable <<<"$body")" = "{}" ] && ok "no hw.conf: nothing is marked not available" || bad "no hw.conf: unavailable = $(jget unavailable <<<"$body")"
+[ "$(jget unavailable <<<"$body")" = "{'PRESENCE_WAKE': 'no distance sensor on this panel'}" ] && ok "no hw.conf: only the presence fields are not available (a missing PRESENCE is no)" || bad "no hw.conf: unavailable = $(jget unavailable <<<"$body")"
 printf 'MIC=no\nBT=no\nREASON=FAKE-100 NC variant\n' > "$RUNDIR/hw.conf"
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget unavailable.VOICE <<<"$body")" = "no microphone on this panel (FAKE-100 NC variant)" ] \

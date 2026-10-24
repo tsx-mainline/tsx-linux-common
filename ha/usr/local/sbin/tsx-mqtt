@@ -104,8 +104,9 @@ PKIND=${TSX_PRESENCE_KIND_SH:-/usr/local/lib/tsx/presence-kind.sh}
 if [ -r "$PKIND" ]; then
 	. "$PKIND"
 else
-	# A rootfs without the helper file keeps no, pir and tof (no warning)
-	presence_kind() { [ "${1:-}" = -q ] && shift; case "${1:-}" in no|pir) echo "$1";; *) echo tof;; esac; }
+	# A rootfs without the helper file keeps the rule of presence-kind.sh, the
+	# authority: pir, tof and yes, and everything else is no (no warning)
+	presence_kind() { [ "${1:-}" = -q ] && shift; case "${1:-}" in pir) echo pir;; tof|yes) echo tof;; *) echo no;; esac; }
 fi
 HWCONF=${TSX_HW_CONF:-$R/hw.conf}
 PCTL=${TSX_PANELCTL_BIN:-tsx-panelctl}   # the hardware interface of the base system

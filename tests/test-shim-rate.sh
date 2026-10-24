@@ -229,6 +229,7 @@ check("entity: no Throttle, a change goes out at once", plain._state != before, 
 os.makedirs(t_dir + "/run", exist_ok=True)
 open(t_dir + "/run/als.state", "w").write("report 10\nauto on\n")
 open(t_dir + "/run/presence.state", "w").write("present on\ndistance 700\n")
+open(t_dir + "/run/hw.conf", "w").write("PRESENCE=tof\n")
 open(t_dir + "/none-als", "w").write("")
 os.environ["TSX_ALS_CONF"] = t_dir + "/none-als"
 open(t_dir + "/thermal", "w").write("42000\n")

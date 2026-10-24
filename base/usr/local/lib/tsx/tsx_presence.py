@@ -5,8 +5,12 @@ both the same.
   no            no sensor
   tof           time-of-flight sensor: presence and distance
   pir           motion sensor: presence only
-  yes, empty    tof (yes is the old name. A missing key means the part is there.)
+  yes           tof (yes is the old name)
+  empty         no, with no warning (a missing key means no sensor)
   other         no, with a warning
+
+This file is the authority. The small copies in hw.py of the ESPHome shim and
+in tsx-setupd keep the same rule, with no warning.
 """
 
 import logging
@@ -19,7 +23,9 @@ _LOGGER = logging.getLogger("tsx.presence")
 def kind(raw, warn=True):
     """The kind ("no", "tof" or "pir") for the raw value of PRESENCE."""
     raw = (raw or "").strip()
-    if raw in ("tof", "yes", ""):
+    if raw == "":
+        return NO
+    if raw in ("tof", "yes"):
         return TOF
     if raw in (NO, PIR):
         return raw

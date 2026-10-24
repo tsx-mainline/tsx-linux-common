@@ -22,6 +22,7 @@ ok() { N=$((N + 1)); }
 fail() { F=$((F + 1)); echo "FAIL: $*"; }
 up() { echo "$1 99.0" > "$T/uptime"; }
 als() { printf 'report %s\nauto on\n' "$1" > "$T/run/als.state"; }
+printf 'PRESENCE=tof\n' > "$T/run/hw.conf"
 pres() { printf 'present %s\ndistance %s\n' "$1" "$2" > "$T/run/presence.state"; }
 now() { echo "$1" > "$T/now"; }
 step() { sleep 0.35; }   # the dry run takes a line when it is there. The pause keeps the state files and the ticks in order

@@ -17,12 +17,12 @@ for _lib in (os.environ.get("TSX_BASE_LIB_DIR", "/usr/local/lib/tsx"),
         sys.path.append(_lib)
 try:
     import tsx_presence  # noqa: E402  pylint: disable=wrong-import-position
-except ImportError:  # a rootfs without the helper file keeps no, pir and tof (no warning)
+except ImportError:  # a rootfs without the helper file keeps the rule of tsx_presence.py, the authority (no warning)
     class tsx_presence:  # noqa: N801  pylint: disable=invalid-name,too-few-public-methods
         @staticmethod
         def kind(raw, warn=True):  # pylint: disable=unused-argument
             raw = (raw or "").strip()
-            return raw if raw in ("no", "pir") else "tof"
+            return "pir" if raw == "pir" else "tof" if raw in ("tof", "yes") else "no"
 
 
 def conf_path():
@@ -61,5 +61,5 @@ def reason_tail(path=None):
 
 def presence_kind(path=None):
     """The kind of the presence sensor: "no", "tof" or "pir" (PRESENCE of
-    hw.conf, see tsx_presence). A missing key is "tof"."""
+    hw.conf, see tsx_presence). A missing key is "no"."""
     return tsx_presence.kind(get("PRESENCE", path))

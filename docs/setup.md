@@ -113,9 +113,9 @@ The *Sensors* section has the fields `PRESENCE_WAKE`, `PRESENCE_HOLD_S` and `PRE
 
 | `PRESENCE` | Fields |
 |---|---|
-| `tof`, `yes`, missing key | Wake, hold time and near distance |
+| `tof`, `yes` | Wake, hold time and near distance |
 | `pir` | Wake and hold time. The distance field is hidden, because a motion sensor does not measure a distance. |
-| `no` | None |
+| `no`, missing key | None |
 
 An unknown value counts as `no`. A save leaves the hidden keys as they are. The rule is in [layout.md](layout.md#presence-sensor-kind).
 

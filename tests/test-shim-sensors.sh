@@ -24,6 +24,8 @@ assert b.get_backlight_max() == 4095
 w("brightness.state", "level 5\nmax 255\n")
 assert b.get_backlight_max() == 255
 w("presence.state", "present on\ndistance 640\n")
+assert not b.presence_present() and not b.distance_present()   # no PRESENCE in hw.conf: no sensor
+w("hw.conf", "PRESENCE=tof\n")
 assert b.presence_present() and b.get_presence() is True and b.get_distance() == 640.0
 w("presence.state", "present off\ndistance none\n")
 assert b.get_presence() is False and b.get_distance() is None

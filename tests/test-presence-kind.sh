@@ -1,7 +1,7 @@
 #!/bin/sh
 # Host test of the kind of the presence sensor: PRESENCE in hw.conf is no, tof
-# or pir. yes is the old name of tof. A missing key is tof. An unknown value is
-# no, with a warning. The test covers:
+# or pir. yes is the old name of tof. A missing key is no, with no
+# warning. An unknown value is no, with a warning. The test covers:
 #  - the helper (presence-kind.sh and tsx_presence.py)
 #  - tsx-config: the warning for a key the kind does not use, and sensors.conf
 #  - the setup page: the fields that the page hides
@@ -20,7 +20,7 @@ bad() { echo "  FAIL: $*"; F=$((F+1)); }
 is() { [ "$2" = "$3" ] && ok "$1" || bad "$1: got '$2', want '$3'"; }
 BASELIB=$HERE/base/usr/local/lib/tsx
 # value -> kind: the table of the rule
-RULE="no:no tof:tof pir:pir yes:tof empty:tof bogus:no"
+RULE="no:no tof:tof pir:pir yes:tof empty:no bogus:no"
 raw_of() { case $1 in empty) echo;; *) echo "$1";; esac; }
 
 echo "== the helper in shell =="
@@ -29,7 +29,8 @@ for pair in $RULE; do
 	v=${pair%%:*}; want=${pair#*:}
 	is "presence_kind '$v'" "$(presence_kind "$(raw_of "$v")" 2>/dev/null)" "$want"
 done
-is "presence_kind with no argument" "$(presence_kind 2>/dev/null)" tof
+is "presence_kind with no argument" "$(presence_kind 2>/dev/null)" no
+is "an empty value does not warn" "$(presence_kind "" 2>&1)" no
 is "an unknown value warns on stderr" "$(presence_kind bogus 2>&1 >/dev/null | grep -c '^WARNING: PRESENCE=bogus in hw.conf is ')" 1
 is "-q turns the warning off" "$(presence_kind -q bogus 2>&1)" no
 is "a known value does not warn" "$(presence_kind pir 2>&1 >/dev/null)" ""
@@ -40,7 +41,7 @@ import logging, sys
 sys.path.insert(0, sys.argv[1])
 import tsx_presence as p
 logging.basicConfig(level=logging.CRITICAL)
-for raw, want in (("no", "no"), ("tof", "tof"), ("pir", "pir"), ("yes", "tof"), ("", "tof"), (None, "tof"), (" pir ", "pir"),
+for raw, want in (("no", "no"), ("tof", "tof"), ("pir", "pir"), ("yes", "tof"), ("", "no"), (None, "no"), (" pir ", "pir"),
                   ("bogus", "no"), ("TOF", "no")):
     assert p.kind(raw, warn=False) == want, (raw, p.kind(raw, warn=False))
 assert [p.has_presence(k) for k in ("no", "tof", "pir")] == [False, True, True]
@@ -89,10 +90,10 @@ printf 'PRESENCE=no\n' > "$FX/hw.conf"
 is "set PRESENCE_WAKE with no: the warning" "$(cfg set PRESENCE_WAKE on 2>&1 | grep -c 'no distance sensor')" 1
 printf 'PRESENCE=tof\n' > "$FX/hw.conf"
 is "set PRESENCE_DISTANCE_MM with tof: no warning" "$(cfg set PRESENCE_DISTANCE_MM 700 2>&1 | grep -c WARNING)" 0
-# a copy of tsx-config without the helper (the installer stages the script alone) keeps no, pir and tof
+# a copy of tsx-config without the helper (the installer stages the script alone) keeps the same rule
 mkdir -p "$T/alone"; cp "$SCRIPT" "$T/alone/tsx-config"
-for pair in no:no pir:pir yes:tof; do
-	printf 'PRESENCE=%s\n' "${pair%%:*}" > "$FX/hw.conf"
+for pair in no:no pir:pir yes:tof tof:tof bogus:no empty:no; do
+	case ${pair%%:*} in empty) printf 'MIC=yes\n' > "$FX/hw.conf";; *) printf 'PRESENCE=%s\n' "${pair%%:*}" > "$FX/hw.conf";; esac
 	n=$(env TSX_CONF="$CFG" TSX_HW_CONF="$FX/hw.conf" busybox sh "$T/alone/tsx-config" set PRESENCE_DISTANCE_MM 500 2>&1 | grep -c 'no distance sensor')
 	case ${pair#*:} in tof) w=0;; *) w=1;; esac
 	is "without the helper file, PRESENCE=${pair%%:*}: PRESENCE_DISTANCE_MM warning" "$n" "$w"
@@ -216,9 +217,9 @@ for pair in $RULE; do
 	is "MQTT, PRESENCE=$v ($kind): presence config, distance config, distance cleared, presence state, distance state" "$p $d $c $ps $ds" "$w"
 	if [ "$v" = bogus ]; then grep -q 'WARNING: PRESENCE=bogus in hw.conf' "$T/mout" && ok "MQTT logs the unknown value" || bad "MQTT: no warning for PRESENCE=bogus"; fi
 done
-# a rootfs without the helper file: no, pir and tof still work
+# a rootfs without the helper file: the same rule, with no warning
 mkdir -p "$T/alone2/usr/local/sbin"; cp "$(P usr/local/sbin/tsx-mqtt)" "$T/alone2/usr/local/sbin/tsx-mqtt"; MQBIN=$T/alone2/usr/local/sbin/tsx-mqtt
-for pair in pir:1:0 tof:1:1 no:0:0 yes:1:1; do
+for pair in pir:1:0 tof:1:1 no:0:0 yes:1:1 empty:0:0 bogus:0:0; do
 	IFS=: read -r v p d <<EOT
 $pair
 EOT

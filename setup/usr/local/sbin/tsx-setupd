@@ -170,14 +170,14 @@ sys.path.append(os.environ.get("TSX_BASE_LIB_DIR", "/usr/local/lib/tsx"))
 sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", "..", "base", "usr", "local", "lib", "tsx"))
 try:
     import tsx_presence  # noqa: E402
-except ImportError:  # a rootfs without the helper file keeps no, pir and tof (no warning)
+except ImportError:  # a rootfs without the helper file keeps the rule of tsx_presence.py, the authority (no warning)
     class tsx_presence:  # noqa: N801
         NO, TOF, PIR = "no", "tof", "pir"
 
         @staticmethod
         def kind(raw, warn=True):
             raw = (raw or "").strip()
-            return raw if raw in ("no", "pir") else "tof"
+            return "pir" if raw == "pir" else "tof" if raw in ("tof", "yes") else "no"
 
 TSX_CONFIG_BIN = os.environ.get("TSX_CONFIG_BIN", "tsx-config")
 ZONEINFO_DIR = os.environ.get("TSX_ZONEINFO_DIR", "/usr/share/zoneinfo")
@@ -870,7 +870,8 @@ _presence_warned = False    # warn once about an unknown PRESENCE, not at every 
 
 def hw_unavailable():
     """The settings that this panel cannot use, with the reason
-    (hw.conf of tsx-hw. A missing file = a panel with all parts)."""
+    (hw.conf of tsx-hw. A missing file = a panel with all parts,
+    except the presence sensor: a missing PRESENCE key = no sensor)."""
     hw = load_conf(HW_CONF_PATH)
     out = {}
     # ALS=no or LIGHT=no: a board names its light sensor part either way
