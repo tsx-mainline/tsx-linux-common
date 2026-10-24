@@ -98,6 +98,17 @@ The screen service writes the screen state to `/run/tsx-idled.state`. `tsx-idled
 
 If the file does not exist (a panel app that does not write it), the screen is idle when every backlight in `/sys/class/backlight` is at 0. With no file and no backlight, the screen is never idle.
 
+## Board hook
+
+A board can define the function `tsx_board_pre_update` in `board.sh`. A board with A/B boot uses it to arm its boot slot, so that a bad upgrade falls back to the old system.
+
+1. `tsx-autoupdate` runs `apk update` and `apk upgrade --simulate`.
+2. If no package is pending, it stops. It does not call the function.
+3. Before it runs `apk upgrade`, it calls the function and writes the output to the log.
+4. If the function exits with a non-zero status, `tsx-autoupdate` does not start `apk upgrade`. It logs `ABORTED` and the status, and sets `last_result` to `pre-update hook rc=N`.
+
+An aborted install changes nothing. The packages stay pending, and the next install tries again. Without the function, the install starts at once.
+
 ## Restart rule
 
 These packages need a restart of the panel after the install. The rule applies to an upgrade and to a new package.

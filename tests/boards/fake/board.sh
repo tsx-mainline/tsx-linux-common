@@ -16,6 +16,10 @@
 #   TSX_FAKE_NO_MAC     any value: the board gives no MAC
 #   TSX_CONFIG_RELOAD   the services that tsx-config apply reloads when the
 #                       sensor settings change (default "fakesvc1 fakesvc2")
+#   TSX_FAKE_PRE_UPDATE a file: the board then has tsx_board_pre_update. It
+#                       appends the number of "APK upgrade" lines of the file
+#                       TSX_FAKE_PRE_UPDATE_PEEK to the file and exits with
+#                       TSX_FAKE_PRE_UPDATE_RC (default 0)
 #   TSX_PKG_PREFIX      not set here, so the default tsx-$TSX_FAMILY applies.
 #                       A test sets it in the environment to try another prefix.
 
@@ -64,3 +68,12 @@ tsx_board_ledbar_map() {
 	FAKE-100|FAKE-100-*) echo FAKE-LB;;
 	esac
 }
+
+# tsx_board_pre_update: the optional hook that tsx-autoupdate runs before an
+# install. The fake board has it only when a test asks for it.
+if [ -n "${TSX_FAKE_PRE_UPDATE:-}" ]; then
+	tsx_board_pre_update() {
+		grep -c '^APK upgrade$' "${TSX_FAKE_PRE_UPDATE_PEEK:-/dev/null}" >> "$TSX_FAKE_PRE_UPDATE" || :
+		return "${TSX_FAKE_PRE_UPDATE_RC:-0}"
+	}
+fi

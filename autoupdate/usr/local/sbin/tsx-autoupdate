@@ -99,7 +99,8 @@ set -u
 NL='
 '
 
-# The board values (TSX_FAMILY, TSX_APK_CATEGORY, TSX_PKG_PREFIX). Test hook:
+# The board values (TSX_FAMILY, TSX_APK_CATEGORY, TSX_PKG_PREFIX and the
+# optional function tsx_board_pre_update). Test hook:
 # TSX_BOARD_CONF. TSX_PKG_PREFIX is the start of the package names of the
 # board family. Without it, the prefix is tsx-$TSX_FAMILY.
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
@@ -630,6 +631,18 @@ do_install() {
 	if [ "$di_blocked" = 1 ]; then
 		log "install: not installing: $di_rw"
 		return 0
+	fi
+	# The board hook runs before the first change. A board with A/B boot arms
+	# its boot slot here, so that a bad upgrade falls back. A hook that fails
+	# stops the install. Nothing has changed then.
+	if command -v tsx_board_pre_update >/dev/null 2>&1; then
+		log "running tsx_board_pre_update"
+		tsx_board_pre_update >>"$LOG" 2>&1; hrc=$?
+		if [ $hrc -ne 0 ]; then
+			log "install: ABORTED, tsx_board_pre_update failed rc=$hrc. Nothing was changed"
+			set_fields "$f" last_result="pre-update hook rc=$hrc"; write_status
+			return 0
+		fi
 	fi
 	# If only the repositories of this project are unavailable, install what the others offer.
 	[ -n "$di_rw" ] && APK_FORCE=--force-missing-repositories

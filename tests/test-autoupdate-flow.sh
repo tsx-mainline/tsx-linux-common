@@ -589,6 +589,35 @@ TSX_PKG_PREFIX=cp NOWDATE=2026-02-06 NOWHHMM=12:04 run check >/dev/null
 chk "$(ha .latest_version)" "0.3.5 + 1 package" "20j: prefix cp: tsx-fake-board is not the board package"
 reset_state 23
 
+# 20k: tsx_board_pre_update runs before the first change and can stop the install
+HOOK="$T/hook.out"
+reset_state 24; rm -f "$HOOK"
+printf "$SIM_BOARD" > "$T/sim.txt"; echo 0.3.6 > "$T/board.next"
+export TSX_FAKE_PRE_UPDATE=$HOOK TSX_FAKE_PRE_UPDATE_PEEK=$T/apk.calls
+TSX_FAKE_PRE_UPDATE_RC=0 NOWDATE=2026-02-07 NOWHHMM=12:00 run check >/dev/null
+chk "$(cat "$HOOK" 2>/dev/null | wc -l)" 0 "20k: a check does not call the hook"
+TSX_FAKE_PRE_UPDATE_RC=0 NOWDATE=2026-02-07 NOWHHMM=12:01 run now >/dev/null
+chk "$(cat "$HOOK" 2>/dev/null | tr '\n' ' ')" "0 " "20k: the hook ran once, before the first apk upgrade"
+grep -q '^APK upgrade$' "$T/apk.calls" || { echo "FAIL: 20k: no apk upgrade after a good hook"; fail=1; }
+# a hook that fails: no upgrade, a log line, the update stays pending
+reset_state 25; rm -f "$HOOK"
+printf "$SIM_BOARD" > "$T/sim.txt"; echo 0.3.6 > "$T/board.next"
+TSX_FAKE_PRE_UPDATE_RC=3 NOWDATE=2026-02-07 NOWHHMM=12:10 run check >/dev/null
+TSX_FAKE_PRE_UPDATE_RC=3 NOWDATE=2026-02-07 NOWHHMM=12:11 run now >/dev/null
+chk "$(wc -l < "$HOOK")" 1 "20k: the failing hook ran once"
+grep -q '^APK upgrade *$' "$T/apk.calls" && { echo "FAIL: 20k: apk upgrade ran after a failed hook"; fail=1; }
+grep -q 'ABORTED, tsx_board_pre_update failed rc=3' "$T/tsx-autoupdate.log" || { echo "FAIL: 20k: no log line for the failed hook"; fail=1; }
+chk "$(sed -n 's/^last_result //p' "$T/state/fields")" "pre-update hook rc=3" "20k: last_result names the hook"
+chk "$(jf "$T/run/update.json" .pending_count)" 2 "20k: the update stays pending"
+chk "$(jf "$T/run/update.json" .in_progress)" false "20k: no install in progress"
+# nothing pending: the hook does not run
+reset_state 26; rm -f "$HOOK"
+TSX_FAKE_PRE_UPDATE_RC=0 NOWDATE=2026-02-07 NOWHHMM=12:20 run check >/dev/null
+TSX_FAKE_PRE_UPDATE_RC=0 NOWDATE=2026-02-07 NOWHHMM=12:21 run now >/dev/null
+[ ! -s "$HOOK" ] || { echo "FAIL: 20k: the hook ran with nothing to install"; fail=1; }
+unset TSX_FAKE_PRE_UPDATE TSX_FAKE_PRE_UPDATE_PEEK
+reset_state 27
+
 # ---- 14: no Chromium call at all ------------------------------------------------
 grep -qi chromium "$T/apk.calls" "$T/calls" "$T/tsx-autoupdate.log" && { echo "FAIL: 14: a Chromium call or log line"; fail=1; }
 
