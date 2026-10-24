@@ -401,4 +401,48 @@ grep -q '^tsx-buttons: 0 buttons, 0 bindings, 0 key LEDs' $T/buttons3.log || fai
 [ "$(sed -n 's/^leds //p' $T/run2/buttons.state)" = no ] || fail "no board layer: leds no expected"
 ok "buttons.conf template, no board layer: no keys, no key LEDs, leds no"
 kill -TERM $B3; sleep 0.2
+# LED_MODE=onoff: the key LEDs are independent on/off LEDs. There is no LED_PWM.
+# LED_KEY_PREFIX names key LEDs 1 and 3. LED_KEY_2 names key LED 2 by hand. The
+# level only tells on (above 0) or off.
+for d in leds4 run4 input4; do mkdir -p $T/$d; done
+mkfifo $T/input4/event0
+for l in ucp:k1 ucp:special ucp:k3; do mkdir -p "$T/leds4/$l"; echo 0 > "$T/leds4/$l/brightness"; done
+cat > $T/board4.conf <<C
+LED_MODE=onoff
+LED_KEY_PREFIX=ucp:k
+LED_KEY_2=ucp:special
+button ka KEY_F13 led=1
+button kb KEY_F14 led=2
+button kc KEY_F15 led=3
+button kd KEY_F16
+C
+printf 'KIOSK_CONF=%s/kiosk.conf\nLED_DAY=128\nLED_NIGHT=24\nLED_BLANK=0\n' $T > $T/buttons4.conf
+env4="TSX_INPUT_DIR=$T/input4 TSX_LED_DIR=$T/leds4 TSX_BACKLIGHT_DIR=$T/bl TSX_RUN_DIR=$T/run4 TSX_IDLED_STATE=$T/none TSX_HOSTNAME=testpanel TSX_PANEL_BOARD_CONF=$T/panel-board.conf"
+env $env4 TSX_BUTTONS_BOARD_CONF=$T/board4.conf $T/tsx-buttons -c $T/buttons4.conf -v 2>$T/buttons4.log & B4=$!; PIDS="$PIDS $B4"
+exec 8<>$T/input4/event0
+ctl4() { echo "$*" > $T/run4/buttons.ctl; sleep 0.3; }
+led4() { cat "$T/leds4/ucp:$1/brightness"; }
+st4() { sed -n "s/^$1 //p" $T/run4/buttons.state; }
+sleep 0.6
+grep -q '^tsx-buttons: 4 buttons, 0 bindings, 3 key LEDs' $T/buttons4.log || fail "onoff: $(grep ' buttons, ' $T/buttons4.log | tail -n 1)"
+[ "$(led4 k1)$(led4 special)$(led4 k3)" = 111 ] || fail "onoff: key LEDs $(led4 k1) $(led4 special) $(led4 k3), want 1 1 1 (the day level 128 writes 1)"
+[ "$(st4 leds)" = yes ] && [ "$(st4 led)" = "128 day" ] || fail "onoff: state $(tr '\n' ';' < $T/run4/buttons.state)"
+ctl4 "led off"
+[ "$(led4 k1)$(led4 special)$(led4 k3)" = 000 ] || fail "onoff: led off left a key LED on"
+ctl4 "led 40"
+[ "$(led4 k1)$(led4 special)$(led4 k3)" = 111 ] || fail "onoff: led 40 wrote '$(led4 k1)$(led4 special)$(led4 k3)', want 111 (on, not 40)"
+ctl4 "key 2 off"
+[ "$(led4 k1)$(led4 special)$(led4 k3)" = 101 ] || fail "onoff: key 2 off: '$(led4 k1)$(led4 special)$(led4 k3)'"
+ctl4 "key kb auto"; ctl4 "led auto"
+[ "$(led4 special)" = 1 ] && [ "$(st4 key_leds)" = "1 1 1" ] || fail "onoff: key kb auto: $(tr '\n' ';' < $T/run4/buttons.state)"
+ok "LED_MODE=onoff: LED_KEY_PREFIX and LED_KEY_2 name the LEDs, a level above 0 writes 1, led off, key off and auto"
+# LED_MODE in buttons.conf replaces the board layer. Back to pwm there is no LED_PWM, so no key LEDs.
+echo 'LED_MODE=pwm' >> $T/buttons4.conf; kill -HUP $B4; sleep 0.5
+[ "$(st4 leds)" = no ] || fail "pwm without LED_PWM: leds $(st4 leds), want no"
+echo 'LED_MODE=bogus' >> $T/buttons4.conf; kill -HUP $B4; sleep 0.5
+grep -q 'LED_MODE=bogus is unknown' $T/buttons4.log && [ "$(st4 leds)" = no ] || fail "bad LED_MODE: no warning or not pwm: $(grep LED_MODE $T/buttons4.log)"
+echo 'LED_MODE=onoff' >> $T/buttons4.conf; rm -rf "$T/leds4/ucp:k1" "$T/leds4/ucp:special" "$T/leds4/ucp:k3"; kill -HUP $B4; sleep 0.5
+[ "$(st4 leds)" = no ] || fail "onoff with no LED device: leds $(st4 leds), want no"
+ok "LED_MODE in buttons.conf replaces the board layer. pwm without LED_PWM, a bad value (pwm) and onoff with no device give leds no"
+kill -TERM $B4; sleep 0.2
 echo "ALL OK"; echo "--- tsx-buttons log"; cat $T/buttons.log

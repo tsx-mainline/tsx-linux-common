@@ -62,6 +62,18 @@ An override from `tsx-keypad led` or from Home Assistant holds across blank, wak
 4. Add one `button NAME KEYCODE led=N` line for each key.
 5. Install the file as `/etc/tsx/buttons-board.conf`.
 
+### Add the keys of a board with on/off key LEDs
+
+Use these steps when each key LED is its own LED class device that only turns on and off, for example a GPIO LED. The board has no PWM LED for the brightness.
+
+1. Make the file `buttons-board.conf` in the board package.
+2. Set `LED_MODE=onoff`. Leave out `LED_PWM`.
+3. Name the LED of each key. Set `LED_KEY_N=NAME` for key LED `N`, or set `LED_KEY_PREFIX` so that `PREFIX1`, `PREFIX2` and so on are the LEDs. `LED_KEY_N` wins over the prefix.
+4. Add one `button NAME KEYCODE led=N` line for each key.
+5. Install the file as `/etc/tsx/buttons-board.conf`.
+
+A key LED is on while the level is above 0. The level has no other effect, so `LED_DAY`, `LED_NIGHT` and `LED_BLANK` only decide between on and off. A level of 0 turns every key LED off. The light in Home Assistant still shows the level. A key whose LED has no name has no LED. The panel has key LEDs when at least one of the named LEDs exists.
+
 Use a key name that tells the user which key it is. The name is part of the Home Assistant entity of the key. A board without LEDs leaves out `led=N`, `LED_PWM` and `LED_KEY_PREFIX`.
 
 ## Reference
@@ -79,7 +91,9 @@ Use a key name that tells the user which key it is. The name is part of the Home
 | Setting | Layer | Default | Meaning |
 |---|---|---|---|
 | `LED_PWM` | Board | none | LED class device with the brightness of all key LEDs. Without it, the panel has no key LEDs. |
-| `LED_KEY_PREFIX` | Board | none | Prefix of the enable LEDs. |
+| `LED_KEY_PREFIX` | Board | none | Prefix of the enable LEDs. With `LED_MODE=onoff`, the prefix of the key LEDs. |
+| `LED_KEY_N` | Board | none | LED class device of key LED `N` (1 to 16). It replaces the name that `LED_KEY_PREFIX` gives. |
+| `LED_MODE` | Board | `pwm` | `pwm`: one PWM LED (`LED_PWM`) sets the brightness, and an enable LED switches each key LED. `onoff`: each key LED is an independent on/off LED, and there is no `LED_PWM`. |
 | `SLIDE_STEP` | Board | 0 | Change of the backlight level for each key of a slide. 0 turns the slide off. |
 | `SLIDE_GAP_MS` | User | 250 | Time between two keys of a slide. |
 | `LONG_PRESS_MS` | User | 700 | Time for a long press. |
@@ -120,7 +134,7 @@ The highest backlight level is the `max` line of `/run/tsx/brightness.state`. Wi
 | Line | Meaning |
 |---|---|
 | `screen awake\|blank` | The screen state. |
-| `leds yes\|no` | `yes` when a key has an LED and the `LED_PWM` device exists. |
+| `leds yes\|no` | `yes` when a key has an LED and the `LED_PWM` device exists. With `LED_MODE=onoff`, `yes` when one of the named key LED devices exists. |
 | `led N SOURCE` | The level on the LEDs. `SOURCE` is `day`, `night`, `blank` or `override`. |
 | `led_awake N SOURCE` | The level while the screen is awake. The light in Home Assistant shows it. |
 | `led_blank N` | The level while the screen is blank. |

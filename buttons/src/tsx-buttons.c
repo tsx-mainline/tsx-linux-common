@@ -5,7 +5,9 @@
  * screen. The kernel reports each key as a key code on an input device. A key
  * can have an LED. The LEDs are LED class devices. All key LEDs share one PWM
  * LED for the brightness (LED_PWM). Each key LED also has an enable LED
- * (LED_KEY_PREFIX plus the number).
+ * (LED_KEY_PREFIX plus the number, or the name of LED_KEY_N).
+ * With LED_MODE=onoff, the key LEDs are independent on/off LEDs. There is no
+ * LED_PWM, and a level above 0 turns each key LED on.
  *
  * What the keys are comes from the board. The board layer
  * /etc/tsx/buttons-board.conf holds the `button` lines, the LED names and the
@@ -35,7 +37,8 @@
  *    every screen state. Any other override is the awake level only. While
  *    the screen is blank, the keys show LED_BLANK.
  *  - buttons.state has the line "leds yes" when the panel has key LEDs: a key
- *    with led=N, and the LED_PWM device. Else it has "leds no".
+ *    with led=N, and the LED_PWM device (LED_MODE=onoff: one of the key LED
+ *    devices). Else it has "leds no".
  *  - Brightness: "brightness N" writes /run/tsx/brightness, an absolute level.
  *    tsx-idled uses it in place of ALS or its day/night level until the next
  *    day/night change. "brightness +N|-N" and the key-strip slide are the
@@ -115,6 +118,9 @@ struct cfg {
 	char ha_url[256], ha_token_file[PATH_MAX], ha_event[64], kiosk_url[512];
 	char kiosk_conf[PATH_MAX], devtools[64], nav_fallback[16];
 	char led_pwm[64], led_key[64], backlight[PATH_MAX];
+	char led_mode[16];              /* "", "pwm" or "onoff" */
+	char led_name[MAXLED][64];      /* LED_KEY_N: the LED of key LED N (empty: LED_KEY_PREFIX + N) */
+	int led_onoff;                  /* LED_MODE=onoff */
 	struct button btn[MAXBTN]; int nbtn;
 	struct binding bind[MAXBIND]; int nbind;
 };
@@ -332,6 +338,13 @@ static void cfg_line(struct cfg *c, char *line, const char *path, int lineno, in
 	}
 	if (!(eq = strchr(p, '='))) { logm("%s:%d: ignored", path, lineno); return; }
 	*eq = 0; char *k = trim(p), *v = kv_value(eq + 1);
+	if (!strncmp(k, "LED_KEY_", 8) && isdigit((unsigned char)k[8])) {
+		/* LED_KEY_N=NAME: the LED class device of key LED N */
+		int n = atoi(k + 8);
+		if (k[8 + strspn(k + 8, "0123456789")] || n < 1 || n > MAXLED) { logm("%s:%d: %s is out of range (LED_KEY_1 to LED_KEY_%d)", path, lineno, k, MAXLED); return; }
+		snprintf(c->led_name[n - 1], sizeof c->led_name[n - 1], "%s", v);
+		return;
+	}
 #define I(n, f) if (!strcmp(k, n)) { c->f = atoi(v); return; }
 #define S(n, f) if (!strcmp(k, n)) { snprintf(c->f, sizeof c->f, "%s", v); return; }
 	I("LONG_PRESS_MS", long_ms) I("HOLD_REPEAT_MS", hold_ms) I("PRESS_FEEDBACK_MS", feedback_ms)
@@ -339,7 +352,7 @@ static void cfg_line(struct cfg *c, char *line, const char *path, int lineno, in
 	I("LED_BLANK", led_blank) I("LED_NIGHT_START", night_start) I("LED_NIGHT_END", night_end)
 	S("HA_URL", ha_url) S("HA_TOKEN_FILE", ha_token_file) S("HA_EVENT", ha_event)
 	S("KIOSK_CONF", kiosk_conf) S("DEVTOOLS", devtools) S("NAV_FALLBACK", nav_fallback)
-	S("LED_PWM", led_pwm) S("LED_KEY_PREFIX", led_key)
+	S("LED_PWM", led_pwm) S("LED_KEY_PREFIX", led_key) S("LED_MODE", led_mode)
 	I("SLIDE_STEP", slide_step) I("SLIDE_GAP_MS", slide_gap_ms) S("OVERLAY_FALLBACK", overlay_fallback)
 #undef I
 #undef S
@@ -380,6 +393,11 @@ static void cfg_load(void)
 	if (c.slide_gap_ms > 1000) c.slide_gap_ms = 1000;
 	if (!strncmp(c.overlay_fallback, "overlay", 7)) strcpy(c.overlay_fallback, "none");
 	for (int i = 0; i < c.nbtn; i++) if (c.btn[i].led > c.nleds) c.nleds = c.btn[i].led;
+	if (c.led_mode[0] && strcmp(c.led_mode, "pwm") && strcmp(c.led_mode, "onoff")) {
+		logm("LED_MODE=%s is unknown (pwm or onoff), using pwm", c.led_mode);
+		strcpy(c.led_mode, "pwm");
+	}
+	c.led_onoff = !strcmp(c.led_mode, "onoff");
 	c.led_day = clamp_led(c.led_day); c.led_night = clamp_led(c.led_night); c.led_blank = clamp_led(c.led_blank);
 	C = c;
 
@@ -444,11 +462,31 @@ static const char *led_source(void)
 
 static void write_state(void);
 
-/* Whether the panel has key LEDs: a key with led=N, and the LED_PWM device. */
+/* The LED class device of key LED I (0-based) into NM: LED_KEY_N, else
+ * LED_KEY_PREFIX plus the number. Returns 0 when the key LED has no name. */
+static int key_led_name(int i, char *nm, size_t n)
+{
+	nm[0] = 0;
+	if (C.led_name[i][0]) snprintf(nm, n, "%s", C.led_name[i]);
+	else if (C.led_key[0]) snprintf(nm, n, "%s%d", C.led_key, i + 1);
+	return nm[0] != 0;
+}
+
+/* Whether the panel has key LEDs: a key with led=N, and the LED_PWM device.
+ * With LED_MODE=onoff there is no LED_PWM: one of the key LEDs must exist. */
 static int leds_present(void)
 {
-	char p[PATH_MAX];
-	if (C.nleds <= 0 || !C.led_pwm[0]) return 0;
+	char p[PATH_MAX], nm[80];
+	if (C.nleds <= 0) return 0;
+	if (C.led_onoff) {
+		for (int i = 0; i < C.nleds; i++) {
+			if (!key_led_name(i, nm, sizeof nm)) continue;
+			led_path(p, sizeof p, nm);
+			if (access(p, F_OK) == 0) return 1;
+		}
+		return 0;
+	}
+	if (!C.led_pwm[0]) return 0;
 	led_path(p, sizeof p, C.led_pwm);
 	return access(p, F_OK) == 0;
 }
@@ -461,8 +499,9 @@ static void leds_apply(int force)
 	if (lvl < 0) lvl = 0;
 	if (lvl > 255) lvl = 255;
 	if (!leds_present()) { write_state(); return; }
-	led_path(p, sizeof p, C.led_pwm);
-	if (force || lvl != led_written) {
+	if (C.led_onoff) led_written = lvl;   /* no brightness LED: the level only tells on or off */
+	else led_path(p, sizeof p, C.led_pwm);
+	if (!C.led_onoff && (force || lvl != led_written)) {
 		if (read_int_path(p) != lvl && write_int_path(p, lvl)) {
 			if (led_written != -3) logm("cannot write %s: %s", p, strerror(errno));
 			led_written = -3;
@@ -471,9 +510,9 @@ static void leds_apply(int force)
 			led_written = lvl;
 		}
 	}
-	for (int i = 0; i < C.nleds && C.led_key[0]; i++) {
+	for (int i = 0; i < C.nleds; i++) {
 		char nm[80]; int on;
-		snprintf(nm, sizeof nm, "%s%d", C.led_key, i + 1);
+		if (!key_led_name(i, nm, sizeof nm)) continue;
 		on = lvl > 0 && key_override[i] != 0 && t >= feedback_until[i];
 		if (!force && on == key_written[i]) continue;
 		led_path(p, sizeof p, nm);

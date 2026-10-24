@@ -54,6 +54,7 @@ These parts are board glue. They stay in the family repos:
 - the initramfs init, `rcS` and `inittab`
 - the Bluetooth chip file of a board and the tool that loads its firmware (see [Bluetooth chip file](#bluetooth-chip-file))
 - the key definitions (`buttons-board.conf`)
+- the status LED of a panel, for example an RGB LED made of three on/off LEDs (green, red, blue). No shared service drives it. `tsx-ledbar` is for the USB LED bar only, and `tsx-buttons` is for the key LEDs. A board service sets the LED class devices in `/sys/class/leds`, from the files in `/run/tsx`
 - the parts of a board that use the plugin folders (see [Plugin folders](#plugin-folders)), for example the camera
 - the image build (`mkrootfs.sh`, the profile lists, `profile.sh`) and the image tests
 - the sensor, NFC, watchdog and firmware services of a family
@@ -88,7 +89,7 @@ Every name in this table is optional. The neutral default applies when a board d
 | `tsx_board_ha_model` | `tsx-mqtt`, `tsx_panel` | Function that returns the model name for Home Assistant. Else `TSX_HA_MODEL`. When the result equals `TSX_HA_MODEL` (a family name), the ESPHome device shows the family name and "panel", for example "xx60 panel". Else it shows "Crestron" and the model name |
 | `tsx_board_ledbar_map` | `tsx-ledbard` | Function that prints the name of the LED map for the LED bar of a panel model, or nothing for the firmware default map. Argument 1 is the model from `/run/tsx/model`. `LEDMAP` of `ledbar.conf` wins. See [LED bar](ledbar.md) "LED map" |
 | `/etc/tsx/panel-board.conf` | `kiosk-session`, `kiosk`, `tsx-idled`, `tsx-cpufreqd` | The board layer of `kiosk.conf`: GPU mode, backlight range and floor (`BACKLIGHT_MAX`, `BACKLIGHT_MIN`), CPU governor, overlay tap, `ALS_WATCH`. `kiosk.conf` holds neutral defaults. The family ships this file in the base profile |
-| `/etc/tsx/buttons-board.conf` | `tsx-buttons`, `tsx-panelctl`, `tsx-mqtt`, `tsx_panel` | The board layer of the front keys: the `button` lines, the LED names (`LED_PWM`, `LED_KEY_PREFIX`) and `SLIDE_STEP`. `tsx-buttons` reads it before `buttons.conf`. A board with no keys ships no file. See [Front keys](buttons.md) |
+| `/etc/tsx/buttons-board.conf` | `tsx-buttons`, `tsx-panelctl`, `tsx-mqtt`, `tsx_panel` | The board layer of the front keys: the `button` lines, the LED names (`LED_PWM`, `LED_KEY_PREFIX`, `LED_KEY_N`), `LED_MODE` (`onoff` for independent on/off key LEDs) and `SLIDE_STEP`. `tsx-buttons` reads it before `buttons.conf`. A board with no keys ships no file. See [Front keys](buttons.md) |
 | `/etc/tsx/motd.board` | `profile.d/tsx.sh` | Lines for the login banner |
 | `/etc/tsx/panel-app-board.conf` | `tsx-panel-app-run` | The environment, the folders and the device files of the panel app. See [Panel app](panel-app.md) "Service" |
 | `rc_after` in `/etc/conf.d/tsx-config` | `tsx-config` | Services to wait for |
