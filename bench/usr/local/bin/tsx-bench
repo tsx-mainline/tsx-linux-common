@@ -18,6 +18,10 @@
 #   net       TCP throughput to a "tsx-bench-core netserver" (only with -n)
 #   browser   the benchmark page in the kiosk browser (DevTools)
 #
+# At the end the script prints the scores (overall, core and groups) and writes
+# them into the JSON file under "scores". No panel is the reference. See
+# docs/bench.md.
+#
 # Safety: no write to a block device, no reboot, no change of a setting.
 # The test files live in tmpfs. The browser test shows its own page for about
 # a minute and loads the kiosk page again. With --pause-kiosk the script stops
@@ -25,7 +29,7 @@
 
 set -u
 
-VERSION=0.1.0
+VERSION=0.2.0
 LABEL=
 OUT=/tmp
 QUICK=0
@@ -356,7 +360,25 @@ DUR=$(($(uptime_s) - START_UP))
 		tr -d '\n' < "$W/$n.json"
 	done
 	printf '}\n'
-} > "$RESULT"
+} > "$W/result.json"
+
+# --- the scores: the core program computes them from the assembled file --------------
+# The file holds the key "scores" with the score version, so a reader knows the number
+# without the compare tool. A failure here leaves the result without scores.
+log ""
+"$CORE" score "$W/result.json" 2> "$W/score.txt" > "$W/scores.json"
+if [ $? = 0 ] && [ -s "$W/scores.json" ]; then
+	{
+		sed '$ s/}$//' "$W/result.json" | tr -d '\n'
+		printf ',"scores":'
+		tr -d '\n' < "$W/scores.json"
+		printf '}\n'
+	} > "$RESULT"
+else
+	cp "$W/result.json" "$RESULT"
+	: > "$W/score.txt"
+	log "tsx-bench: WARNING the scores could not be computed"
+fi
 
 # --- short summary in the log: the headline lines of the tests ----------------------
 {
@@ -366,6 +388,10 @@ DUR=$(($(uptime_s) - START_UP))
 	grep -E '^(state:|browser: )' "$LOG"
 } > "$W/summary.txt"
 cat "$W/summary.txt" >> "$LOG"
+if [ -s "$W/score.txt" ]; then
+	cat "$W/score.txt" >> "$LOG"
+	cat "$W/score.txt"
+fi
 
 log ""
 log "tsx-bench: done in ${DUR} s"

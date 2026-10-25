@@ -54,7 +54,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define TOOL_VERSION "0.1.0"
+#define TOOL_VERSION "0.2.0"
 
 #ifndef BLKGETSIZE64
 #define BLKGETSIZE64 _IOR(0x12, 114, size_t)
@@ -2612,6 +2612,396 @@ static void cmd_restore(int port, const char *restore_file)
 }
 
 /* ------------------------------------------------------------------ */
+/* score: the absolute score of a result file (score version 1)       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Score version 2. No panel is the reference and no score is scaled.
+ *
+ * The score of a test row is a rate in the unit of the row. A rate (MiB/s,
+ * MB/s, MFLOPS, Ksteps/s, IOPS, fps, chunks/s) is the score as it is (kind R).
+ * A time in seconds becomes runs per second, 1 / value (kind 1). A time in
+ * milliseconds becomes events per second, 1000 / value (kind K). A latency in
+ * ns becomes accesses per microsecond, 1000 / value (kind K). A group score is
+ * the geometric mean of its rows. The overall score is the geometric mean of
+ * the six groups, and only a panel with every group gets one. The core score
+ * uses CPU, Memory, Sustained load and Storage. The ratio of two scores does not depend on the unit of a
+ * row, because the geometric mean takes a unit change out of the ratio.
+ *
+ * NEVER change a row or a unit of this table. A change makes a new
+ * SCORE_VERSION, and the numbers of the old version stop comparing. Keep the
+ * table equal to SCORE_TABLE in host/tsx-bench-compare. The test
+ * tests/test-bench.sh checks that both are equal.
+ */
+#define SCORE_VERSION 2
+
+struct score_row {
+	const char *group, *name, *unit;
+	char kind;
+	const char *path;
+	const char *score_unit;
+};
+
+static const struct score_row score_table[] = {
+	{"CPU", "1 thread, best core: SHA-256", "MiB/s", 'R', "cpu.tests.sha256.best_single", "MiB/s"},
+	{"CPU", "1 thread, best core: CRC-32", "MiB/s", 'R', "cpu.tests.crc32.best_single", "MiB/s"},
+	{"CPU", "1 thread, best core: n-body (float)", "Ksteps/s", 'R', "cpu.tests.nbody.best_single", "Ksteps/s"},
+	{"CPU", "1 thread, best core: matrix multiply (float)", "MFLOPS", 'R', "cpu.tests.matmul.best_single", "MFLOPS"},
+	{"CPU", "all cores: SHA-256", "MiB/s", 'R', "cpu.tests.sha256.multi.rate", "MiB/s"},
+	{"CPU", "all cores: CRC-32", "MiB/s", 'R', "cpu.tests.crc32.multi.rate", "MiB/s"},
+	{"CPU", "all cores: n-body (float)", "Ksteps/s", 'R', "cpu.tests.nbody.multi.rate", "Ksteps/s"},
+	{"CPU", "all cores: matrix multiply (float)", "MFLOPS", 'R', "cpu.tests.matmul.multi.rate", "MFLOPS"},
+	{"CPU", "busybox sha256sum, 24 MiB", "s", '1', "crosscheck.sha256sum.seconds", "runs/s"},
+	{"CPU", "busybox gzip -3", "s", '1', "crosscheck.gzip3.seconds", "runs/s"},
+	{"CPU", "busybox gunzip", "s", '1', "crosscheck.gunzip.seconds", "runs/s"},
+	{"Memory", "1 thread read", "MB/s", 'R', "mem.best_single.read", "MB/s"},
+	{"Memory", "1 thread write", "MB/s", 'R', "mem.best_single.write", "MB/s"},
+	{"Memory", "1 thread copy", "MB/s", 'R', "mem.best_single.copy", "MB/s"},
+	{"Memory", "1 thread triad", "MB/s", 'R', "mem.best_single.triad", "MB/s"},
+	{"Memory", "all cores read", "MB/s", 'R', "mem.multi.read", "MB/s"},
+	{"Memory", "all cores write", "MB/s", 'R', "mem.multi.write", "MB/s"},
+	{"Memory", "all cores copy", "MB/s", 'R', "mem.multi.copy", "MB/s"},
+	{"Memory", "all cores triad", "MB/s", 'R', "mem.multi.triad", "MB/s"},
+	{"Memory", "latency 1 MiB (cache)", "ns", 'K', "mem.latency[kib=1024].ns", "accesses/us"},
+	{"Memory", "latency 64 MiB (RAM)", "ns", 'K', "mem.latency[kib=65536].ns", "accesses/us"},
+	{"Sustained load", "rate, first 10 s", "chunks/s", 'R', "sustained.summary.rate_first10", "chunks/s"},
+	{"Sustained load", "rate, last 10 s", "chunks/s", 'R', "sustained.summary.rate_last10", "chunks/s"},
+	{"Storage", "sequential read (page cache path)", "MB/s", 'R', "storage.seq_read.mbps", "MB/s"},
+	{"Storage", "sequential read (O_DIRECT, 1 MiB)", "MB/s", 'R', "storage.seq_read_direct.mbps", "MB/s"},
+	{"Storage", "random 4 KiB read", "IOPS", 'R', "storage.rand_read_4k.iops", "IOPS"},
+	{"Storage", "random 4 KiB read, p99", "ms", 'K', "storage.rand_read_4k.p99_ms", "1/s"},
+	{"Browser JS", "JS int", "ms", 'K', "browser.page.js.int_ms", "runs/s"},
+	{"Browser JS", "JS float", "ms", 'K', "browser.page.js.float_ms", "runs/s"},
+	{"Browser JS", "JS array", "ms", 'K', "browser.page.js.array_ms", "runs/s"},
+	{"Browser JS", "JS json", "ms", 'K', "browser.page.js.json_ms", "runs/s"},
+	{"Browser JS", "JS typed", "ms", 'K', "browser.page.js.typed_ms", "runs/s"},
+	{"Browser rendering", "canvas 2D, 300 shapes", "fps", 'R', "browser.page.canvas2d.n300.fps", "fps"},
+	{"Browser rendering", "canvas 2D, 1500 shapes", "fps", 'R', "browser.page.canvas2d.n1500.fps", "fps"},
+	{"Browser rendering", "canvas 2D, 6000 shapes", "fps", 'R', "browser.page.canvas2d.n6000.fps", "fps"},
+	{"Browser rendering", "CSS transform, 200 boxes", "fps", 'R', "browser.page.css_transform.n200.fps", "fps"},
+	{"Browser rendering", "CSS transform, 800 boxes", "fps", 'R', "browser.page.css_transform.n800.fps", "fps"},
+	{"Browser rendering", "CSS layout, 150 boxes", "fps", 'R', "browser.page.css_layout.fps", "fps"},
+	{"Browser rendering", "list scroll, 1500 rows", "fps", 'R', "browser.page.scroll.fps", "fps"},
+	{"Browser rendering", "WebGL shader, 8 loops", "fps", 'R', "browser.page.webgl.fill.loops8.fps", "fps"},
+	{"Browser rendering", "WebGL shader, 32 loops", "fps", 'R', "browser.page.webgl.fill.loops32.fps", "fps"},
+	{"Browser rendering", "WebGL shader, 128 loops", "fps", 'R', "browser.page.webgl.fill.loops128.fps", "fps"},
+	{"Browser rendering", "WebGL, 1500 draw calls", "fps", 'R', "browser.page.webgl.draw_calls.fps", "fps"},
+};
+
+static const char *const score_groups[] = {
+	"CPU", "Memory", "Sustained load", "Storage", "Browser JS", "Browser rendering"
+};
+#define N_SCORE_GROUPS ((int)(sizeof score_groups / sizeof score_groups[0]))
+#define N_CORE_GROUPS 4 /* the first four groups */
+
+/* A small JSON tree. It holds only what the score needs. */
+struct jn {
+	char type; /* o object, a array, s string, n number, t true, f false, z null */
+	double num;
+	char *key;
+	struct jn *kid, *next;
+};
+
+struct jp {
+	const char *p, *end;
+	int depth;
+};
+
+static void jp_ws(struct jp *j)
+{
+	while (j->p < j->end && (*j->p == ' ' || *j->p == '\t' || *j->p == '\n' || *j->p == '\r'))
+		j->p++;
+}
+
+/* Parse a string into a new buffer. Escapes: only the plain ones matter here. */
+static char *jp_string(struct jp *j)
+{
+	if (j->p >= j->end || *j->p != '"')
+		return NULL;
+	j->p++;
+	char *s = malloc((size_t)(j->end - j->p) + 1);
+	size_t n = 0;
+	if (!s)
+		return NULL;
+	while (j->p < j->end && *j->p != '"') {
+		if (*j->p == '\\' && j->p + 1 < j->end) {
+			j->p++;
+			if (*j->p == 'u' && j->p + 4 < j->end) {
+				s[n++] = '?';
+				j->p += 4;
+			} else if (*j->p == 'n') {
+				s[n++] = '\n';
+			} else if (*j->p == 't') {
+				s[n++] = '\t';
+			} else {
+				s[n++] = *j->p;
+			}
+		} else {
+			s[n++] = *j->p;
+		}
+		j->p++;
+	}
+	if (j->p >= j->end) {
+		free(s);
+		return NULL;
+	}
+	j->p++;
+	s[n] = 0;
+	return s;
+}
+
+static struct jn *jp_value(struct jp *j)
+{
+	jp_ws(j);
+	if (j->p >= j->end || j->depth > 64)
+		return NULL;
+	struct jn *n = calloc(1, sizeof *n);
+	if (!n)
+		return NULL;
+	char c = *j->p;
+	if (c == '{' || c == '[') {
+		struct jn **tail = &n->kid;
+		n->type = c == '{' ? 'o' : 'a';
+		j->p++;
+		j->depth++;
+		jp_ws(j);
+		if (j->p < j->end && *j->p == (c == '{' ? '}' : ']')) {
+			j->p++;
+			j->depth--;
+			return n;
+		}
+		for (;;) {
+			char *key = NULL;
+			jp_ws(j);
+			if (c == '{') {
+				key = jp_string(j);
+				jp_ws(j);
+				if (!key || j->p >= j->end || *j->p != ':')
+					return NULL;
+				j->p++;
+			}
+			struct jn *k = jp_value(j);
+			if (!k)
+				return NULL;
+			k->key = key;
+			*tail = k;
+			tail = &k->next;
+			jp_ws(j);
+			if (j->p < j->end && *j->p == ',') {
+				j->p++;
+				continue;
+			}
+			if (j->p < j->end && *j->p == (c == '{' ? '}' : ']')) {
+				j->p++;
+				j->depth--;
+				return n;
+			}
+			return NULL;
+		}
+	}
+	if (c == '"') {
+		char *s = jp_string(j);
+		if (!s)
+			return NULL;
+		free(s);
+		n->type = 's';
+		return n;
+	}
+	if (!strncmp(j->p, "true", 4) && j->p + 4 <= j->end) {
+		n->type = 't';
+		j->p += 4;
+		return n;
+	}
+	if (!strncmp(j->p, "false", 5) && j->p + 5 <= j->end) {
+		n->type = 'f';
+		j->p += 5;
+		return n;
+	}
+	if (!strncmp(j->p, "null", 4) && j->p + 4 <= j->end) {
+		n->type = 'z';
+		j->p += 4;
+		return n;
+	}
+	char *e;
+	n->num = strtod(j->p, &e);
+	if (e == j->p || e > j->end)
+		return NULL;
+	n->type = 'n';
+	j->p = e;
+	return n;
+}
+
+static struct jn *jn_member(const struct jn *o, const char *key, size_t len)
+{
+	if (!o || o->type != 'o')
+		return NULL;
+	for (struct jn *k = o->kid; k; k = k->next)
+		if (k->key && strlen(k->key) == len && !strncmp(k->key, key, len))
+			return k;
+	return NULL;
+}
+
+/* Walk a path like "mem.latency[kib=1024].ns" (see get_path in tsx-bench-compare). */
+static const struct jn *jn_path(const struct jn *d, const char *path)
+{
+	while (d && *path) {
+		const char *dot = strchr(path, '.');
+		size_t len = dot ? (size_t)(dot - path) : strlen(path);
+		const char *br = memchr(path, '[', len);
+		size_t nlen = br ? (size_t)(br - path) : len;
+		d = jn_member(d, path, nlen);
+		if (d && br) {
+			char key[32];
+			long val;
+			const char *eq = memchr(br, '=', len - nlen);
+			if (!eq || d->type != 'a' || (size_t)(eq - br - 1) >= sizeof key)
+				return NULL;
+			memcpy(key, br + 1, (size_t)(eq - br - 1));
+			key[eq - br - 1] = 0;
+			val = strtol(eq + 1, NULL, 10);
+			const struct jn *hit = NULL;
+			for (const struct jn *e = d->kid; e && !hit; e = e->next) {
+				const struct jn *m = jn_member(e, key, strlen(key));
+				if (m && m->type == 'n' && m->num == (double)val)
+					hit = e;
+			}
+			d = hit;
+		}
+		path += len;
+		if (*path == '.')
+			path++;
+	}
+	return d;
+}
+
+static double score_row_value(const struct score_row *r, double v)
+{
+	if (!(v > 0))
+		return NAN;
+	return r->kind == 'R' ? v : r->kind == '1' ? 1.0 / v : 1000.0 / v;
+}
+
+static void cmd_score(int argc, char **argv)
+{
+	if (argc >= 3 && !strcmp(argv[2], "-T")) {
+		/* the table, for the test that compares it with the host tool */
+		for (size_t i = 0; i < sizeof score_table / sizeof score_table[0]; i++) {
+			const struct score_row *r = &score_table[i];
+			printf("%s|%s|%s|%s|%s\n", r->group, r->name, r->kind == 'R' ? "R" : r->kind == '1' ? "I1" : "I1000", r->path, r->score_unit);
+		}
+		return;
+	}
+	if (argc < 3)
+		die("usage: tsx-bench-core score RESULT.json | score -T");
+	FILE *f = fopen(argv[2], "r");
+	if (!f)
+		die("cannot read %s: %s", argv[2], strerror(errno));
+	size_t cap = 1 << 16, len = 0;
+	char *buf = malloc(cap);
+	size_t got;
+	while (buf && (got = fread(buf + len, 1, cap - len, f)) > 0) {
+		len += got;
+		if (len == cap) {
+			if (cap > (64u << 20))
+				die("%s is too big", argv[2]);
+			cap *= 2;
+			buf = realloc(buf, cap);
+		}
+	}
+	fclose(f);
+	if (!buf)
+		die("out of memory");
+	struct jp jp = {buf, buf + len, 0};
+	const struct jn *root = jp_value(&jp);
+	if (!root || root->type != 'o')
+		die("%s is not a JSON object", argv[2]);
+
+	double lsum[N_SCORE_GROUPS] = {0};
+	int lcnt[N_SCORE_GROUPS] = {0};
+	for (size_t i = 0; i < sizeof score_table / sizeof score_table[0]; i++) {
+		const struct score_row *r = &score_table[i];
+		const struct jn *v = jn_path(root, r->path);
+		if (!v || v->type != 'n')
+			continue;
+		double s = score_row_value(r, v->num);
+		if (!isfinite(s))
+			continue;
+		for (int g = 0; g < N_SCORE_GROUPS; g++) {
+			if (!strcmp(r->group, score_groups[g])) {
+				lsum[g] += log(s);
+				lcnt[g]++;
+			}
+		}
+	}
+	double gs[N_SCORE_GROUPS];
+	double osum = 0, csum = 0;
+	int ocnt = 0, ccnt = 0;
+	for (int g = 0; g < N_SCORE_GROUPS; g++) {
+		gs[g] = lcnt[g] ? exp(lsum[g] / lcnt[g]) : NAN;
+		if (lcnt[g]) {
+			osum += log(gs[g]);
+			ocnt++;
+			if (g < N_CORE_GROUPS) {
+				csum += log(gs[g]);
+				ccnt++;
+			}
+		}
+	}
+	double overall = ocnt == N_SCORE_GROUPS ? exp(osum / ocnt) : NAN; /* every group, or no overall */
+	double core = ccnt ? exp(csum / ccnt) : NAN;
+
+	/* the JSON object on stdout */
+	jdepth = 0;
+	jfirst[0] = 1;
+	putchar('{');
+	jdepth = 1;
+	jfirst[1] = 1;
+	jint("score_version", SCORE_VERSION);
+	jsep("overall");
+	if (isfinite(overall))
+		printf("%.4g", overall);
+	else
+		fputs("null", stdout);
+	jsep("core");
+	if (isfinite(core))
+		printf("%.4g", core);
+	else
+		fputs("null", stdout);
+	JOBJ("groups");
+	for (int g = 0; g < N_SCORE_GROUPS; g++) {
+		if (!lcnt[g])
+			continue;
+		jsep(score_groups[g]);
+		printf("%.4g", gs[g]);
+	}
+	JEND();
+	JARR("missing_groups");
+	for (int g = 0; g < N_SCORE_GROUPS; g++)
+		if (!lcnt[g]) {
+			jsep(NULL);
+			jputs(score_groups[g]);
+		}
+	JAEND();
+	jdepth = 0;
+	putchar('}');
+	putchar('\n');
+
+	/* the text for the terminal and the log, on stderr */
+	say("== score (version %d, geometric mean of rates, more is better)", SCORE_VERSION);
+	for (int g = 0; g < N_SCORE_GROUPS; g++) {
+		if (lcnt[g])
+			say("score %-18s %8.4g", score_groups[g], gs[g]);
+		else
+			say("score %-18s %8s", score_groups[g], "-");
+	}
+	if (ocnt < N_SCORE_GROUPS)
+		say("score %-18s %8s  (no value in %d of %d groups, see CORE)", "OVERALL", "-", N_SCORE_GROUPS - ocnt, N_SCORE_GROUPS);
+	else
+		say("score %-18s %8.4g", "OVERALL", overall);
+	say("score %-18s %8.4g  (CPU, Memory, Sustained load, Storage)", "CORE", core);
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -2623,6 +3013,7 @@ static void usage(void)
 	      "  browser HTML [-p PORT] [-r RESTORE_FILE] | restore [-p PORT] [-r RESTORE_FILE]\n"
 	      "  net IPV4 PORT [-s SECONDS]\n"
 	      "  netserver PORT [IDLE_SECONDS] | timeit LABEL COMMAND [N] | gen FILE MIB\n"
+	      "  score RESULT.json | score -T\n"
 	      "  version\n",
 	      stderr);
 	exit(2);
@@ -2679,6 +3070,8 @@ int main(int argc, char **argv)
 		cmd_net(argv[2], atoi(argv[3]), secs);
 	} else if (!strcmp(c, "browser") && argc >= 3) {
 		cmd_browser(argv[2], port, rfile);
+	} else if (!strcmp(c, "score")) {
+		cmd_score(argc, argv);
 	} else if (!strcmp(c, "restore")) {
 		cmd_restore(port, rfile ? rfile : "/tmp/tsx-bench-restore-url");
 	} else {
