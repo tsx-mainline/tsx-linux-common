@@ -29,8 +29,18 @@ DevTools), else black. The background shows wherever the window does not
 cover the output for a moment, for example while Chromium repaints at its new
 size when the on-screen keyboard hides. It must not be the splash then.
 
+Every reveal, also the one after the timeout, writes the file
+/run/tsx/kiosk.ready (see docs/layout.md): "revealed WHY uptime S". The
+kiosk service makes /run/tsx/kiosk.ready a link to a file in a folder of the
+kiosk user, because /run/tsx belongs to root. The helper writes a temporary
+file and renames it, so a reader never sees a part of the line.
+
 Usage: tsx-kiosk-reveal URL [--devtools 0|1] [--timeout S] [--time-wait S]
-Env: SWAYSOCK (from sway), TSX_REVEAL_DEVTOOLS (host:port, tests).
+       tsx-kiosk-reveal --mark-ready WHY
+The second form only writes kiosk.ready. kiosk-session uses it when no reveal
+runs (KIOSK_REVEAL off).
+Env: SWAYSOCK (from sway), TSX_REVEAL_DEVTOOLS (host:port, tests),
+TSX_KIOSK_READY (the ready file, tests).
 Logs one line per step to stderr (the kiosk log), with the uptime.
 """
 import base64
@@ -47,6 +57,7 @@ import urllib.request
 
 RULE = '[app_id="^chrome-"]'
 RETRY_GAP = 5.0
+READY = os.environ.get('TSX_KIOSK_READY', '/run/tsx/kiosk.ready')
 DEVTOOLS = os.environ.get('TSX_REVEAL_DEVTOOLS', '127.0.0.1:9222')
 PAINTED = r'''new Promise(r => {
   const t0 = performance.now();
@@ -97,6 +108,20 @@ def swaymsg(cmd):
     return subprocess.call(['swaymsg', cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def mark_ready(why):
+    """Write the ready file: temporary file, then rename. Follow a link, so the
+    file is in the folder that the kiosk user owns."""
+    try:
+        target = os.path.realpath(READY)
+        tmp = '%s.tmp%d' % (target, os.getpid())
+        with open(tmp, 'w') as f:
+            f.write('revealed %s uptime %s\n' % (why.split(' (')[0].split(':')[0], uptime()))
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, target)
+    except OSError as e:
+        log('cannot write %s: %s' % (READY, e))
+
+
 def reveal(why, bg=None):
     # The later rule wins for windows that map from now on. Then set the open window.
     swaymsg('for_window %s opacity 1' % RULE)
@@ -105,6 +130,7 @@ def reveal(why, bg=None):
     bg = bg if isinstance(bg, str) and re.fullmatch(r'#[0-9a-f]{6}', bg) else '#000000'
     swaymsg('output * bg %s solid_color' % bg)
     log('revealed: %s (background %s)' % (why, bg))
+    mark_ready(why)
 
 
 class Ws:
@@ -200,9 +226,12 @@ def window_mapped():
 
 def main():
     args = sys.argv[1:]
-    if not args or args[0].startswith('-'):
+    if not args or (args[0].startswith('-') and args[0] != '--mark-ready'):
         sys.stderr.write(__doc__)
         return 2
+    if args[0] == '--mark-ready':
+        mark_ready(' '.join(args[1:]) or 'no reveal')
+        return 0
     url, opts = args[0], {'--devtools': '1', '--timeout': '60', '--time-wait': '30', '--delay': '4'}
     i = 1
     while i < len(args):

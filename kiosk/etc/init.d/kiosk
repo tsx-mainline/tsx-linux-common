@@ -29,6 +29,13 @@ start_pre() {
 	checkpath -d -m 0755 /run/tsx
 	[ -p /run/tsx/overlay.ctl ] || { rm -f /run/tsx/overlay.ctl; mkfifo -m 0660 /run/tsx/overlay.ctl; }
 	chown root:kiosk /run/tsx/overlay.ctl
+	# The ready signal: tsx-kiosk-reveal (user kiosk) writes the file when the
+	# page has painted. /run/tsx belongs to root, so the file sits in a folder
+	# of the kiosk user and /run/tsx/kiosk.ready is a link to it. A restart
+	# shows not ready until the next reveal.
+	checkpath -d -m 0755 -o kiosk:kiosk /run/tsx/kiosk-ready.d
+	rm -f /run/tsx/kiosk-ready.d/ready /run/tsx/kiosk-ready.d/ready.tmp*
+	ln -sfn kiosk-ready.d/ready /run/tsx/kiosk.ready
 	. /etc/kiosk.conf
 	[ -r /etc/tsx/panel-board.conf ] && . /etc/tsx/panel-board.conf   # the values of the board
 	[ -r /run/tsx/kiosk.conf ] && . /run/tsx/kiosk.conf   # panel.conf overrides (tsx-config apply)

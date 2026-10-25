@@ -38,6 +38,16 @@ KIOSK_URL=$(/usr/local/bin/tsx-kiosk-url "${KIOSK_URL:-}")
 : "${KIOSK_PROFILE:=/var/lib/kiosk/chromium}" "${KIOSK_EXTRA_FLAGS:=}" "${KIOSK_DEVTOOLS:=0}"
 : "${KIOSK_OSK:=squeekboard}" "${KIOSK_OSK_HEIGHT:=300}"
 ROLE=${1:-session}
+# A new session is not ready until the next reveal. Remove the file of an
+# older session. The init script makes /run/tsx/kiosk.ready a link to a file
+# in a folder of the kiosk user, because /run/tsx belongs to root. The service
+# can restart this script after a crash without the init script, so the
+# removal is here and not only there.
+if [ "$ROLE" = session ]; then
+	_ready=/run/tsx/kiosk.ready
+	[ -L "$_ready" ] && _ready=$(readlink -f "$_ready")
+	rm -f "$_ready" 2>/dev/null
+fi
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 export HOME=/var/lib/kiosk
 log() { [ "$ROLE" = session ] && echo "kiosk-session: $*" >&2; }
@@ -372,11 +382,17 @@ fi
 # shellcheck disable=SC2086
 set -- "$@" $KIOSK_EXTRA_FLAGS
 
+# No reveal helper runs without the splash handoff or under cage. Then the
+# page is ready when the browser has started (kiosk.ready, docs/layout.md).
+mark_ready_soon() {
+	(sleep 2; /usr/local/bin/tsx-kiosk-reveal --mark-ready "no reveal, browser started") >/dev/null 2>&1 &
+}
 if [ $sway = 0 ]; then
 	# cage has no input configuration. The touch mapping cannot follow a
 	# turned output, so the cage session stays landscape.
 	[ -x /usr/local/bin/tsx-orientation ] && [ "$(/usr/local/bin/tsx-orientation get)" != landscape ] &&
 		log "ORIENTATION $(/usr/local/bin/tsx-orientation get) needs the sway session (KIOSK_OSK not off): cage shows landscape"
+	mark_ready_soon
 	exec cage -d -- chromium-browser --kiosk "$@" "$KIOSK_URL"
 fi
 # The splash stays until the page has painted. tsx-kiosk-reveal then sets the
@@ -384,6 +400,8 @@ fi
 if [ "${KIOSK_REVEAL:-0}" = 1 ] && [ -n "${SWAYSOCK:-}" ]; then
 	/usr/local/bin/tsx-kiosk-reveal "$KIOSK_URL" --devtools "$KIOSK_DEVTOOLS" \
 		--timeout "${KIOSK_REVEAL_TIMEOUT:-60}" &
+else
+	mark_ready_soon
 fi
 # Under sway, use --app instead of --kiosk. --kiosk forces fullscreen, and
 # sway draws fullscreen windows above the keyboard layer and ignores its
