@@ -1,0 +1,606 @@
+#!/usr/bin/env python3
+"""tsx-bench-compare: compare the result files of tsx-bench (host side).
+
+usage: tsx-bench-compare [--md FILE] [--html FILE] [--title TEXT] [--no-text]
+                         RESULT.json [RESULT.json ...]
+
+The tool reads the JSON files that `tsx-bench` wrote (schema tsx-bench/1) and
+prints a Markdown report on stdout. Every row has a relative score: the best
+panel in the row gets 100. For a value where more is better, the score is
+100 * value / best. For a time or a latency, it is 100 * best / value. A group
+score is the geometric mean of the row scores of the group. The overall score
+is the geometric mean of the group scores.
+
+Groups in the overall score: CPU, Memory, Sustained load, Storage, Browser JS,
+Browser rendering. Network and temperature are shown and not scored, because
+they depend on the room and on the network, not on the panel.
+
+--md FILE    also write the report to FILE
+--html FILE  write one self-contained HTML page (no script, no network)
+--title TEXT title of the report (default "Panel benchmark")
+
+Python 3, standard library only.
+"""
+import argparse
+import html
+import json
+import math
+import sys
+
+SCHEMA = "tsx-bench/1"
+
+
+def get(d, *path):
+    """Walk a path of keys and list indexes. Return None when a step is missing."""
+    for p in path:
+        if isinstance(d, dict) and p in d:
+            d = d[p]
+        elif isinstance(d, list) and isinstance(p, int) and 0 <= p < len(d):
+            d = d[p]
+        else:
+            return None
+    return d
+
+
+def num(x):
+    return x if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+
+
+class Metric:
+    def __init__(self, group, name, unit, better, fn, scored=True):
+        self.group, self.name, self.unit, self.better, self.fn = group, name, unit, better, fn
+        self.scored = scored
+
+    def value(self, r):
+        try:
+            return num(self.fn(r))
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+
+
+HIGH, LOW = "high", "low"
+
+
+def metrics():
+    m = []
+    cpu_names = [("sha256", "SHA-256"), ("crc32", "CRC-32"), ("nbody", "n-body (float)"), ("matmul", "matrix multiply (float)")]
+    for key, label in cpu_names:
+        unit = {"sha256": "MiB/s", "crc32": "MiB/s", "nbody": "Ksteps/s", "matmul": "MFLOPS"}[key]
+        m.append(Metric("CPU", "1 thread, best core: " + label, unit, HIGH,
+                        lambda r, k=key: get(r, "cpu", "tests", k, "best_single")))
+    for key, label in cpu_names:
+        unit = {"sha256": "MiB/s", "crc32": "MiB/s", "nbody": "Ksteps/s", "matmul": "MFLOPS"}[key]
+        m.append(Metric("CPU", "all cores: " + label, unit, HIGH,
+                        lambda r, k=key: get(r, "cpu", "tests", k, "multi", "rate")))
+    m.append(Metric("CPU", "busybox sha256sum, 24 MiB", "s", LOW, lambda r: get(r, "crosscheck", "sha256sum", "seconds")))
+    m.append(Metric("CPU", "busybox gzip -3", "s", LOW, lambda r: get(r, "crosscheck", "gzip3", "seconds")))
+    m.append(Metric("CPU", "busybox gunzip", "s", LOW, lambda r: get(r, "crosscheck", "gunzip", "seconds")))
+
+    for t, label in [("read", "read"), ("write", "write"), ("copy", "copy"), ("triad", "triad")]:
+        m.append(Metric("Memory", "1 thread " + label, "MB/s", HIGH, lambda r, t=t: get(r, "mem", "best_single", t)))
+    for t, label in [("read", "read"), ("write", "write"), ("copy", "copy"), ("triad", "triad")]:
+        m.append(Metric("Memory", "all cores " + label, "MB/s", HIGH, lambda r, t=t: get(r, "mem", "multi", t)))
+
+    def lat(r, kib):
+        for e in get(r, "mem", "latency") or []:
+            if e.get("kib") == kib:
+                return e.get("ns")
+        return None
+    m.append(Metric("Memory", "latency 1 MiB (cache)", "ns", LOW, lambda r: lat(r, 1024)))
+    m.append(Metric("Memory", "latency 64 MiB (RAM)", "ns", LOW, lambda r: lat(r, 65536)))
+
+    m.append(Metric("Sustained load", "rate, first 10 s", "chunks/s", HIGH, lambda r: get(r, "sustained", "summary", "rate_first10")))
+    m.append(Metric("Sustained load", "rate, last 10 s", "chunks/s", HIGH, lambda r: get(r, "sustained", "summary", "rate_last10")))
+    m.append(Metric("Sustained load", "last 10 s / first 10 s", "ratio", HIGH, lambda r: get(r, "sustained", "summary", "ratio_last_first")))
+    m.append(Metric("Sustained load", "hottest sensor", "deg C", LOW,
+                    lambda r: (get(r, "sustained", "summary", "temp_max_mC") or 0) / 1000.0 or None, scored=False))
+
+    m.append(Metric("Storage", "sequential read (page cache path)", "MB/s", HIGH, lambda r: get(r, "storage", "seq_read", "mbps")))
+    m.append(Metric("Storage", "sequential read (O_DIRECT, 1 MiB)", "MB/s", HIGH, lambda r: get(r, "storage", "seq_read_direct", "mbps")))
+    m.append(Metric("Storage", "random 4 KiB read", "IOPS", HIGH, lambda r: get(r, "storage", "rand_read_4k", "iops")))
+    m.append(Metric("Storage", "random 4 KiB read, p99", "ms", LOW, lambda r: get(r, "storage", "rand_read_4k", "p99_ms")))
+
+    for k in ["int", "float", "array", "json", "typed"]:
+        m.append(Metric("Browser JS", "JS " + k, "ms", LOW, lambda r, k=k: get(r, "browser", "page", "js", k + "_ms")))
+
+    def fps(*path):
+        return lambda r: get(r, "browser", "page", *path, "fps")
+    for label, path in [
+        ("canvas 2D, 300 shapes", ("canvas2d", "n300")),
+        ("canvas 2D, 1500 shapes", ("canvas2d", "n1500")),
+        ("canvas 2D, 6000 shapes", ("canvas2d", "n6000")),
+        ("CSS transform, 200 boxes", ("css_transform", "n200")),
+        ("CSS transform, 800 boxes", ("css_transform", "n800")),
+        ("CSS layout, 150 boxes", ("css_layout",)),
+        ("list scroll, 1500 rows", ("scroll",)),
+        ("WebGL shader, 8 loops", ("webgl", "fill", "loops8")),
+        ("WebGL shader, 32 loops", ("webgl", "fill", "loops32")),
+        ("WebGL shader, 128 loops", ("webgl", "fill", "loops128")),
+        ("WebGL, 1500 draw calls", ("webgl", "draw_calls")),
+    ]:
+        m.append(Metric("Browser rendering", label, "fps", HIGH, fps(*path)))
+
+    m.append(Metric("Network", "upload to the build host", "Mbit/s", HIGH, lambda r: get(r, "net", "upload_mbit"), scored=False))
+    m.append(Metric("Network", "download from the build host", "Mbit/s", HIGH, lambda r: get(r, "net", "download_mbit"), scored=False))
+    return m
+
+
+GROUP_ORDER = ["CPU", "Memory", "Sustained load", "Storage", "Browser JS", "Browser rendering", "Network"]
+SCORED_GROUPS = [g for g in GROUP_ORDER if g != "Network"]
+
+
+def load(paths):
+    runs = []
+    for p in paths:
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError) as e:
+            sys.exit("tsx-bench-compare: cannot read %s: %s" % (p, e))
+        if not isinstance(d, dict) or d.get("schema") != SCHEMA:
+            sys.exit("tsx-bench-compare: %s is not a %s file" % (p, SCHEMA))
+        d["_path"] = p
+        runs.append(d)
+    # column names: the label, plus the variant when it is not "normal"
+    seen = {}
+    for r in runs:
+        name = str(r.get("label", "panel"))
+        if r.get("variant") and r["variant"] != "normal":
+            name += " (" + str(r["variant"]) + ")"
+        seen[name] = seen.get(name, 0) + 1
+        r["_name"] = name if seen[name] == 1 else "%s #%d" % (name, seen[name])
+    return runs
+
+
+def rel(values, better):
+    """Relative scores, best = 100. values may hold None."""
+    have = [v for v in values if v is not None and v > 0]
+    if not have:
+        return [None] * len(values)
+    best = max(have) if better == HIGH else min(have)
+    out = []
+    for v in values:
+        if v is None or v <= 0:
+            out.append(None)
+        elif better == HIGH:
+            out.append(100.0 * v / best)
+        else:
+            out.append(100.0 * best / v)
+    return out
+
+
+def geomean(xs):
+    xs = [x for x in xs if x is not None and x > 0]
+    if not xs:
+        return None
+    return math.exp(sum(math.log(x) for x in xs) / len(xs))
+
+
+def fmt(v, unit=""):
+    if v is None:
+        return "-"
+    a = abs(v)
+    if a >= 1000:
+        s = "%.0f" % v
+    elif a >= 100:
+        s = "%.1f" % v
+    elif a >= 10:
+        s = "%.1f" % v
+    else:
+        s = "%.2f" % v
+    return s
+
+
+def analyze(runs):
+    ms = metrics()
+    rows = []
+    for m in ms:
+        vals = [m.value(r) for r in runs]
+        if all(v is None for v in vals):
+            continue
+        rows.append({"m": m, "vals": vals, "rel": rel(vals, m.better) if m.scored else [None] * len(vals)})
+    groups = {}
+    for g in GROUP_ORDER:
+        grows = [x for x in rows if x["m"].group == g and x["m"].scored]
+        if not grows:
+            continue
+        groups[g] = [geomean([x["rel"][i] for x in grows]) for i in range(len(runs))]
+    # re-base the group scores so that the best panel has 100
+    def rebase(vals):
+        b = max([v for v in vals if v is not None] or [0])
+        return [100.0 * v / b if v is not None and b else None for v in vals]
+    groups = {g: rebase(v) for g, v in groups.items()}
+    scored = [g for g in groups if g in SCORED_GROUPS]
+    # the overall score uses the groups that a panel has. A panel with a missing
+    # group is marked, and a second score uses only the groups of every panel.
+    overall = rebase([geomean([groups[g][i] for g in scored]) for i in range(len(runs))])
+    missing = [[g for g in scored if groups[g][i] is None] for i in range(len(runs))]
+    common = [g for g in scored if all(groups[g][i] is not None for i in range(len(runs)))]
+    overall_common = None
+    if any(missing) and common:
+        overall_common = rebase([geomean([groups[g][i] for g in common]) for i in range(len(runs))])
+    return rows, groups, (overall, overall_common, missing, common)
+
+
+def info_rows(runs):
+    def clusters(r):
+        out = []
+        for c in get(r, "info", "clusters") or []:
+            n = len(c.get("cpus", []))
+            f = c.get("max_khz")
+            out.append("%d x %s%s" % (n, ("0x" + c["cpu_part"][2:]) if c.get("cpu_part", "").startswith("0x") else (c.get("cpu_part") or "cpu"),
+                                      (" @ %.2f GHz" % (f / 1e6)) if f else ""))
+        return ", ".join(out) or "-"
+
+    def gov(r):
+        gs = []
+        for c in get(r, "info", "clusters") or []:
+            if c.get("governor") and c["governor"] not in gs:
+                gs.append(c["governor"])
+        return ", ".join(gs) or "-"
+
+    def gpu(r):
+        w = get(r, "browser", "page", "webgl", "renderer")
+        d = [x.get("driver") for x in get(r, "info", "drm_drivers") or []]
+        s = ", ".join(x for x in d if x)
+        return (s + (" / " + w if w else "")) or "-"
+
+    def disp(r):
+        d = get(r, "info", "displays", 0)
+        return (d or {}).get("mode") or "-"
+
+    def mem(r):
+        k = get(r, "info", "mem_total_kb")
+        return "%.1f GB" % (k / 1048576.0) if k else "-"
+
+    def storage(r):
+        s = r.get("storage") or {}
+        return " ".join(str(x) for x in [s.get("type"), s.get("name")] if x) or "-"
+
+    def kiosk(r):
+        s = get(r, "state_before") or {}
+        if s.get("kiosk_browser_procs") is None:
+            return "-"
+        return "kiosk running" if s["kiosk_browser_procs"] else "no kiosk"
+
+    def load(r):
+        s = get(r, "state_before") or {}
+        la = s.get("loadavg") or []
+        b = s.get("cpu_busy_pct")
+        return "%s, cpu busy %s %%" % (la[0] if la else "-", ("%.0f" % b) if b is not None else "-")
+
+    def temp(r):
+        t = get(r, "state_before", "temp_mC")
+        t = [x for x in (t or []) if x is not None]
+        return "%.0f C" % (max(t) / 1000.0) if t else "-"
+
+    def rendering_hz(r):
+        h = get(r, "browser", "page", "refresh_hz")
+        sc = get(r, "browser", "page", "env", "device_pixel_ratio")
+        return ("%s Hz, scale %s" % (h, sc)) if h else "-"
+
+    return [
+        ("Model", lambda r: get(r, "info", "model") or "-"),
+        ("Variant", lambda r: r.get("variant", "-")),
+        ("Kernel", lambda r: get(r, "info", "kernel") or "-"),
+        ("Cores", clusters),
+        ("Governor", gov),
+        ("RAM", mem),
+        ("GPU", gpu),
+        ("Display", disp),
+        ("Storage", storage),
+        ("Browser", rendering_hz),
+        ("Kiosk before the run", kiosk),
+        ("Load before the run", load),
+        ("Hottest sensor before the run", temp),
+        ("Run time", lambda r: "%s s%s" % (r.get("duration_s", "-"), " (quick)" if r.get("quick") else "")),
+    ]
+
+
+def md_escape(s):
+    return str(s).replace("|", "\\|").replace("\n", " ")
+
+
+def score_cell(v, vals, star, bold_best):
+    if v is None:
+        return "-"
+    best = max(x for x in vals if x is not None)
+    t = "%.0f%s" % (v, "*" if star else "")
+    return "**%s**" % t if bold_best and v >= best - 1e-9 else t
+
+
+def markdown(title, runs, rows, groups, overall):
+    names = [r["_name"] for r in runs]
+    out = ["# " + title, ""]
+    out.append("Score: the best panel of a row has 100. More is better in every score.")
+    out.append("")
+    out.append("## Panels")
+    out.append("")
+    out.append("| | " + " | ".join(md_escape(n) for n in names) + " |")
+    out.append("|---|" + "---|" * len(names))
+    for label, fn in info_rows(runs):
+        out.append("| %s | %s |" % (label, " | ".join(md_escape(fn(r)) for r in runs)))
+    out.append("")
+    out.append("## Scores")
+    out.append("")
+    out.append("| Group | " + " | ".join(md_escape(n) for n in names) + " |")
+    out.append("|---|" + "---:|" * len(names))
+    for g in GROUP_ORDER:
+        if g in groups:
+            vals = groups[g]
+            best = max(v for v in vals if v is not None)
+            out.append("| %s | %s |" % (g, " | ".join(
+                ("**%.0f**" % v if v is not None and v >= best - 1e-9 else ("%.0f" % v if v is not None else "-")) for v in vals)))
+    overall, overall_common, missing, common = overall
+    out.append("| **Overall** | %s |" % " | ".join(
+        score_cell(v, overall, bool(missing[i]), True) for i, v in enumerate(overall)))
+    if overall_common:
+        out.append("| **Overall, groups of every panel** | %s |" % " | ".join(
+            score_cell(v, overall_common, False, True) for v in overall_common))
+    out.append("")
+    if any(missing):
+        out.append("A star (*) marks an overall score that lacks groups: %s." % "; ".join(
+            "%s has no %s" % (names[i], ", ".join(m)) for i, m in enumerate(missing) if m))
+        out.append("The row \"groups of every panel\" uses only %s." % ", ".join(common))
+        out.append("")
+    for g in GROUP_ORDER:
+        grows = [x for x in rows if x["m"].group == g]
+        if not grows:
+            continue
+        out.append("## " + g)
+        out.append("")
+        out.append("| Test | Unit | " + " | ".join(md_escape(n) for n in names) + " |")
+        out.append("|---|---|" + "---:|" * len(names))
+        for x in grows:
+            m = x["m"]
+            cells = []
+            for v, s in zip(x["vals"], x["rel"]):
+                if v is None:
+                    cells.append("-")
+                elif s is None:
+                    cells.append(fmt(v))
+                elif s >= 99.995:
+                    cells.append("**%s (100)**" % fmt(v))
+                else:
+                    cells.append("%s (%.0f)" % (fmt(v), s))
+            out.append("| %s%s | %s | %s |" % (md_escape(m.name), "" if m.better == HIGH else " (less is better)",
+                                              m.unit, " | ".join(cells)))
+        out.append("")
+    # the clusters of a big.LITTLE panel
+    cl_lines = []
+    for r in runs:
+        tests = get(r, "cpu", "tests") or {}
+        for k, t in tests.items():
+            singles = t.get("single") or []
+            if len(singles) > 1:
+                cl_lines.append("| %s | %s | %s |" % (md_escape(r["_name"]), k, ", ".join(
+                    "c%s %s" % (s.get("cluster"), fmt(s.get("rate"))) for s in singles)))
+    if cl_lines:
+        out.append("## Single-thread rate of each core cluster")
+        out.append("")
+        out.append("Cluster c0 is the biggest one.")
+        out.append("")
+        out.append("| Panel | Test | Clusters |")
+        out.append("|---|---|---|")
+        out.extend(cl_lines)
+        out.append("")
+    notes = []
+    for r in runs:
+        for key in ("browser", "storage", "net", "cpu", "mem", "sustained"):
+            sec = r.get(key)
+            if isinstance(sec, dict) and (sec.get("error") or sec.get("skipped") or sec.get("reason")):
+                notes.append("%s, %s: %s" % (r["_name"], key, sec.get("error") or sec.get("skipped") or sec.get("reason")))
+        if get(r, "sustained", "aborted_thermal"):
+            notes.append("%s: the sustained load stopped at the thermal limit." % r["_name"])
+        if get(r, "browser", "restore", "same_url") is False:
+            notes.append("%s: the kiosk page was not confirmed after the browser test." % r["_name"])
+        if r.get("quick"):
+            notes.append("%s is a quick run and does not compare with a full run." % r["_name"])
+    if notes:
+        out.append("## Notes")
+        out.append("")
+        out.extend("- " + md_escape(n) for n in notes)
+        out.append("")
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------- HTML
+
+CSS = """
+:root { --bg:#ffffff; --fg:#1b1f23; --mute:#5b6570; --line:#d6dbe0; --head:#eef1f4; --bar:#7fb3e6; --best:#2f8f4e; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#14181c; --fg:#dde3e8; --mute:#93a0ab; --line:#2c343b; --head:#1d242a; --bar:#3a6ea5; --best:#5fc27d; }
+}
+body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:15px/1.4 system-ui, sans-serif; }
+main { max-width:1100px; margin:0 auto; }
+h1 { font-size:1.5em; margin:0 0 .3em; } h2 { font-size:1.15em; margin:1.6em 0 .4em; }
+p.note { color:var(--mute); margin:.2em 0 1em; }
+.wrap { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; min-width:520px; }
+th, td { border-bottom:1px solid var(--line); padding:5px 8px; text-align:left; vertical-align:top; }
+thead th { background:var(--head); position:sticky; top:0; }
+td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+td.u { color:var(--mute); white-space:nowrap; }
+td.s { background-repeat:no-repeat; background-size:0% 100%; }
+.best { font-weight:700; color:var(--best); }
+.mute { color:var(--mute); }
+svg { max-width:100%; height:auto; background:var(--bg); }
+.legend span { display:inline-block; margin-right:14px; }
+.legend i { display:inline-block; width:12px; height:12px; margin-right:5px; vertical-align:-1px; }
+"""
+
+PALETTE = ["#4e79a7", "#f28e2b", "#59a14f", "#b07aa1", "#e15759", "#76b7b2", "#edc948", "#9c755f"]
+
+
+def bar_cell(text, score, best):
+    """A table cell whose background is a bar of width = score %."""
+    w = 0 if score is None else max(0, min(100, score))
+    cls = "n s" + (" best" if best else "")
+    return '<td class="%s" style="background-image:linear-gradient(var(--bar),var(--bar));background-size:%.0f%% 100%%;' \
+           'background-repeat:no-repeat;background-position:left">%s</td>' % (cls, w, html.escape(text))
+
+
+def svg_chart(runs, series_fn, title, ylabel, ymin=None):
+    """A line chart for the sustained samples. series_fn(run) -> list of values."""
+    data = [(r["_name"], series_fn(r)) for r in runs]
+    data = [(n, s) for n, s in data if s]
+    if not data:
+        return ""
+    w, h, ml, mr, mt, mb = 720, 260, 56, 12, 28, 34
+    xmax = max(len(s) for _, s in data)
+    ys = [v for _, s in data for v in s if v is not None]
+    lo = min(ys) if ymin is None else ymin
+    hi = max(ys)
+    if hi <= lo:
+        hi = lo + 1
+    pad = (hi - lo) * 0.05
+    hi += pad
+    if ymin is None:
+        lo -= pad
+
+    def px(i):
+        return ml + (w - ml - mr) * (i / max(1, xmax - 1))
+
+    def py(v):
+        return mt + (h - mt - mb) * (1 - (v - lo) / (hi - lo))
+    out = ['<svg viewBox="0 0 %d %d" role="img" aria-label="%s">' % (w, h, html.escape(title))]
+    out.append('<text x="%d" y="16" font-size="13" fill="currentColor">%s</text>' % (ml, html.escape(title)))
+    for k in range(5):
+        v = lo + (hi - lo) * k / 4
+        y = py(v)
+        out.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" stroke="#8884" />' % (ml, w - mr, y, y))
+        out.append('<text x="%d" y="%.1f" font-size="11" text-anchor="end" fill="currentColor">%.0f</text>' % (ml - 6, y + 4, v))
+    out.append('<text x="%d" y="%d" font-size="11" text-anchor="middle" fill="currentColor">seconds</text>' % ((ml + w - mr) // 2, h - 6))
+    out.append('<text x="12" y="%d" font-size="11" transform="rotate(-90 12 %d)" text-anchor="middle" fill="currentColor">%s</text>'
+               % ((mt + h - mb) // 2, (mt + h - mb) // 2, html.escape(ylabel)))
+    for i in range(0, xmax, max(1, xmax // 6)):
+        out.append('<text x="%.1f" y="%d" font-size="11" text-anchor="middle" fill="currentColor">%d</text>' % (px(i), h - mb + 14, i + 1))
+    for si, (n, s) in enumerate(data):
+        pts = " ".join("%.1f,%.1f" % (px(i), py(v)) for i, v in enumerate(s) if v is not None)
+        out.append('<polyline fill="none" stroke="%s" stroke-width="2" points="%s"><title>%s</title></polyline>'
+                   % (PALETTE[si % len(PALETTE)], pts, html.escape(n)))
+    out.append("</svg>")
+    leg = '<p class="legend">' + "".join(
+        '<span><i style="background:%s"></i>%s</span>' % (PALETTE[i % len(PALETTE)], html.escape(n)) for i, (n, _) in enumerate(data)) + "</p>"
+    return "".join(out) + leg
+
+
+def render_html(title, runs, rows, groups, overall):
+    names = [r["_name"] for r in runs]
+    h = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
+         '<meta name="viewport" content="width=device-width, initial-scale=1">',
+         "<title>%s</title><style>%s</style></head><body><main>" % (html.escape(title), CSS),
+         "<h1>%s</h1>" % html.escape(title),
+         '<p class="note">Score: the best panel of a row has 100. More is better in every score. '
+         "A bar is as long as the score.</p>"]
+    h.append("<h2>Scores</h2><div class=\"wrap\"><table><thead><tr><th>Group</th>%s</tr></thead><tbody>"
+             % "".join("<th class=\"n\">%s</th>" % html.escape(n) for n in names))
+
+    def score_row(label, vals, bold=False, stars=None):
+        best = max([v for v in vals if v is not None] or [0])
+        stars = stars or [False] * len(vals)
+        cells = "".join(bar_cell("-" if v is None else "%.0f%s" % (v, "*" if st else ""), v, v is not None and v >= best - 1e-9)
+                        for v, st in zip(vals, stars))
+        return "<tr><td>%s</td>%s</tr>" % ("<b>%s</b>" % html.escape(label) if bold else html.escape(label), cells)
+    for g in GROUP_ORDER:
+        if g in groups:
+            h.append(score_row(g, groups[g]))
+    overall, overall_common, missing, common = overall
+    h.append(score_row("Overall", overall, True, [bool(m) for m in missing]))
+    if overall_common:
+        h.append(score_row("Overall, groups of every panel", overall_common, True))
+    h.append("</tbody></table></div>")
+    if any(missing):
+        h.append('<p class="note">A star (*) marks an overall score that lacks groups: %s.%s</p>' % (
+            html.escape("; ".join("%s has no %s" % (names[i], ", ".join(m)) for i, m in enumerate(missing) if m)),
+            html.escape(" The row for the groups of every panel uses only %s." % ", ".join(common)) if overall_common else ""))
+
+    h.append("<h2>Panels</h2><div class=\"wrap\"><table><thead><tr><th></th>%s</tr></thead><tbody>"
+             % "".join("<th>%s</th>" % html.escape(n) for n in names))
+    for label, fn in info_rows(runs):
+        h.append("<tr><td class=\"mute\">%s</td>%s</tr>" % (html.escape(label), "".join("<td>%s</td>" % html.escape(str(fn(r))) for r in runs)))
+    h.append("</tbody></table></div>")
+
+    for g in GROUP_ORDER:
+        grows = [x for x in rows if x["m"].group == g]
+        if not grows:
+            continue
+        h.append("<h2>%s</h2><div class=\"wrap\"><table><thead><tr><th>Test</th><th>Unit</th>%s</tr></thead><tbody>"
+                 % (html.escape(g), "".join("<th class=\"n\">%s</th>" % html.escape(n) for n in names)))
+        for x in grows:
+            m = x["m"]
+            cells = []
+            for v, s in zip(x["vals"], x["rel"]):
+                if v is None:
+                    cells.append('<td class="n mute">-</td>')
+                elif s is None:
+                    cells.append('<td class="n">%s</td>' % html.escape(fmt(v)))
+                else:
+                    cells.append(bar_cell("%s (%.0f)" % (fmt(v), s), s, s >= 99.995))
+            h.append("<tr><td>%s%s</td><td class=\"u\">%s</td>%s</tr>"
+                     % (html.escape(m.name), "" if m.better == HIGH else ' <span class="mute">(less is better)</span>',
+                        html.escape(m.unit), "".join(cells)))
+        h.append("</tbody></table></div>")
+
+    def rate_series(r):
+        s = get(r, "sustained", "samples")
+        if not s:
+            return []
+        first = [x["rate"] for x in s[:5] if num(x.get("rate"))]
+        base = (sum(first) / len(first)) if first else 0
+        return [100.0 * x["rate"] / base if base and num(x.get("rate")) is not None else None for x in s]
+
+    def temp_series(r):
+        s = get(r, "sustained", "samples")
+        out = []
+        for x in s or []:
+            t = [v for v in x.get("temp_mC", []) if v is not None]
+            out.append(max(t) / 1000.0 if t else None)
+        return out
+
+    def freq_series(r):
+        s = get(r, "sustained", "samples")
+        return [(x["khz"][0] / 1000.0) if x.get("khz") and x["khz"][0] and x["khz"][0] > 0 else None for x in s or []]
+    ch = svg_chart(runs, rate_series, "Sustained load: work rate (first 5 s = 100)", "percent", 0)
+    if ch:
+        h.append("<h2>Sustained load over time</h2>" + ch)
+        h.append(svg_chart(runs, temp_series, "Hottest sensor", "deg C"))
+        h.append(svg_chart(runs, freq_series, "Frequency of the biggest cluster", "MHz", 0))
+    notes = []
+    for r in runs:
+        for key in ("browser", "storage", "net", "cpu", "mem", "sustained"):
+            sec = r.get(key)
+            if isinstance(sec, dict) and (sec.get("error") or sec.get("skipped") or sec.get("reason")):
+                notes.append("%s, %s: %s" % (r["_name"], key, sec.get("error") or sec.get("skipped") or sec.get("reason")))
+        if r.get("quick"):
+            notes.append("%s is a quick run and does not compare with a full run." % r["_name"])
+    if notes:
+        h.append("<h2>Notes</h2><ul>%s</ul>" % "".join("<li>%s</li>" % html.escape(n) for n in notes))
+    h.append("</main></body></html>")
+    return "\n".join(h)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Compare the result files of tsx-bench.", add_help=True)
+    ap.add_argument("files", nargs="+", metavar="RESULT.json")
+    ap.add_argument("--md", metavar="FILE", help="also write the Markdown report to FILE")
+    ap.add_argument("--html", metavar="FILE", help="write a self-contained HTML page to FILE")
+    ap.add_argument("--title", default="Panel benchmark")
+    ap.add_argument("--no-text", action="store_true", help="do not print the report on stdout")
+    a = ap.parse_args(argv)
+    runs = load(a.files)
+    rows, groups, overall = analyze(runs)
+    md = markdown(a.title, runs, rows, groups, overall)
+    if not a.no_text:
+        print(md)
+    if a.md:
+        with open(a.md, "w", encoding="utf-8") as f:
+            f.write(md + "\n")
+    if a.html:
+        with open(a.html, "w", encoding="utf-8") as f:
+            f.write(render_html(a.title, runs, rows, groups, overall) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

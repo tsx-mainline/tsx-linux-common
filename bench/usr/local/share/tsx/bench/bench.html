@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tsx-bench</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  The browser part of tsx-bench. tsx-bench-core loads this page into the
+  kiosk browser through DevTools, calls tsxBench.run() and reads the result.
+  The page needs no network. Every test has a fixed amount of work, so the
+  numbers of two panels compare. The frame tests draw into a canvas of a fixed
+  size (1024 x 640), so the pixel count does not depend on the panel.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #101418; color: #d8dee4;
+    font: 22px/1.3 sans-serif; overflow: hidden; }
+  #status { position: fixed; left: 16px; top: 12px; z-index: 10; }
+  #stage { position: fixed; left: 0; top: 0; right: 0; bottom: 0; }
+  canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+  .box { position: absolute; width: 36px; height: 36px; border-radius: 8px; will-change: transform; }
+  .lay { position: absolute; background: #3a6ea5; border-radius: 4px; }
+  #scroller { position: absolute; left: 0; top: 0; right: 0; bottom: 0; overflow: hidden; }
+  .row { margin: 6px 20px; padding: 10px 14px; border-radius: 10px; background: #1d252d;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .6); }
+  @keyframes spin {
+    from { transform: translate(0, 0) rotate(0deg); }
+    to { transform: translate(var(--dx), var(--dy)) rotate(360deg); }
+  }
+</style>
+</head>
+<body>
+<div id="status">tsx-bench</div>
+<div id="stage"></div>
+<script>
+"use strict";
+(function () {
+  var statusEl = document.getElementById("status");
+  var stage = document.getElementById("stage");
+  var STAGE_MS = 2500;
+
+  function say(t) { statusEl.textContent = "tsx-bench: " + t; }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function clearStage() { stage.innerHTML = ""; }
+  function round(x, n) { var m = Math.pow(10, n || 2); return Math.round(x * m) / m; }
+
+  // ---- JS speed: fixed work, best of two runs, milliseconds (lower is better)
+  function tInt() {
+    var x = 123456789 | 0, s = 0;
+    for (var i = 0; i < 1e7; i++) {
+      x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+      s = (s + Math.imul(x, 2654435761)) | 0;
+    }
+    return s;
+  }
+  function tFloat() {
+    var s = 0;
+    for (var i = 1; i < 1e6; i++) s += Math.sin(i * 0.001) * Math.sqrt(i) + Math.atan2(i, 3);
+    return s;
+  }
+  function tArray() {
+    var a = [], i;
+    for (i = 0; i < 100000; i++) a.push((i * 7919) % 100003);
+    a.sort(function (p, q) { return p - q; });
+    return a.map(function (v) { return v * 2; }).filter(function (v) { return (v & 3) === 0; })
+      .reduce(function (p, v) { return p + v; }, 0);
+  }
+  function tJson() {
+    var o = [], i;
+    for (i = 0; i < 8000; i++) o.push({ id: i, name: "item" + i, tags: ["a", "b", "c" + (i % 7)], v: i / 3 });
+    var s = "";
+    for (i = 0; i < 3; i++) s = JSON.stringify(JSON.parse(i ? s : JSON.stringify(o)));
+    return s.replace(/item(\d+)/g, "x$1").split(",").length;
+  }
+  function tTyped() {
+    var n = 96, A = new Float32Array(n * n), B = new Float32Array(n * n), C = new Float32Array(n * n);
+    var i, j, k, r;
+    for (i = 0; i < n * n; i++) { A[i] = (i % 17) / 17; B[i] = (i % 13) / 13; }
+    for (r = 0; r < 4; r++)
+      for (i = 0; i < n; i++)
+        for (k = 0; k < n; k++) {
+          var a = A[i * n + k];
+          for (j = 0; j < n; j++) C[i * n + j] += a * B[k * n + j];
+        }
+    return C[n * n / 2];
+  }
+  function bestMs(fn) {
+    var best = 1e9, sink = 0;
+    for (var r = 0; r < 2; r++) {
+      var t0 = performance.now();
+      sink += fn();
+      var t = performance.now() - t0;
+      if (t < best) best = t;
+    }
+    if (sink === 12345.678) console.log(sink);
+    return round(best, 1);
+  }
+  async function jsTests() {
+    var out = {}, list = [["int", tInt], ["float", tFloat], ["array", tArray], ["json", tJson], ["typed", tTyped]];
+    var total = 0;
+    for (var i = 0; i < list.length; i++) {
+      say("js " + list[i][0]);
+      await sleep(30);
+      out[list[i][0] + "_ms"] = bestMs(list[i][1]);
+      total += out[list[i][0] + "_ms"];
+    }
+    out.total_ms = round(total, 1);
+    return out;
+  }
+
+  // ---- frame measurement
+  function nextFrame(timeoutMs) {
+    return new Promise(function (resolve) {
+      var done = false;
+      var timer = setTimeout(function () { if (!done) { done = true; resolve(null); } }, timeoutMs);
+      requestAnimationFrame(function (t) { if (!done) { done = true; clearTimeout(timer); resolve(t); } });
+    });
+  }
+  // Run perFrame() for ms. Returns fps and frame time percentiles.
+  async function frames(ms, perFrame) {
+    var first = await nextFrame(3000);
+    if (first === null) return { fps: 0, frames: 0, hidden: true };
+    var times = [first], tEnd = first + ms, i = 0;
+    for (;;) {
+      if (perFrame) perFrame(i++);
+      var t = await nextFrame(1500);
+      if (t === null) break;
+      times.push(t);
+      if (t >= tEnd) break;
+    }
+    var d = [];
+    for (var k = 3; k < times.length; k++) d.push(times[k] - times[k - 1]);   // skip the first frames
+    if (!d.length) return { fps: 0, frames: times.length, hidden: true };
+    var sum = d.reduce(function (p, v) { return p + v; }, 0);
+    d.sort(function (p, q) { return p - q; });
+    return {
+      fps: round(1000 * d.length / sum, 1),
+      frames: d.length,
+      p50_ms: round(d[Math.floor(d.length * 0.5)], 1),
+      p95_ms: round(d[Math.floor(d.length * 0.95)], 1),
+      max_ms: round(d[d.length - 1], 1)
+    };
+  }
+
+  // A screen that just woke needs a moment before the first frame callback.
+  async function waitForFrames() {
+    var t0 = performance.now();
+    for (var i = 0; i < 20; i++) {
+      if (await nextFrame(1000) !== null) return round((performance.now() - t0) / 1000, 1);
+    }
+    return -1;
+  }
+
+  async function refreshRate() {
+    var r = await frames(1000, null);
+    return r.fps || 0;
+  }
+
+  // ---- canvas 2d: N shapes per frame
+  async function canvas2d(levels) {
+    var out = {};
+    for (var li = 0; li < levels.length; li++) {
+      var n = levels[li];
+      say("canvas 2d, " + n + " shapes");
+      clearStage();
+      var c = document.createElement("canvas");
+      c.width = 1024; c.height = 640;
+      stage.appendChild(c);
+      var ctx = c.getContext("2d");
+      var seed = 1, px = [], py = [], pr = [], pc = [];
+      var cols = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6"];
+      function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+      for (var i = 0; i < n; i++) { px.push(rnd() * 1024); py.push(rnd() * 640); pr.push(4 + rnd() * 16); pc.push(cols[i & 7]); }
+      var res = await frames(STAGE_MS, function (f) {
+        ctx.fillStyle = "#101418";
+        ctx.fillRect(0, 0, 1024, 640);
+        for (var j = 0; j < n; j++) {
+          var x = (px[j] + f * (1 + (j & 3))) % 1024, y = (py[j] + f * (1 + (j & 1))) % 640;
+          ctx.fillStyle = pc[j];
+          ctx.beginPath();
+          ctx.arc(x, y, pr[j], 0, 6.2832);
+          ctx.fill();
+        }
+        ctx.fillStyle = "#fff";
+        ctx.font = "20px sans-serif";
+        for (var t = 0; t < 20; t++) ctx.fillText("tsx-bench " + f, 20 + (t % 4) * 240, 40 + 28 * Math.floor(t / 4));
+      });
+      out["n" + n] = res;
+    }
+    clearStage();
+    return out;
+  }
+
+  // ---- CSS: compositor animation, and layout in script
+  async function cssTransform(levels) {
+    var out = {};
+    for (var li = 0; li < levels.length; li++) {
+      var n = levels[li];
+      say("css transform, " + n + " boxes");
+      clearStage();
+      var w = window.innerWidth || 1024, h = window.innerHeight || 640;
+      var cols = ["#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4"];
+      for (var i = 0; i < n; i++) {
+        var d = document.createElement("div");
+        d.className = "box";
+        d.style.left = ((i * 97) % w) + "px";
+        d.style.top = ((i * 53) % h) + "px";
+        d.style.background = cols[i % 6];
+        d.style.setProperty("--dx", (((i * 31) % 200) - 100) + "px");
+        d.style.setProperty("--dy", (((i * 17) % 200) - 100) + "px");
+        d.style.animation = "spin " + (1 + (i % 5) * 0.4) + "s linear infinite alternate";
+        stage.appendChild(d);
+      }
+      out["n" + n] = await frames(STAGE_MS, null);
+    }
+    clearStage();
+    return out;
+  }
+  async function cssLayout(n) {
+    say("css layout, " + n + " boxes");
+    clearStage();
+    var els = [];
+    for (var i = 0; i < n; i++) {
+      var d = document.createElement("div");
+      d.className = "lay";
+      stage.appendChild(d);
+      els.push(d);
+    }
+    var res = await frames(STAGE_MS, function (f) {
+      for (var j = 0; j < n; j++) {
+        var s = els[j].style;
+        s.left = ((j * 37 + f * 3) % 600) + "px";
+        s.top = ((j * 23) % 360) + "px";
+        s.width = (40 + ((j + f) % 60)) + "px";
+        s.height = (20 + (j % 30)) + "px";
+      }
+    });
+    clearStage();
+    return res;
+  }
+  async function scrollTest(rows) {
+    say("scrolling a list of " + rows + " rows");
+    clearStage();
+    var sc = document.createElement("div");
+    sc.id = "scroller";
+    var inner = document.createElement("div");
+    for (var i = 0; i < rows; i++) {
+      var r = document.createElement("div");
+      r.className = "row";
+      r.textContent = "Row " + i + " lorem ipsum dolor sit amet, consectetur adipiscing elit";
+      inner.appendChild(r);
+    }
+    sc.appendChild(inner);
+    stage.appendChild(sc);
+    var pos = 0;
+    var res = await frames(STAGE_MS, function () { pos += 14; sc.scrollTop = pos; });
+    clearStage();
+    return res;
+  }
+
+  // ---- WebGL
+  function glContext() {
+    var c = document.createElement("canvas");
+    c.width = 1024; c.height = 640;
+    var gl = c.getContext("webgl", { antialias: false, powerPreference: "high-performance" });
+    return gl ? { c: c, gl: gl } : null;
+  }
+  function glProgram(gl, vs, fs) {
+    function sh(type, src) {
+      var s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      return s;
+    }
+    var p = gl.createProgram();
+    gl.attachShader(p, sh(gl.VERTEX_SHADER, vs));
+    gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    return p;
+  }
+  var VS = "attribute vec2 a; uniform vec2 o; void main(){ gl_Position = vec4(a + o, 0.0, 1.0); }";
+  function fsLoop(n) {
+    return "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n" +
+      "uniform float t;\nvoid main(){\n vec2 p = gl_FragCoord.xy / vec2(1024.0, 640.0);\n" +
+      " vec2 c = vec2(0.3 * sin(t), 0.3 * cos(t)); vec2 z = p * 3.0 - 1.5; float v = 0.0;\n" +
+      " for (int i = 0; i < " + n + "; i++) { z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c; v += dot(z, z) * 0.01; }\n" +
+      " gl_FragColor = vec4(sin(v), cos(v * 1.3), fract(v), 1.0);\n}";
+  }
+  async function webglTests(loops, draws) {
+    var g = glContext();
+    if (!g) return { available: false };
+    var gl = g.gl, out = { available: true };
+    var dbg = gl.getExtension("WEBGL_debug_renderer_info");
+    out.renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    out.vendor = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+    out.version = gl.getParameter(gl.VERSION);
+    out.max_texture = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    clearStage();
+    stage.appendChild(g.c);
+    var buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    gl.viewport(0, 0, 1024, 640);
+    out.fill = {};
+    for (var i = 0; i < loops.length; i++) {
+      say("webgl shader, " + loops[i] + " loops");
+      var p = glProgram(gl, VS, fsLoop(loops[i]));
+      gl.useProgram(p);
+      var a = gl.getAttribLocation(p, "a");
+      gl.enableVertexAttribArray(a);
+      gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+      var lo = gl.getUniformLocation(p, "o"), lt = gl.getUniformLocation(p, "t");
+      gl.uniform2f(lo, 0, 0);
+      out.fill["loops" + loops[i]] = await frames(STAGE_MS, function (f) {
+        gl.uniform1f(lt, f * 0.02);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      });
+    }
+    say("webgl draw calls, " + draws);
+    var small = glProgram(gl, VS, "precision mediump float; void main(){ gl_FragColor = vec4(0.2, 0.7, 0.4, 1.0); }");
+    gl.useProgram(small);
+    var sb = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, sb);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 0.01, 0, 0, 0.01]), gl.STATIC_DRAW);
+    var sa = gl.getAttribLocation(small, "a");
+    gl.enableVertexAttribArray(sa);
+    gl.vertexAttribPointer(sa, 2, gl.FLOAT, false, 0, 0);
+    var so = gl.getUniformLocation(small, "o");
+    out.draw_calls = await frames(STAGE_MS, function (f) {
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      for (var j = 0; j < draws; j++) {
+        gl.uniform2f(so, ((j * 37 + f * 5) % 200) / 100 - 1, ((j * 53) % 200) / 100 - 1);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+    });
+    out.draw_calls.per_frame = draws;
+    clearStage();
+    return out;
+  }
+
+  async function run() {
+    var t0 = performance.now();
+    var res = {
+      schema: 1,
+      env: {
+        user_agent: navigator.userAgent,
+        device_pixel_ratio: window.devicePixelRatio,
+        inner_width: window.innerWidth,
+        inner_height: window.innerHeight,
+        screen_width: screen.width,
+        screen_height: screen.height,
+        hardware_concurrency: navigator.hardwareConcurrency || null,
+        device_memory_gb: navigator.deviceMemory || null,
+        visibility: document.visibilityState
+      }
+    };
+    try {
+      res.first_frame_wait_s = await waitForFrames();
+      res.refresh_hz = await refreshRate();
+      res.js = await jsTests();
+      res.canvas2d = await canvas2d([300, 1500, 6000]);
+      res.css_transform = await cssTransform([200, 800]);
+      res.css_layout = await cssLayout(150);
+      res.scroll = await scrollTest(1500);
+      res.webgl = await webglTests([8, 32, 128], 1500);
+    } catch (e) {
+      res.error = String(e && e.message || e);
+    }
+    res.duration_s = round((performance.now() - t0) / 1000, 1);
+    say("done");
+    return JSON.stringify(res);
+  }
+
+  window.tsxBench = { run: run };
+})();
+</script>
+</body>
+</html>

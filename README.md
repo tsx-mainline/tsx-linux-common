@@ -8,6 +8,7 @@ The software that every TSX panel family shares: the base services, the rescue s
 |---|---|
 | [docs/index.md](docs/index.md) | The list of pages. |
 | [docs/layout.md](docs/layout.md) | The directories, the packages, the services, the board interface and the tests. Read it to build a package or to port the software to a new board. |
+| [docs/bench.md](docs/bench.md) | `tsx-bench`: the speed test of a panel (CPU, memory, sustained load, storage, browser, network) and `tsx-bench-compare`, which compares the result files of several panels. |
 | [docs/autoupdate.md](docs/autoupdate.md) | The automatic update: the modes auto and manual, automatic restart, the window, the idle screen, the restart rule and the health check after an update restart. |
 | [docs/adaptive-brightness.md](docs/adaptive-brightness.md) | The learning brightness curve, its settings and its limits. |
 | [docs/buttons.md](docs/buttons.md) | The board layer and the user file of the front keys, what a key press does and the key LEDs. |
@@ -30,6 +31,7 @@ The software that every TSX panel family shares: the base services, the rescue s
 | `ha/` | tsx-ha |
 | `buttons/` | tsx-buttons |
 | `autoupdate/` | tsx-autoupdate |
+| `bench/` | tsx-bench (and the host tool `tsx-bench-compare`) |
 | `ledbar/` | tsx-ledbar |
 | `rescue/` | tsx-rescue-ui |
 | `splash/` | tsx-splash |

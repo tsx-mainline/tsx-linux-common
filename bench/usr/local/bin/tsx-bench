@@ -1,0 +1,374 @@
+#!/bin/sh
+# tsx-bench: measure the speed of a panel in a way that compares across panels.
+#
+#   tsx-bench [options]
+#
+# One run takes about 5 to 10 minutes. It writes one JSON file (schema
+# tsx-bench/1) and a text log. `tsx-bench-compare` on a host compares several
+# JSON files. See docs/bench.md.
+#
+# Tests, in this order:
+#   state     load, governor, temperature and kiosk state before the run
+#   info      model, kernel, cores, memory, GPU driver, display
+#   crosscheck  busybox sha256sum and gzip on a file in tmpfs
+#   cpu       integer and float scores, one thread per core cluster, all cores
+#   mem       bandwidth (read, write, copy, triad) and latency
+#   sustained all cores busy for 60 s, with frequency and temperature
+#   storage   sequential and random 4 KiB read of the root device
+#   net       TCP throughput to a "tsx-bench-core netserver" (only with -n)
+#   browser   the benchmark page in the kiosk browser (DevTools)
+#
+# Safety: no write to a block device, no reboot, no change of a setting.
+# The test files live in tmpfs. The browser test shows its own page for about
+# a minute and loads the kiosk page again. With --pause-kiosk the script stops
+# the kiosk service and starts it again at the end.
+
+set -u
+
+VERSION=0.1.0
+LABEL=
+OUT=/tmp
+QUICK=0
+SUSTAINED=60
+STORAGE_DEV=
+NET=
+PAUSE=0
+VARIANT=
+DO_BROWSER=1
+DO_STORAGE=1
+DO_CROSS=1
+DO_CPU=1
+DO_MEM=1
+DO_NET=1
+DEVTOOLS_PORT=9222
+KIOSK_SERVICE=kiosk
+
+usage() {
+	cat <<'EOF'
+usage: tsx-bench [options]
+  -l, --label NAME       name of the panel in the result (default: from the model)
+  -o, --out DIR          folder for the result files (default /tmp)
+  -q, --quick            short run: about 2 minutes, not comparable with a full run
+  -t, --sustained SEC    length of the all-core load (default 60, 0 = skip)
+  -d, --storage-dev DEV  block device to read (default: the root device)
+  -n, --net HOST[:PORT]  TCP test against "tsx-bench-core netserver PORT" (default port 5599)
+      --pause-kiosk      stop the kiosk service for the run, start it again at the end.
+                         The browser test is skipped in this mode.
+      --variant NAME     kind of the run (default: normal, or paused with --pause-kiosk)
+      --skip LIST        comma list of tests to skip: crosscheck,cpu,mem,sustained,
+                         storage,net,browser
+      --devtools-port N  DevTools port of the kiosk browser (default 9222)
+  -h, --help             this text
+  -V, --version          the version
+
+Environment: TSX_BENCH_CORE and TSX_BENCH_PAGE give the paths of tsx-bench-core
+and bench.html when they are not next to this script or in the package folders.
+EOF
+}
+
+die() { echo "tsx-bench: $*" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-l|--label) [ $# -ge 2 ] || die "missing value for $1"; LABEL=$2; shift;;
+	-o|--out) [ $# -ge 2 ] || die "missing value for $1"; OUT=$2; shift;;
+	-q|--quick) QUICK=1;;
+	-t|--sustained) [ $# -ge 2 ] || die "missing value for $1"; SUSTAINED=$2; shift;;
+	-d|--storage-dev) [ $# -ge 2 ] || die "missing value for $1"; STORAGE_DEV=$2; shift;;
+	-n|--net) [ $# -ge 2 ] || die "missing value for $1"; NET=$2; shift;;
+	--pause-kiosk) PAUSE=1;;
+	--variant) [ $# -ge 2 ] || die "missing value for $1"; VARIANT=$2; shift;;
+	--skip)
+		[ $# -ge 2 ] || die "missing value for $1"
+		for s in $(echo "$2" | tr ',' ' '); do
+			case "$s" in
+			crosscheck) DO_CROSS=0;;
+			cpu) DO_CPU=0;;
+			mem) DO_MEM=0;;
+			sustained) SUSTAINED=0;;
+			storage) DO_STORAGE=0;;
+			net) DO_NET=0;;
+			browser) DO_BROWSER=0;;
+			*) die "unknown test in --skip: $s";;
+			esac
+		done
+		shift;;
+	--devtools-port) [ $# -ge 2 ] || die "missing value for $1"; DEVTOOLS_PORT=$2; shift;;
+	-h|--help) usage; exit 0;;
+	-V|--version) echo "tsx-bench $VERSION"; exit 0;;
+	*) usage >&2; die "unknown option: $1";;
+	esac
+	shift
+done
+
+case "$SUSTAINED" in ''|*[!0-9]*) die "--sustained needs a number of seconds";; esac
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+find_file() {
+	# find_file ENVVALUE NAME DIR...
+	_env=$1; _name=$2; shift 2
+	if [ -n "$_env" ]; then
+		[ -e "$_env" ] && { echo "$_env"; return 0; }
+		return 1
+	fi
+	for _d in "$HERE" "$@"; do
+		[ -e "$_d/$_name" ] && { echo "$_d/$_name"; return 0; }
+	done
+	return 1
+}
+CORE=$(find_file "${TSX_BENCH_CORE:-}" tsx-bench-core /usr/local/lib/tsx/bench) ||
+	die "tsx-bench-core not found. Set TSX_BENCH_CORE."
+PAGE=$(find_file "${TSX_BENCH_PAGE:-}" bench.html /usr/local/share/tsx/bench) || PAGE=
+[ -x "$CORE" ] || die "$CORE is not executable"
+
+[ "$QUICK" = 1 ] && [ "$SUSTAINED" = 60 ] && SUSTAINED=15
+if [ "$PAUSE" = 1 ]; then
+	DO_BROWSER=0
+	[ -n "$VARIANT" ] || VARIANT=paused
+fi
+[ -n "$VARIANT" ] || VARIANT=normal
+[ -n "$PAGE" ] || DO_BROWSER=0
+
+# Names and text that go into JSON: plain characters only.
+clean() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-' | sed 's/--*/-/g; s/^-//; s/-$//'; }
+
+if [ -z "$LABEL" ]; then
+	LABEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)
+	[ -n "$LABEL" ] || LABEL=panel
+fi
+LABEL=$(clean "$LABEL")
+VARIANT=$(clean "$VARIANT")
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+[ -d "$OUT" ] || mkdir -p "$OUT" || die "cannot create $OUT"
+BASE="$OUT/tsx-bench-$LABEL-$VARIANT-$TS"
+RESULT="$BASE.json"
+LOG="$BASE.txt"
+W=$(mktemp -d /tmp/tsx-bench.XXXXXX) || die "cannot make a work folder in /tmp"
+: > "$LOG"
+
+uptime_s() { awk '{print int($1)}' /proc/uptime; }
+START_UP=$(uptime_s)
+KIOSK_STOPPED=0
+
+log() { echo "$*" | tee -a "$LOG"; }
+
+KEEP_PID=
+keepawake_stop() {
+	[ -n "$KEEP_PID" ] && kill "$KEEP_PID" 2>/dev/null
+	KEEP_PID=
+}
+
+# Start the kiosk again if this script stopped it. Runs on every exit.
+kiosk_resume() {
+	[ "$KIOSK_STOPPED" = 1 ] || return 0
+	log "tsx-bench: starting the kiosk service again"
+	rc-service "$KIOSK_SERVICE" start >> "$LOG" 2>&1
+	KIOSK_STOPPED=0
+}
+cleanup() {
+	keepawake_stop
+	kiosk_resume
+	rm -rf "$W"
+}
+trap cleanup EXIT
+trap 'log "tsx-bench: interrupted"; exit 130' INT TERM HUP
+
+# section NAME COMMAND...: run a core command, keep its JSON in $W/NAME.json,
+# show its progress lines live and in the log. A failure makes {"error":...}.
+section() {
+	_name=$1; shift
+	log "== $_name"
+	( "$@" 2>&1 > "$W/$_name.json"; echo $? > "$W/$_name.rc" ) | tee -a "$LOG"
+	_rc=$(cat "$W/$_name.rc" 2>/dev/null)
+	if [ "${_rc:-1}" != 0 ] || [ ! -s "$W/$_name.json" ]; then
+		printf '{"error":"%s failed (status %s)"}\n' "$_name" "${_rc:-?}" > "$W/$_name.json"
+		log "tsx-bench: $_name failed (status ${_rc:-?})"
+	fi
+}
+
+# timeit LABEL COMMAND N: the JSON on stdout, the progress line on the terminal and in the log
+timeit() {
+	"$CORE" timeit "$@" 2> "$W/timeit.err"
+	_r=$?
+	tee -a "$LOG" < "$W/timeit.err" >&2
+	return $_r
+}
+
+skipped() {
+	printf '{"skipped":"%s"}\n' "$2" > "$W/$1.json"
+	log "== $1: skipped ($2)"
+}
+
+log "tsx-bench $VERSION  label=$LABEL variant=$VARIANT quick=$QUICK sustained=${SUSTAINED}s"
+
+# --- state and info ----------------------------------------------------------
+section state_before "$CORE" state 3
+section info "$CORE" info
+
+# --- pause the kiosk ---------------------------------------------------------
+HAD_READY=0
+PAUSED_DONE=0
+if [ "$PAUSE" = 1 ]; then
+	if rc-service "$KIOSK_SERVICE" status >/dev/null 2>&1; then
+		log "tsx-bench: stopping the kiosk service for this run"
+		[ -e /run/tsx/kiosk.ready ] && HAD_READY=1
+		PAUSED_DONE=1
+		KIOSK_STOPPED=1
+		rc-service "$KIOSK_SERVICE" stop >> "$LOG" 2>&1
+		sleep 5
+		section state_paused "$CORE" state 3
+	else
+		log "tsx-bench: the kiosk service is not running, nothing to pause"
+	fi
+fi
+
+# --- crosscheck with busybox tools --------------------------------------------
+if [ "$DO_CROSS" = 1 ]; then
+	log "== crosscheck"
+	MIB=24
+	[ "$QUICK" = 1 ] && MIB=8
+	if "$CORE" gen "$W/data.txt" "$MIB" 2>>"$LOG"; then
+		T1=$(timeit sha256sum "sha256sum '$W/data.txt'" 2)
+		T2=$(timeit gzip3 "gzip -3 -c '$W/data.txt' > '$W/data.gz'" 2)
+		T3=$(timeit gunzip "gzip -dc '$W/data.gz'" 2)
+		GZ=$(wc -c < "$W/data.gz" 2>/dev/null || echo 0)
+		printf '{"data_mib":%s,"gzip_bytes":%s,"sha256sum":%s,"gzip3":%s,"gunzip":%s}\n' \
+			"$MIB" "${GZ:-0}" "${T1:-null}" "${T2:-null}" "${T3:-null}" > "$W/crosscheck.json"
+		rm -f "$W/data.txt" "$W/data.gz"
+	else
+		printf '{"error":"cannot make the test file in tmpfs"}\n' > "$W/crosscheck.json"
+	fi
+else
+	skipped crosscheck "skipped by the option"
+fi
+
+# --- cpu, memory ---------------------------------------------------------------
+if [ "$DO_CPU" = 1 ]; then
+	if [ "$QUICK" = 1 ]; then section cpu "$CORE" cpu -q -s 0.4; else section cpu "$CORE" cpu; fi
+else
+	skipped cpu "skipped by the option"
+fi
+if [ "$DO_MEM" = 1 ]; then
+	if [ "$QUICK" = 1 ]; then section mem "$CORE" mem -q; else section mem "$CORE" mem; fi
+else
+	skipped mem "skipped by the option"
+fi
+
+# --- sustained load ---------------------------------------------------------------
+if [ "$SUSTAINED" -gt 0 ]; then
+	section sustained "$CORE" sustained "$SUSTAINED"
+else
+	skipped sustained "skipped by the option"
+fi
+
+# --- storage ---------------------------------------------------------------------
+if [ "$DO_STORAGE" = 1 ]; then
+	if [ -n "$STORAGE_DEV" ]; then
+		if [ "$QUICK" = 1 ]; then section storage "$CORE" storage -d "$STORAGE_DEV" -q
+		else section storage "$CORE" storage -d "$STORAGE_DEV"; fi
+	else
+		if [ "$QUICK" = 1 ]; then section storage "$CORE" storage -q; else section storage "$CORE" storage; fi
+	fi
+else
+	skipped storage "skipped by the option"
+fi
+
+# --- network ---------------------------------------------------------------------
+if [ -n "$NET" ] && [ "$DO_NET" = 1 ]; then
+	NET_HOST=${NET%%:*}
+	NET_PORT=5599
+	case "$NET" in *:*) NET_PORT=${NET##*:};; esac
+	section net "$CORE" net "$NET_HOST" "$NET_PORT"
+else
+	skipped net "no server given (option -n)"
+fi
+
+# --- browser ---------------------------------------------------------------------
+# The page needs a lit screen: a blank screen gets no frame callbacks. tsx-blank
+# wakes the screen through tsx-idled. A loop wakes it again every 10 s, so the
+# idle timeout cannot blank it during the test. At the end the script blanks the
+# screen again if it was blank before.
+if [ "$DO_BROWSER" = 1 ]; then
+	if [ "$PAUSE" = 1 ]; then
+		skipped browser "the kiosk is paused"
+	else
+		WAS_BLANK=0
+		if command -v tsx-blank >/dev/null 2>&1; then
+			if "$CORE" state 0.2 2>/dev/null | grep -q '"display_on":false'; then WAS_BLANK=1; fi
+			log "tsx-bench: waking the screen for the browser test (screen was $([ $WAS_BLANK = 1 ] && echo off || echo on))"
+			tsx-blank off
+			( while :; do sleep 10; tsx-blank off; done ) &
+			KEEP_PID=$!
+			sleep 4
+		fi
+		section browser "$CORE" browser "$PAGE" -p "$DEVTOOLS_PORT" -r /tmp/tsx-bench-restore-url
+		keepawake_stop
+		if [ "$WAS_BLANK" = 1 ]; then
+			log "tsx-bench: blanking the screen again"
+			tsx-blank on
+			sleep 3
+			if "$CORE" state 0.2 2>/dev/null | grep -q '"display_on":false'; then
+				log "tsx-bench: screen is off again"
+			else
+				log "tsx-bench: WARNING the screen is still on. The idle timeout will blank it."
+			fi
+		fi
+		if [ -e /tmp/tsx-bench-restore-url ]; then
+			log "tsx-bench: WARNING the kiosk page was not confirmed. The saved address is in /tmp/tsx-bench-restore-url"
+		fi
+	fi
+else
+	skipped browser "no page, paused or skipped by the option"
+fi
+
+# --- resume the kiosk, then the state after ---------------------------------------
+kiosk_resume
+if [ "$PAUSE" = 1 ] && [ "$PAUSED_DONE" = 1 ]; then
+	# Wait until the kiosk is back (up to 120 s). The ready file exists only on a
+	# panel whose kiosk writes it. Without that file, wait for the browser process.
+	i=0
+	while [ $i -lt 60 ]; do
+		if [ "$HAD_READY" = 1 ]; then
+			[ -e /run/tsx/kiosk.ready ] && break
+		else
+			rc-service "$KIOSK_SERVICE" status >/dev/null 2>&1 && pgrep chrom >/dev/null 2>&1 && break
+		fi
+		sleep 2
+		i=$((i + 1))
+	done
+	if [ $i -lt 60 ]; then
+		log "tsx-bench: the kiosk is back after $((i * 2)) s"
+	else
+		log "tsx-bench: WARNING the kiosk did not come back in 120 s"
+	fi
+fi
+section state_after "$CORE" state 3
+
+# --- assemble the JSON ---------------------------------------------------------------
+DUR=$(($(uptime_s) - START_UP))
+{
+	printf '{"schema":"tsx-bench/1","tool_version":"%s","label":"%s","variant":"%s",' "$VERSION" "$LABEL" "$VARIANT"
+	printf '"started_utc":"%s","duration_s":%s,"quick":%s,"pause_kiosk":%s,' "$TS" "$DUR" "$QUICK" "$PAUSE"
+	printf '"sustained_s":%s' "$SUSTAINED"
+	for n in info state_before state_paused crosscheck cpu mem sustained storage net browser state_after; do
+		[ -s "$W/$n.json" ] || continue
+		printf ',"%s":' "$n"
+		tr -d '\n' < "$W/$n.json"
+	done
+	printf '}\n'
+} > "$RESULT"
+
+# --- short summary in the log: the headline lines of the tests ----------------------
+{
+	echo ""
+	echo "== Summary: $LABEL ($VARIANT)"
+	grep -E '^(timeit |cpu [a-z0-9]+ +(single c0|all)|mem (read|write|copy|triad) +(single c0|all)|mem latency +(1024|65536) KiB|sustained: (first10|[0-9]+ s)|storage |net (up|down)load|  thermal trip)' "$LOG"
+	grep -E '^(state:|browser: )' "$LOG"
+} > "$W/summary.txt"
+cat "$W/summary.txt" >> "$LOG"
+
+log ""
+log "tsx-bench: done in ${DUR} s"
+log "tsx-bench: result $RESULT"
+log "tsx-bench: log    $LOG"
+exit 0

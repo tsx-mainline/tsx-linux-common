@@ -17,6 +17,7 @@ The repo has one directory for each package. A package directory holds the files
 | rescue | tsx-rescue-ui | `tsx-rescue-status`, `tsx-confont`, `tsx-rescue-login`, `tsx-rescue-backlight`, `tsx-data-backup`, `tsx-data-restore` |
 | splash | tsx-splash | `tsx-splash` (C), the splash images and tools |
 | panel-app | tsx-panel-app | The panel app: the ESPHome components `tsx_cards` and `tsx_runtime`, the generic ESPHome YAML and its patches, the service `tsx-panel-app` with `tsx-panel-app-run`, `tsx-layout-check`, `tsx-ha-entities`, the layout files and the layout editor (a plugin of the setup page with its page). The program itself comes from the package of the board family. See [Panel app](panel-app.md) |
+| bench | tsx-bench | `tsx-bench` (the driver), `tsx-bench-core` (C), `bench.html` (the page of the browser test) and the host tool `bench/host/tsx-bench-compare`, which is not part of the package. See [Benchmark](bench.md) |
 | tests | none | host tests, fixtures (`tests/boards`), helper programs |
 
 `tsx_brightness.py` and `tsx-panelctl` are in tsx-base because every profile has tsx-base. The console profile has no tsx-kiosk. tsx-ha depends on `tsx-panelctl`.
@@ -313,7 +314,7 @@ The test hooks of these commands are `TSX_SETUP_STATE_DIR`, `TSX_PANEL_LAYOUT_FI
 | Command | Runs |
 |---|---|
 | `tests/run-all.sh` | The host tests that need no compiler |
-| `tests/run-all.sh --c` | Also the C tests (`tsx-idled`, `tsx-buttons`, `tsx-splash`, the overlay layout, the state files of the panel app) |
+| `tests/run-all.sh --c` | Also the C tests (`tsx-idled`, `tsx-buttons`, `tsx-splash`, `tsx-bench`, the overlay layout, the state files of the panel app) |
 | `tests/run-all.sh --net` | Also the ESPHome tests `test-esphome.sh`, `test-esphome-ledbar.sh` and `test-esphome-wakewords.sh` (need pip) |
 | `tests/test-tsx-data-chroot.sh` | The `tsx-data` test. It needs a container and is not in the list |
 | `ci/lint.sh` | The lint: shell syntax, Python byte-compile, init script modes, proprietary files, doc links |
