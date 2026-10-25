@@ -52,7 +52,7 @@ The FIFO is `/run/tsx/panelctl`, mode 660. The group is `kiosk` on a panel with 
 | `volume P` | The volume: `sendspin-cli player-vol P` while the Sendspin player runs (see [Sendspin](sendspin.md) "Audio and volume"), else `TSX_VOLUME_CMD` of the board or the `Master` control |
 | `mute on\|off` | `sendspin-cli player-mute on\|off` while the Sendspin player runs. Else it is refused (the mixer has no mute) |
 | `reload-page` | The page of the kiosk |
-| `reboot` | `reboot` |
+| `reboot` | `reboot`. Not while `/run/tsx/restart-block` blocks it (a board step after an update runs or waits for a person, see [Automatic update](autoupdate.md) "Restart block"). The daemon then logs the reason. Only `tsx-panelctl reboot --force` on the console overrides it |
 | `update-install` | `tsx-autoupdate now`: install at once, in both modes. The daemon starts it detached (its own session, no FIFO, no terminal). Init adopts and reaps it, so no zombie stays. See [Automatic update](autoupdate.md). |
 | `update-mode auto\|manual`, `auto-restart on\|off` | A key of `panel.conf` (`UPDATE_MODE`, `UPDATE_AUTO_RESTART`), then `tsx-config apply` |
 | `dark-mode on\|off` | A key of `panel.conf` (`KIOSK_DARK`), then `tsx-config apply`. When the value changes, it restarts the kiosk service in the background. |

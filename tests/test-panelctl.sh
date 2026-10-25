@@ -693,6 +693,43 @@ for a in "get lux" "get volume" "get screen" "has als" "has ledbar" "state"; do
 done
 [ ! -s "$T/date.log" ] && ok "client calls: no date process" || bad "client calls started date $(wc -l < "$T/date.log") times"
 
+echo "== the restart block of tsx-autoupdate (a board with a board step after an install) =="
+# oneshot LINE: one daemon that handles one line of the FIFO
+oneshot() {
+	: > "$T/cmds.log"
+	env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run5" TSX_REBOOT_BIN="$T/bin/reboot" TSX_PANELCTL_ONESHOT=1 busybox sh "$SCRIPT" > "$T/oneshot5.log" 2>&1 &
+	OP=$!
+	for _ in $(seq 1 20); do grep -q "listening on" "$T/oneshot5.log" 2>/dev/null && break; sleep 0.1; done
+	echo "$1" > "$T/run5/panelctl"; wait $OP 2>/dev/null
+}
+mkdir -p "$T/run5"
+oneshot reboot
+grep -qxF reboot "$T/cmds.log" && ok "no restart-block file: reboot runs" || bad "no restart-block file: no reboot"
+echo "hold 21" > "$T/run5/restart-block"
+oneshot reboot
+grep -qxF reboot "$T/cmds.log" && bad "hold 21: the FIFO reboot ran" || ok "hold 21: the FIFO reboot does not run"
+grep -q 'reboot refused: the board step after an update failed (exit status 21) and waits for a person' "$T/oneshot5.log" && ok "hold 21: the log says why" || bad "hold 21: no log line: $(cat "$T/oneshot5.log")"
+echo busy > "$T/run5/restart-block"
+oneshot reboot
+grep -qxF reboot "$T/cmds.log" && ok "busy, but no run holds the lock (a stale file): reboot runs" || bad "a stale busy file blocked the reboot"
+( flock -x 9; sleep 3 ) 9>"$T/run5/autoupdate.lock" & LP=$!; sleep 0.3
+oneshot reboot
+grep -qxF reboot "$T/cmds.log" && bad "busy with a run that holds the lock: the reboot ran" || ok "busy with a run that holds the lock: no reboot"
+grep -q 'reboot refused: an update installs and writes the boot partition now' "$T/oneshot5.log" && ok "busy: the log says why" || bad "busy: no log line"
+wait $LP
+# the console command
+echo "hold 24" > "$T/run5/restart-block"; : > "$T/cmds.log"
+out=$(env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run5" TSX_REBOOT_BIN="$T/bin/reboot" busybox sh "$SCRIPT" reboot 2>&1); rc=$?
+[ $rc = 1 ] && ! grep -qxF reboot "$T/cmds.log" && ok "console reboot while held: exit 1, no reboot" || bad "console reboot while held: rc $rc, $(cat "$T/cmds.log")"
+case $out in *"tsx-panelctl reboot --force"*) ok "console reboot names --force";; *) bad "console reboot text: $out";; esac
+env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run5" TSX_REBOOT_BIN="$T/bin/reboot" busybox sh "$SCRIPT" reboot --force >/dev/null 2>&1
+grep -qxF reboot "$T/cmds.log" && ok "console reboot --force restarts while held" || bad "reboot --force did not restart"
+rm -f "$T/run5/restart-block"; : > "$T/cmds.log"
+env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run5" TSX_REBOOT_BIN="$T/bin/reboot" busybox sh "$SCRIPT" reboot >/dev/null 2>&1
+grep -qxF reboot "$T/cmds.log" && ok "console reboot with no block restarts" || bad "console reboot with no block"
+oneshot "reboot --force"
+grep -qxF reboot "$T/cmds.log" && bad "the FIFO accepted reboot --force" || ok "the FIFO rejects reboot --force (only the console has it)"
+
 echo "== $N ok, $F failed =="
 [ $F = 0 ] && echo PASS test-panelctl || echo FAIL test-panelctl
 exit $F

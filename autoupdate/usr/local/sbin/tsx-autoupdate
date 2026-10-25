@@ -18,6 +18,7 @@
 # the panel). With AUTO_RESTART=on
 # the panel restarts right after the install. An automatic install restarts
 # only inside the window, and an install from Home Assistant also outside it.
+# A failed board step after the install (see "Board hooks") stops the restart.
 # With AUTO_RESTART=off the state "restart required" stays until the next
 # boot. Then the install button of Home Assistant restarts the panel.
 #
@@ -57,6 +58,36 @@
 #   tsx-autoupdate healthcheck post-reboot check (the background job of the
 #                              init.d script calls it. It does nothing unless
 #                              an automatic update rebooted the panel)
+#   tsx-autoupdate post-update run the board step after an install again, by
+#                              hand (see "Board hooks"). It never restarts
+#
+# Board hooks: board.sh can define two optional functions.
+#   tsx_board_pre_update   runs before apk upgrade. A non-zero status stops
+#                          the install. Nothing has changed then.
+#   tsx_board_post_update  runs after apk upgrade and before the restart, for
+#                          example to write the new kernel into the boot
+#                          partition. It runs also after a failed apk upgrade,
+#                          because some packages may be installed. Its status:
+#                            0      done. The restart rule applies.
+#                            1      not done, and nothing needs a person. No
+#                                   restart. The next install (the window in
+#                                   the mode auto, or Install) runs it again.
+#                            other  not done, and a person must check the
+#                                   panel. No restart, no install, no new try
+#                                   until a person runs tsx-autoupdate
+#                                   post-update.
+#                          The field post_update of the status keeps the state
+#                          across runs and boots: empty, "owed" (apk upgrade
+#                          started, the step did not end), "retry 1" or
+#                          "hold N". A board without the function never sets
+#                          it. A plain `apk upgrade` runs neither hook.
+#   On such a board, $RUN/restart-block ("busy" or "hold N") stops the
+#   restart of tsx-panelctl reboot (the Restart button). Optional board
+#   names for the text: TSX_POST_UPDATE_STEP, tsx_board_post_update_meaning N,
+#   and tsx_board_update_status for the status.
+#
+# One run at a time: now, the tick and post-update take a non-blocking flock
+# on $RUN/autoupdate.lock. A second run logs the skip and ends.
 #
 # The health check after an update reboot:
 #   - kiosk panel (/etc/init.d/kiosk): the kiosk service runs and the page
@@ -100,7 +131,7 @@ NL='
 '
 
 # The board values (TSX_FAMILY, TSX_APK_CATEGORY, TSX_PKG_PREFIX and the
-# optional function tsx_board_pre_update). Test hook:
+# optional functions tsx_board_pre_update and tsx_board_post_update). Test hook:
 # TSX_BOARD_CONF. TSX_PKG_PREFIX is the start of the package names of the
 # board family. Without it, the prefix is tsx-$TSX_FAMILY.
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
@@ -123,7 +154,7 @@ RUNLEVELS=${TSX_RUNLEVELS:-/etc/runlevels}
 # image for the LED bar. The upgrade never loads the bar.
 LEDBAR_PENDING=${TSX_LEDBAR_FW_PENDING:-/data/tsx/ledbar-fw.pending}
 
-STATUS_FIELDS="installed_hash pending_count pending_list reboot_pending in_progress last_check last_install last_result health repo_warning repo_blocked running_version installed_release pending_release boot_id restart_required"
+STATUS_FIELDS="installed_hash pending_count pending_list reboot_pending in_progress last_check last_install last_result health repo_warning repo_blocked running_version installed_release pending_release boot_id restart_required post_update"
 
 # mkdir_once DIR: mkdir -p DIR once for each run.
 MKDIR_DONE=
@@ -329,6 +360,39 @@ compute_view() {
 	else
 		V_LATEST=$run
 	fi
+	# The board step after the install did not finish (tsx_board_post_update).
+	# Nothing may ask for a restart then: V_RESTART is 0 and the notes say what
+	# to do. While an install runs, the view above stays.
+	fget pu "$f" post_update
+	if [ -n "$pu" ] && [ "$ipg" != 1 ]; then
+		V_RESTART=0
+		# The step and the meaning of its status come from the board, if it
+		# names them. After a failed apk upgrade the packages are not all in.
+		step=${TSX_POST_UPDATE_STEP:+: $TSX_POST_UPDATE_STEP}
+		fget lr "$f" last_result
+		case $lr in
+		"apk upgrade rc="*) inst_txt="The install failed (${lr%%;*}), and the board step after it failed";;
+		*) inst_txt="The packages are installed, but the board step after the install failed";;
+		esac
+		code=${pu#* }; mean=
+		if command -v tsx_board_post_update_meaning >/dev/null 2>&1; then mean=$(tsx_board_post_update_meaning "$code" 2>/dev/null); fi
+		case $pu in
+		hold*)
+			V_TITLE="Update stopped: check the panel"
+			paras="$inst_txt$step (exit status $code${mean:+: $mean}). Do not restart and do not switch off the panel.${nl}${nl}A person must check the panel first: tsx-autoupdate status and /var/log/tsx-autoupdate.log. Then run tsx-autoupdate post-update on the panel.";;
+		retry*)
+			V_TITLE="Update not finished"
+			paras="$inst_txt$step (exit status $code${mean:+: $mean}). The panel did not restart.${nl}${nl}Press Install to try the step again.";;
+		*)
+			V_TITLE="Update not finished"
+			paras="The board step after the last install did not end$step. The panel did not restart.${nl}${nl}Press Install to try the step again.";;
+		esac
+		if [ "$pcount" -gt 0 ] 2>/dev/null; then
+			paras="$paras${nl}${nl}Also pending:${nl}${nl}$(md_list "$plist")"
+		else
+			V_LATEST="$inst (not finished)"
+		fi
+	fi
 	fget rw "$f" repo_warning
 	[ -n "$rw" ] && paras="${paras:+$paras$nl$nl}WARNING: $rw"
 	[ -n "$paras" ] || paras="up to date"
@@ -340,7 +404,24 @@ compute_view() {
 # computes the view once and writes all status files.
 write_update_json() { compute_view; write_update_json_body; }
 write_ha_json() { compute_view; write_ha_json_body; }
-write_status() { compute_view; write_update_json_body; write_ha_json_body; }
+write_status() { compute_view; write_update_json_body; write_ha_json_body; write_restart_block; }
+
+# write_restart_block: $RUN/restart-block tells tsx-panelctl that a restart
+# from Home Assistant or the panel must wait. "busy" while an install with the
+# board step runs (tsx-panelctl also checks that a run holds the lock), "hold
+# N" while a failed board step waits for a person. Only a board with
+# tsx_board_post_update writes the file: on the other boards there is none.
+write_restart_block() {
+	have_post_hook || return 0
+	fget rb_pu "$STATE/fields" post_update; fget rb_ip "$STATE/fields" in_progress
+	case $rb_pu in
+	hold*) printf '%s\n' "$rb_pu" > "$RUN/restart-block.$$" && mv "$RUN/restart-block.$$" "$RUN/restart-block";;
+	*)
+		if [ "$rb_ip" = 1 ]; then printf 'busy\n' > "$RUN/restart-block.$$" && mv "$RUN/restart-block.$$" "$RUN/restart-block"
+		else rm -f "$RUN/restart-block"; fi;;
+	esac
+	return 0
+}
 
 # tf VAR VALUE: VAR gets true when VALUE is 1, else false.
 tf() { if [ "$2" = 1 ]; then eval "$1=true"; else eval "$1=false"; fi; }
@@ -507,6 +588,14 @@ ensure_boot() {
 	installed_release_to rel
 	set_fields "$f" boot_id="$cur" running_version="$rel" installed_release="$rel" restart_required=0
 	log "boot: running release $rel"
+	# A run that the boot cut short (a power loss) left in_progress on. No
+	# run survives a boot. Only a board with the post-update hook gets this,
+	# so the other boards stay as they were.
+	if have_post_hook; then
+		set_fields "$f" in_progress=0
+		fget eb_pu "$f" post_update
+		[ -z "$eb_pu" ] || log "boot: the board step after the last install is not done ($eb_pu)"
+	fi
 }
 
 # installed_hash_to VAR [APK_INFO_TEXT]: VAR gets "<build-id>+<hash>" (or the
@@ -608,6 +697,93 @@ do_restart() {
 	reboot
 }
 
+# have_post_hook: the board file defines tsx_board_post_update.
+have_post_hook() { command -v tsx_board_post_update >/dev/null 2>&1; }
+
+# post_update_run [show]: run the board hook tsx_board_post_update once. The
+# hook may write a boot partition, so the terminal signals are ignored while
+# it runs (a transfer is never cut short). With "show" its output also goes
+# to the terminal as it comes. It sets PU_RC (the status of the hook),
+# PU_RESULT (the text for last_result) and the field post_update: empty after
+# 0, "retry 1" after 1 (a hold stays a hold), "hold N" after any other status
+# N. It returns 0 only after the status 0.
+post_update_run() {
+	f=$STATE/fields
+	PU_RC=0 PU_RESULT=
+	if ! have_post_hook; then
+		set_fields "$f" post_update=
+		return 0
+	fi
+	log "running tsx_board_post_update"
+	trap '' INT HUP TERM QUIT PIPE
+	if [ "${1:-}" = show ]; then
+		mkdir_once "$RUN"; rm -f "$RUN/post-update.rc"
+		{ tsx_board_post_update 8>&-; echo $? > "$RUN/post-update.rc"; } 2>&1 | tee -a "$LOG"
+		read_all PU_RC "$RUN/post-update.rc"; rm -f "$RUN/post-update.rc"
+		case $PU_RC in ''|*[!0-9]*) PU_RC=255;; esac
+	else
+		tsx_board_post_update >>"$LOG" 2>&1 8>&-; PU_RC=$?
+	fi
+	trap - INT HUP TERM QUIT PIPE
+	case $PU_RC in
+	0)
+		set_fields "$f" post_update=
+		log "tsx_board_post_update done"
+		return 0;;
+	1)
+		# Status 1 never ends a hold (only "tsx-autoupdate post-update" runs
+		# the hook during a hold): the hold stays.
+		fget pr_old "$f" post_update
+		case $pr_old in
+		hold*)
+			PU_RESULT="post-update hook rc=1 (the $pr_old stays)"
+			log "post-update: FAILED, tsx_board_post_update rc=1. The $pr_old stays: no restart, no install";;
+		*)
+			PU_RESULT="post-update hook rc=1"
+			set_fields "$f" post_update="retry 1"
+			log "post-update: FAILED, tsx_board_post_update rc=1. No restart. The next install runs the step again";;
+		esac;;
+	*)
+		PU_RESULT="post-update hook rc=$PU_RC (held)"
+		set_fields "$f" post_update="hold $PU_RC"
+		log "post-update: FAILED, tsx_board_post_update rc=$PU_RC. HELD: no restart, no install and no new try until a person checks the panel and runs tsx-autoupdate post-update";;
+	esac
+	return 1
+}
+
+# restart_after HOW: the restart after an install that needs one. HOW is auto
+# or now (see do_install).
+restart_after() {
+	if [ "${AUTO_RESTART:-on}" != on ]; then
+		log "restart required, but AUTO_RESTART=off: staying up"
+	elif [ "$1" = auto ] && ! in_window "$(date '+%H:%M')" "${WINDOW:-03:00-05:00}"; then
+		log "restart required, but outside the window: staying up"
+	else
+		log "restarting for a kernel, musl, openrc, busybox or tsx package update"
+		do_restart
+	fi
+}
+
+# post_update_retry HOW: nothing is pending, but the board step after an
+# earlier install did not finish ("owed" or "retry 1"). Run it again. After a
+# good run the restart rule applies, because the step may have changed what
+# the next boot starts.
+post_update_retry() {
+	f=$STATE/fields
+	fget pr_pu "$f" post_update
+	log "install: the board step after the last install is not done ($pr_pu): running it again ($1)"
+	set_fields "$f" in_progress=1; write_status
+	if post_update_run; then
+		set_fields "$f" in_progress=0 restart_required=1 last_install="$(date '+%Y-%m-%dT%H:%M:%S')" last_result=ok
+		write_status
+		restart_after "$1"
+	else
+		set_fields "$f" in_progress=0 last_install="$(date '+%Y-%m-%dT%H:%M:%S')" last_result="$PU_RESULT"
+		write_status
+	fi
+	return 0
+}
+
 # do_install HOW: HOW is auto (the schedule, inside the window) or now (an
 # install from Home Assistant or the command line).
 do_install() {
@@ -615,7 +791,18 @@ do_install() {
 	f=$STATE/fields
 	fget pcount "$f" pending_count; [ -n "$pcount" ] || pcount=0
 	fget need_rb "$f" reboot_pending  # the writers below reuse rb
+	# A failed board step that needs a person stops every install and restart.
+	fget di_pu "$f" post_update
+	case $di_pu in
+	hold*)
+		log "install: HELD, the board step after an earlier install failed ($di_pu). A person must check the panel, then run tsx-autoupdate post-update"
+		return 0;;
+	esac
 	if [ "$pcount" = 0 ]; then
+		if [ -n "$di_pu" ]; then
+			post_update_retry "$how"
+			return 0
+		fi
 		# Nothing to install. An install from Home Assistant on the entry
 		# "restart required" restarts the panel.
 		fget di_rr "$f" restart_required
@@ -637,7 +824,7 @@ do_install() {
 	# stops the install. Nothing has changed then.
 	if command -v tsx_board_pre_update >/dev/null 2>&1; then
 		log "running tsx_board_pre_update"
-		tsx_board_pre_update >>"$LOG" 2>&1; hrc=$?
+		tsx_board_pre_update >>"$LOG" 2>&1 8>&-; hrc=$?
 		if [ $hrc -ne 0 ]; then
 			log "install: ABORTED, tsx_board_pre_update failed rc=$hrc. Nothing was changed"
 			set_fields "$f" last_result="pre-update hook rc=$hrc"; write_status
@@ -646,34 +833,44 @@ do_install() {
 	fi
 	# If only the repositories of this project are unavailable, install what the others offer.
 	[ -n "$di_rw" ] && APK_FORCE=--force-missing-repositories
+	# "owed" until the board step after apk upgrade ends, also across a power loss.
+	have_post_hook && set_fields "$f" post_update=owed
 	set_fields "$f" in_progress=1; write_status
 	log "installing ($how, pending=$pcount restart_needed=$need_rb)"
-	apk upgrade ${APK_FORCE:-} >>"$LOG" 2>&1; rc=$?
+	apk upgrade ${APK_FORCE:-} >>"$LOG" 2>&1 8>&-; rc=$?
 	[ $rc -eq 0 ] || log "apk upgrade FAILED rc=$rc"
+	# The board step after the install. It runs also after a failed apk
+	# upgrade, because a part of the packages may be installed.
+	prc=0
+	if have_post_hook; then post_update_run || prc=1; fi
 	iv=$(apk info -v 2>/dev/null)
 	installed_hash_to ihash "$iv"
+	# A good board step after an earlier step that did not finish ("owed",
+	# "retry 1") may have changed the boot partition: the new state starts
+	# only after a restart, also when the packages of this install need none.
+	pu_rb=0; [ -n "$di_pu" ] && [ $prc -eq 0 ] && pu_rb=1
 	if [ $rc -eq 0 ]; then
 		# Installed: nothing is pending now. The restart is what remains.
-		fget rr "$f" restart_required; [ "$need_rb" = 1 ] && rr=1
+		fget rr "$f" restart_required; [ "$need_rb" = 1 ] && rr=1; [ $pu_rb = 1 ] && rr=1
 		installed_release_to irel "$iv"
+		lr=ok; [ $prc -eq 0 ] || lr=$PU_RESULT
 		set_fields "$f" in_progress=0 installed_hash="$ihash" installed_release="$irel" \
 			pending_count=0 pending_list= pending_release= reboot_pending=0 \
 			restart_required="$rr" \
-			last_install="$(date '+%Y-%m-%dT%H:%M:%S')" last_result=ok
+			last_install="$(date '+%Y-%m-%dT%H:%M:%S')" last_result="$lr"
 	else
+		lr="apk upgrade rc=$rc"; [ $prc -eq 0 ] || lr="$lr; $PU_RESULT"
 		set_fields "$f" in_progress=0 installed_hash="$ihash" last_install="$(date '+%Y-%m-%dT%H:%M:%S')" \
-			last_result="apk upgrade rc=$rc"
+			last_result="$lr"
+		[ $pu_rb = 1 ] && set_fields "$f" restart_required=1
 	fi
 	write_status
-	[ $rc -eq 0 ] && [ "$need_rb" = 1 ] || return 0
-	if [ "${AUTO_RESTART:-on}" != on ]; then
-		log "restart required, but AUTO_RESTART=off: staying up"
-	elif [ "$how" = auto ] && ! in_window "$(date '+%H:%M')" "${WINDOW:-03:00-05:00}"; then
-		log "restart required, but outside the window: staying up"
-	else
-		log "restarting for a kernel, musl, openrc, busybox or tsx package update"
-		do_restart
+	[ $rc -eq 0 ] && { [ "$need_rb" = 1 ] || [ $pu_rb = 1 ]; } || return 0
+	if [ $prc -ne 0 ]; then
+		log "restart required, but the board step after the install failed: NOT restarting"
+		return 0
 	fi
+	restart_after "$how"
 }
 
 do_tick() {
@@ -688,7 +885,12 @@ do_tick() {
 	if [ "$inwin" = 1 ] && [ "$idle" = 1 ]; then
 		fget pc "$STATE/fields" pending_count
 		fget dt_rr "$STATE/fields" restart_required
+		fget dt_pu "$STATE/fields" post_update
 		if [ "${pc:-0}" -gt 0 ] 2>/dev/null; then
+			do_install auto
+		elif [ -n "$dt_pu" ]; then
+			# The board step after an earlier install is not done: try it
+			# again, or log the hold.
 			do_install auto
 		elif [ "$AUTO_RESTART" = on ] && [ "$dt_rr" = 1 ]; then
 			# A restart that an earlier install left open, with AUTO_RESTART now on.
@@ -700,6 +902,45 @@ do_tick() {
 	else
 		log "not installing now (in_window=$inwin idle=$idle)"
 	fi
+}
+
+cmd_now() { do_check; do_install now; }
+cmd_post_update_run() { mkdir_once "$RUN"; mkdir_once "$STATE"; ensure_boot; cmd_post_update; }
+
+# cmd_post_update: a person runs the board step after an install again (after
+# a hold, or after a plain apk upgrade). It never restarts the panel.
+cmd_post_update() {
+	f=$STATE/fields
+	if ! have_post_hook; then
+		set_fields "$f" post_update=; write_status
+		echo "tsx-autoupdate: this board has no step after an install (no tsx_board_post_update)"
+		return 0
+	fi
+	fget cp_pu "$f" post_update
+	log "post-update: started by hand (state before: ${cp_pu:-none})"
+	set_fields "$f" in_progress=1; write_status
+	if post_update_run show; then
+		# The step armed the boot state for the next boot (a good step only
+		# ends this way), so a restart finishes it: "restart required".
+		set_fields "$f" in_progress=0 restart_required=1 last_install="$(date '+%Y-%m-%dT%H:%M:%S')" last_result=ok
+		write_status
+		echo "tsx-autoupdate: the board step is done. Restart the panel to finish it: tsx-autoupdate now (Install), or reboot."
+		return 0
+	fi
+	# A run by hand never drops a hold: after status 1 the hold stays
+	# (post_update_run). Only status 0 ends it.
+	kept=0
+	case $cp_pu in hold*) [ "$PU_RC" = 1 ] && kept=1;; esac
+	set_fields "$f" in_progress=0 last_install="$(date '+%Y-%m-%dT%H:%M:%S')" last_result="$PU_RESULT"
+	write_status
+	if [ $kept = 1 ]; then
+		echo "tsx-autoupdate: the board step failed (exit status 1). The ${cp_pu} stays. Do not restart the panel. Check the panel and see $LOG."
+	elif [ "$PU_RC" = 1 ]; then
+		echo "tsx-autoupdate: the board step failed (exit status 1). Do not restart the panel. The next install tries it again. See $LOG."
+	else
+		echo "tsx-autoupdate: the board step failed (exit status $PU_RC). Do not restart the panel. Check the panel and see $LOG."
+	fi
+	return 1
 }
 
 cmd_status() {
@@ -717,6 +958,20 @@ cmd_status() {
 	echo "last check:     $(get_field "$f" last_check)"
 	li=$(get_field "$f" last_install)
 	if [ -n "$li" ]; then echo "last install:   $li ($(get_field "$f" last_result))"; else echo "last install:   never"; fi
+	# The board step after an install (only shown when it is not done).
+	pu=$(get_field "$f" post_update)
+	case $pu in
+	'') ;;
+	hold*) echo "board step:     FAILED (exit status ${pu#hold }), held. Do not restart. Check the panel, then run tsx-autoupdate post-update";;
+	retry*) echo "board step:     FAILED (exit status ${pu#retry }). Do not restart. The next install runs it again";;
+	*) echo "board step:     not done (the last install did not end). The next install runs it again";;
+	esac
+	# The board can say that its boot state does not match the packages (for
+	# example a kernel that was installed by a plain apk upgrade).
+	if command -v tsx_board_update_status >/dev/null 2>&1; then
+		bs=$(tsx_board_update_status 2>/dev/null)
+		[ -z "$bs" ] || echo "boot:           $bs"
+	fi
 	# The health field has a value only after the check that follows a restart
 	# of an automatic update. A panel that never restarted this way has none.
 	hl=$(get_field "$f" health)
@@ -812,13 +1067,33 @@ cmd_healthcheck() {
 	log "post-update health check: $health"
 }
 
+# run_locked CMD...: one run of "now", the tick and "post-update" at a time.
+# A non-blocking flock on $RUN/autoupdate.lock (fd 8). A second run does not
+# wait: it logs the skip and ends (status 0, for post-update 1). The programs
+# that the run starts (apk, the board hooks) get the descriptor closed, so a
+# program that stays behind cannot keep the lock. A panel without flock runs
+# without the lock.
+run_locked() {
+	mkdir_once "$RUN"
+	if command -v flock >/dev/null 2>&1 && exec 8>>"$RUN/autoupdate.lock"; then
+		if ! flock -n 8; then
+			log "another tsx-autoupdate run is active ($RUN/autoupdate.lock): $1 skipped"
+			echo "tsx-autoupdate: another run is active ($RUN/autoupdate.lock). Try again later." >&2
+			[ "$1" = post-update ] && return 1
+			return 0
+		fi
+	fi
+	shift
+	"$@"
+}
+
 main() {
 	case "${1:-}" in
 	__in_window) shift; in_window "$@";;
 	__needs_reboot) shift; needs_reboot "$@";;
 	__is_idle) is_idle;;
 	__write_status) load_conf; write_status;;
-	now) load_conf; do_check; do_install now;;
+	now) load_conf; run_locked now cmd_now;;
 	check) load_conf; do_check;;
 	refresh) load_conf; mkdir_once "$RUN"; mkdir_once "$STATE"; ensure_boot; write_status;;
 	boot) load_conf; mkdir_once "$RUN"; mkdir_once "$STATE"; ensure_boot; write_status;;
@@ -830,8 +1105,9 @@ main() {
 		esac;;
 	status) load_conf; cmd_status;;
 	healthcheck) load_conf; cmd_healthcheck;;
-	''|cron) do_tick;;
-	*) echo "usage: tsx-autoupdate [now|check|refresh|boot|get NAME|status|healthcheck]" >&2; return 2;;
+	post-update) load_conf; run_locked post-update cmd_post_update_run;;
+	''|cron) run_locked tick do_tick;;
+	*) echo "usage: tsx-autoupdate [now|check|refresh|boot|get NAME|status|healthcheck|post-update]" >&2; return 2;;
 	esac
 }
 main "$@"

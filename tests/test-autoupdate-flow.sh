@@ -25,6 +25,8 @@ case "\$1 \${2:-}" in
 "update ") cat "$T/update.txt" 2>/dev/null; exit "\${APK_UPDATE_RC:-0}";;
 "upgrade --simulate") cat "$T/sim.txt" 2>/dev/null; exit 0;;
 "upgrade "|"upgrade --force-missing-repositories")
+	# a descriptor of the lock of tsx-autoupdate must not reach apk
+	[ -e /proc/self/fd/8 ] && echo "APK-FD8 \$(readlink /proc/self/fd/8)" >> "$T/fd8.log"
 	# The state that Home Assistant sees while apk runs.
 	cp "$T/run/update-ha-state.json" "$T/during.json" 2>/dev/null; cp "$T/run/update.state" "$T/during.state" 2>/dev/null
 	# A good install makes the next board version the installed one.
@@ -618,8 +620,313 @@ TSX_FAKE_PRE_UPDATE_RC=0 NOWDATE=2026-02-07 NOWHHMM=12:21 run now >/dev/null
 unset TSX_FAKE_PRE_UPDATE TSX_FAKE_PRE_UPDATE_PEEK
 reset_state 27
 
+# 20l: tsx_board_post_update runs after apk upgrade and before the restart
+# a board without the hook: no field value, no status line, no change of the JSON keys
+# (each part starts with an empty log; the fake apk offers the same packages
+# until sim.txt is emptied)
+reset_state 30; rm -f "$HOOK"; : > "$T/tsx-autoupdate.log"
+printf "$SIM_BOARD" > "$T/sim.txt"; echo 0.3.6 > "$T/board.next"
+conf manual on
+NOWDATE=2026-02-08 NOWHHMM=12:00 run now >/dev/null
+chk "$(sed -n 's/^post_update //p' "$T/state/fields")" "" "20l: no hook: the field post_update stays empty"
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20l: no hook: no restart"; fail=1; }
+run status | grep -q '^board step' && { echo "FAIL: 20l: no hook: status shows a board step line"; fail=1; }
+chk "$(jq -r 'keys | join(",")' "$T/run/update.json")" "auto_restart,health,in_progress,installed_version,last_check,last_install,last_result,latest_version,mode,package_hash,pending,pending_count,reboot_pending,repo_warning,restart_required" "20l: no hook: the keys of update.json"
+chk "$(jq -r 'keys | join(",")' "$T/run/update-ha-state.json")" "auto_restart,in_progress,installed_version,latest_version,mode,release_summary,restart_required,title" "20l: no hook: the keys of update-ha-state.json"
+grep -q 'post_update\|post-update' "$T/tsx-autoupdate.log" && { echo "FAIL: 20l: no hook: a post-update log line"; fail=1; }
+out=$(run post-update); rc=$?
+chk "$rc" 0 "20l: no hook: post-update exits 0"
+case $out in *"no step after an install"*) :;; *) echo "FAIL: 20l: no hook: post-update says '$out'"; fail=1;; esac
+
+PU="$T/post.out"
+export TSX_FAKE_PRE_UPDATE=$HOOK TSX_FAKE_PRE_UPDATE_PEEK=$T/apk.calls TSX_FAKE_POST_UPDATE=$PU TSX_FAKE_POST_UPDATE_FIELDS=$T/state/fields
+pu_state() { sed -n 's/^post_update //p' "$T/state/fields"; }
+# 20l-1: status 0: the hook runs once, after the apk upgrade, while the install is in progress, then the restart
+reset_state 31; rm -f "$HOOK" "$PU"; : > "$T/tsx-autoupdate.log"
+printf "$SIM_BOARD" > "$T/sim.txt"; echo 0.3.6 > "$T/board.next"
+conf manual on
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-08 NOWHHMM=12:10 run now >/dev/null
+chk "$(cat "$HOOK" 2>/dev/null | tr '\n' ' ')" "0 " "20l-1: the pre hook ran before the apk upgrade"
+chk "$(cat "$PU" 2>/dev/null | tr '\n' ' ')" "1 1 " "20l-1: the post hook ran once, after the apk upgrade, with in_progress 1"
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20l-1: no restart after a good post hook"; fail=1; }
+chk "$(pu_state)/$(jf "$T/run/update.json" .last_result)" "/ok" "20l-1: post_update empty, last_result ok"
+grep -q 'fake post-update hook rc=0' "$T/tsx-autoupdate.log" || { echo "FAIL: 20l-1: the output of the hook is not in the log"; fail=1; }
+grep -q 'tsx_board_post_update done' "$T/tsx-autoupdate.log" || { echo "FAIL: 20l-1: no log line of the hook"; fail=1; }
+# the order in the log: apk upgrade, the hook, the restart
+o=$(grep -n -e 'installing (now' -e 'running tsx_board_post_update' -e '^.*restarting for' "$T/tsx-autoupdate.log" | cut -d: -f1 | tr '\n' ' ')
+set -- $o; [ $# = 3 ] && [ "$1" -lt "$2" ] && [ "$2" -lt "$3" ] || { echo "FAIL: 20l-1: the log order is not install, hook, restart ($o)"; fail=1; }
+# a check alone never calls the post hook
+rm -f "$PU"; reset_calls
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-08 NOWHHMM=12:11 run check >/dev/null
+[ ! -s "$PU" ] || { echo "FAIL: 20l-1: a check called the post hook"; fail=1; }
+
+# 20l-2: status 0 with AUTO_RESTART=off: no restart, the state "restart required"
+reset_state 32; rm -f "$PU"
+printf "$SIM_BOARD" > "$T/sim.txt"; echo 0.3.6 > "$T/board.next"
+conf manual off
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-08 NOWHHMM=12:20 run now >/dev/null
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20l-2: restarted with AUTO_RESTART=off"; fail=1; }
+chk "$(ha .restart_required)/$(ha .title)" "true/Restart required to finish 0.3.6" "20l-2: a good hook gives the normal restart required state"
+# a package that needs no restart: the hook runs, no restart
+reset_state 33; rm -f "$PU"
+printf '(1/1) Upgrading libfoo (1.0-r0 -> 1.1-r0)\n' > "$T/sim.txt"; conf manual on
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-08 NOWHHMM=12:25 run now >/dev/null
+chk "$(cat "$PU" 2>/dev/null | wc -l)" 1 "20l-2: the hook runs also when no restart is needed"
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20l-2: restarted for libfoo"; fail=1; }
+
+# 20l-3: status 1: no restart, retry state, Home Assistant asks for no restart; the next install runs the hook again
+reset_state 34; rm -f "$PU" "$HOOK"
+printf "$SIM_BOARD" > "$T/sim.txt"; echo 0.3.6 > "$T/board.next"
+conf manual on
+TSX_FAKE_POST_UPDATE_RC=1 NOWDATE=2026-02-08 NOWHHMM=12:30 run now >/dev/null
+: > "$T/sim.txt"
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20l-3: restarted after the post hook failed with 1"; fail=1; }
+chk "$(pu_state)" "retry 1" "20l-3: post_update retry 1"
+chk "$(jf "$T/run/update.json" .last_result)" "post-update hook rc=1" "20l-3: last_result names the post hook"
+chk "$(jf "$T/run/update.json" .pending_count)/$(jf "$T/run/update.json" .in_progress)" "0/false" "20l-3: the packages are installed, no install in progress"
+chk "$(ha '[.installed_version, .latest_version, .title, .restart_required] | join("|")')" "0.3.5|0.3.6 (not finished)|Update not finished|false" "20l-3: Home Assistant: not finished, no restart asked"
+chk "$(ha .release_summary)" "The packages are installed, but the board step after the install failed (exit status 1: fake meaning 1). The panel did not restart.
+
+Press Install to try the step again." "20l-3: the notes"
+chk "$(grep -c '^restart-required no$' "$T/run/update.state")" 1 "20l-3: update.state: no restart required"
+grep -q 'post-update: FAILED, tsx_board_post_update rc=1. No restart' "$T/tsx-autoupdate.log" || { echo "FAIL: 20l-3: no log line of the failed hook"; fail=1; }
+run status | grep -q '^board step: *FAILED (exit status 1). Do not restart. The next install runs it again$' || { echo "FAIL: 20l-3: status: $(run status | grep '^board step')"; fail=1; }
+# a check keeps the state; the schedule outside the window does nothing
+conf auto on; reset_calls; rm -f "$PU"
+NOWDATE=2026-02-08 NOWHHMM=12:40 run check >/dev/null
+chk "$(pu_state)/$(ha .title)" "retry 1/Update not finished" "20l-3: a check keeps the retry state"
+NOWDATE=2026-02-08 NOWHHMM=12:41 run >/dev/null
+[ ! -s "$PU" ] || { echo "FAIL: 20l-3: the schedule outside the window ran the hook"; fail=1; }
+# the schedule in the window with AUTO_RESTART on and restart required: the hook again, still 1: no restart
+TSX_FAKE_POST_UPDATE_RC=1 NOWDATE=2026-02-09 NOWHHMM=04:00 run >/dev/null
+chk "$(cat "$PU" 2>/dev/null | tr '\n' ' ')" "0 1 " "20l-3: the window ran the hook alone (no apk upgrade), in progress"
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20l-3: the window restarted while the post hook fails"; fail=1; }
+grep -E -q '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" && { echo "FAIL: 20l-3: apk upgrade with nothing pending"; fail=1; }
+chk "$(cat "$HOOK" 2>/dev/null | tr "\n" " ")" "0 " "20l-3: the pre hook did not run for a new try of the post hook"
+# Install from Home Assistant, status 0 now: the hook alone, then the restart (AUTO_RESTART on)
+conf manual on; reset_calls; rm -f "$PU"
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-09 NOWHHMM=12:00 run now >/dev/null
+chk "$(cat "$PU" 2>/dev/null | tr '\n' ' ')" "0 1 " "20l-3: Install ran the hook again"
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20l-3: no restart after the hook succeeded on the new try"; fail=1; }
+chk "$(pu_state)/$(jf "$T/run/update.json" .last_result)" "/ok" "20l-3: the new try cleared the state"
+# the same with AUTO_RESTART=off: the state restart required, then Install restarts
+reset_state 35; rm -f "$PU"
+printf "$SIM_BOARD" > "$T/sim.txt"; echo 0.3.6 > "$T/board.next"; conf manual off
+TSX_FAKE_POST_UPDATE_RC=1 NOWDATE=2026-02-09 NOWHHMM=12:10 run now >/dev/null
+: > "$T/sim.txt"; reset_calls
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-09 NOWHHMM=12:11 run now >/dev/null
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20l-3: AUTO_RESTART=off: restarted after the new try"; fail=1; }
+chk "$(ha .restart_required)/$(ha .title)" "true/Restart required to finish 0.3.6" "20l-3: AUTO_RESTART=off: restart required after the new try"
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-09 NOWHHMM=12:12 run now >/dev/null
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20l-3: Install on restart required did not restart"; fail=1; }
+# a retry with new pending packages: the full install, the hook once after the apk upgrade
+reset_state 36; rm -f "$PU" "$HOOK"
+printf "$SIM_BOARD" > "$T/sim.txt"; echo 0.3.6 > "$T/board.next"; conf manual on
+TSX_FAKE_POST_UPDATE_RC=1 NOWDATE=2026-02-09 NOWHHMM=12:20 run now >/dev/null
+printf '(1/1) Upgrading tsx-fake-board (0.3.6-r0 -> 0.3.7-r0)\n' > "$T/sim.txt"; echo 0.3.7 > "$T/board.next"; reset_calls; rm -f "$PU"
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-09 NOWHHMM=12:21 run now >/dev/null
+chk "$(cat "$PU" 2>/dev/null | tr '\n' ' ')" "1 1 " "20l-3: with new packages the hook runs once, after the apk upgrade"
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20l-3: no restart after the new install"; fail=1; }
+chk "$(pu_state)" "" "20l-3: the new install cleared the state"
+
+# 20l-4: another status (21, 30): held. No restart, no install, no new try, until tsx-autoupdate post-update
+for prc in 21 30; do
+	reset_state 37; rm -f "$PU" "$HOOK"; : > "$T/tsx-autoupdate.log"
+	printf "$SIM_BOARD" > "$T/sim.txt"; echo 0.3.6 > "$T/board.next"; conf manual on
+	TSX_FAKE_POST_UPDATE_RC=$prc NOWDATE=2026-02-10 NOWHHMM=12:00 run now >/dev/null
+	: > "$T/sim.txt"
+	grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20l-4: restarted after the post hook failed with $prc"; fail=1; }
+	chk "$(pu_state)/$(jf "$T/run/update.json" .last_result)" "hold $prc/post-update hook rc=$prc (held)" "20l-4: rc $prc: held"
+	chk "$(ha '[.latest_version, .title, .restart_required] | join("|")')" "0.3.6 (not finished)|Update stopped: check the panel|false" "20l-4: rc $prc: Home Assistant"
+	ha .release_summary | head -1 | grep -qx "The packages are installed, but the board step after the install failed (exit status $prc: fake meaning $prc). Do not restart and do not switch off the panel." || { echo "FAIL: 20l-4: rc $prc: notes $(ha .release_summary | head -1)"; fail=1; }
+	grep -q "HELD: no restart, no install and no new try" "$T/tsx-autoupdate.log" || { echo "FAIL: 20l-4: rc $prc: no HELD log line"; fail=1; }
+	run status | grep -q "^board step: *FAILED (exit status $prc), held. Do not restart. Check the panel, then run tsx-autoupdate post-update$" || { echo "FAIL: 20l-4: rc $prc: status"; fail=1; }
+	# Install, the window, and new pending packages: nothing runs
+	reset_calls; rm -f "$PU" "$HOOK"
+	TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-10 NOWHHMM=12:10 run now >/dev/null
+	printf '(1/1) Upgrading tsx-fake-board (0.3.6-r0 -> 0.3.7-r0)\n' > "$T/sim.txt"; conf auto on
+	TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-11 NOWHHMM=04:00 run >/dev/null
+	conf manual on
+	TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-11 NOWHHMM=12:00 run now >/dev/null
+	[ ! -s "$PU" ] && [ ! -s "$HOOK" ] || { echo "FAIL: 20l-4: rc $prc: a hook ran while held"; fail=1; }
+	grep -E -q '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" && { echo "FAIL: 20l-4: rc $prc: apk upgrade while held"; fail=1; }
+	grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20l-4: rc $prc: restarted while held"; fail=1; }
+	chk "$(grep -c 'install: HELD' "$T/tsx-autoupdate.log")" 3 "20l-4: rc $prc: three HELD log lines"
+	: > "$T/sim.txt"
+	# a hold survives a new boot
+	echo boot-38 > "$T/bootid"
+	NOWDATE=2026-02-11 NOWHHMM=12:05 run boot >/dev/null
+	chk "$(pu_state)" "hold $prc" "20l-4: rc $prc: the hold stays after a boot"
+	# by hand, the step fails again: still held, exit 1, the output on the terminal
+	out=$(TSX_FAKE_POST_UPDATE_RC=$prc NOWDATE=2026-02-11 NOWHHMM=12:06 run post-update); rc=$?
+	chk "$rc/$(pu_state)" "1/hold $prc" "20l-4: rc $prc: post-update by hand fails again"
+	case $out in *"fake post-update hook rc=$prc"*"Do not restart the panel"*) :;; *) echo "FAIL: 20l-4: rc $prc: post-update output '$out'"; fail=1;; esac
+	# by hand, the step works: the hold ends, restart required, no restart
+	reset_calls
+	out=$(TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-11 NOWHHMM=12:07 run post-update); rc=$?
+	chk "$rc/$(pu_state)/$(jf "$T/run/update.json" .last_result)" "0//ok" "20l-4: rc $prc: post-update by hand works"
+	case $out in *"fake post-update hook rc=0"*"the board step is done"*) :;; *) echo "FAIL: 20l-4: rc $prc: post-update output '$out'"; fail=1;; esac
+	grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20l-4: rc $prc: post-update restarted"; fail=1; }
+	chk "$(ha .restart_required)/$(ha .title)" "true/Restart required to finish the update" "20l-4: rc $prc: restart required after the step"
+	TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-11 NOWHHMM=12:08 run now >/dev/null
+	grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20l-4: rc $prc: Install did not restart after the step"; fail=1; }
+done
+
+# 20l-5: a failed apk upgrade: the hook still runs, no restart
+reset_state 39; rm -f "$PU"
+printf "$SIM_BOARD" > "$T/sim.txt"; conf manual on
+TSX_FAKE_POST_UPDATE_RC=0 APK_UPGRADE_RC=3 NOWDATE=2026-02-12 NOWHHMM=12:00 run now >/dev/null
+chk "$(cat "$PU" 2>/dev/null | tr '\n' ' ')" "1 1 " "20l-5: the hook ran after the failed apk upgrade"
+chk "$(pu_state)/$(jf "$T/run/update.json" .last_result)" "/apk upgrade rc=3" "20l-5: the apk failure is the result"
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20l-5: restarted after a failed install"; fail=1; }
+reset_state 40; rm -f "$PU"
+printf "$SIM_BOARD" > "$T/sim.txt"; conf manual on
+TSX_FAKE_POST_UPDATE_RC=1 APK_UPGRADE_RC=3 NOWDATE=2026-02-12 NOWHHMM=12:10 run now >/dev/null
+chk "$(pu_state)/$(jf "$T/run/update.json" .last_result)" "retry 1/apk upgrade rc=3; post-update hook rc=1" "20l-5: both failures in last_result"
+chk "$(jf "$T/run/update.json" .pending_count)/$(ha .title)" "2/Update not finished" "20l-5: the packages stay pending, not finished"
+ha .release_summary | grep -q '^Also pending:$' || { echo "FAIL: 20l-5: the notes do not list the pending packages"; fail=1; }
+
+# 20l-6: a failed pre hook: the post hook does not run and nothing is owed
+reset_state 41; rm -f "$PU" "$HOOK"
+printf "$SIM_BOARD" > "$T/sim.txt"; conf manual on
+TSX_FAKE_PRE_UPDATE_RC=1 TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-12 NOWHHMM=12:20 run now >/dev/null
+[ ! -s "$PU" ] || { echo "FAIL: 20l-6: the post hook ran after a failed pre hook"; fail=1; }
+chk "$(pu_state)/$(jf "$T/run/update.json" .last_result)" "/pre-update hook rc=1" "20l-6: nothing owed"
+
+# 20l-7: a power loss during the install or the step: "owed" and in_progress stay. The boot ends
+# in_progress, Home Assistant says not finished, and Install runs the step again
+reset_state 42; rm -f "$PU"
+NOWDATE=2026-02-12 NOWHHMM=12:30 run check >/dev/null
+sed -i -e 's/^post_update.*/post_update owed/' -e 's/^in_progress.*/in_progress 1/' -e 's/^restart_required.*/restart_required 1/' "$T/state/fields"
+echo boot-43 > "$T/bootid"
+NOWDATE=2026-02-12 NOWHHMM=12:31 run boot >/dev/null
+chk "$(sed -n 's/^in_progress //p' "$T/state/fields")/$(pu_state)" "0/owed" "20l-7: the boot ends in_progress, owed stays"
+chk "$(ha '[.title, .restart_required, .in_progress] | join("|")')" "Update not finished|false|false" "20l-7: Home Assistant: not finished"
+ha .release_summary | head -1 | grep -qx 'The board step after the last install did not end. The panel did not restart.' || { echo "FAIL: 20l-7: notes $(ha .release_summary | head -1)"; fail=1; }
+grep -q 'boot: the board step after the last install is not done (owed)' "$T/tsx-autoupdate.log" || { echo "FAIL: 20l-7: no boot log line"; fail=1; }
+reset_calls
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-12 NOWHHMM=12:32 run now >/dev/null
+chk "$(cat "$PU" 2>/dev/null | tr '\n' ' ')" "0 1 " "20l-7: Install ran the step"
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20l-7: no restart after the step"; fail=1; }
+# the hold blocks also the restart of the schedule that an earlier install left open
+reset_state 44; rm -f "$PU"
+NOWDATE=2026-02-12 NOWHHMM=12:40 run check >/dev/null
+sed -i -e 's/^post_update.*/post_update hold 24/' -e 's/^restart_required.*/restart_required 1/' "$T/state/fields"
+conf auto on; reset_calls
+NOWDATE=2026-02-13 NOWHHMM=04:00 run >/dev/null
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20l-7: the schedule restarted while held"; fail=1; }
+[ ! -s "$PU" ] || { echo "FAIL: 20l-7: the schedule ran the hook while held"; fail=1; }
+conf manual on
+
+# 20l-8: the board names the step and the meaning of a status; the text after a failed apk upgrade
+reset_state 46; rm -f "$PU"; conf manual on
+printf "$SIM_BOARD" > "$T/sim.txt"
+TSX_POST_UPDATE_STEP="writing the fake kernel" TSX_FAKE_POST_UPDATE_RC=21 NOWDATE=2026-02-13 NOWHHMM=12:00 run now >/dev/null
+chk "$(TSX_POST_UPDATE_STEP="writing the fake kernel" NOWDATE=2026-02-13 NOWHHMM=12:01 run refresh >/dev/null; ha .release_summary | head -1)" "The packages are installed, but the board step after the install failed: writing the fake kernel (exit status 21: fake meaning 21). Do not restart and do not switch off the panel." "20l-8: the step and the meaning in the notes"
+reset_state 47; rm -f "$PU"
+printf "$SIM_BOARD" > "$T/sim.txt"
+TSX_FAKE_POST_UPDATE_RC=1 APK_UPGRADE_RC=3 NOWDATE=2026-02-13 NOWHHMM=12:10 run now >/dev/null
+ha .release_summary | head -1 | grep -q '^The install failed (apk upgrade rc=3), and the board step after it failed (exit status 1: fake meaning 1)' || { echo "FAIL: 20l-8: the notes after a failed apk upgrade: $(ha .release_summary | head -1)"; fail=1; }
+
+# 20l-9: L1, a good step after an unfinished one in an install whose packages need no restart: restart required and the restart
+reset_state 48; rm -f "$PU"; conf manual on
+printf "$SIM_BOARD" > "$T/sim.txt"
+TSX_FAKE_POST_UPDATE_RC=1 NOWDATE=2026-02-13 NOWHHMM=12:20 run now >/dev/null
+echo boot-49 > "$T/bootid"; NOWDATE=2026-02-13 NOWHHMM=12:21 run boot >/dev/null
+printf '(1/1) Upgrading libfoo (1.0-r0 -> 1.1-r0)\n' > "$T/sim.txt"; reset_calls
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-13 NOWHHMM=12:22 run now >/dev/null
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20l-9: no restart after a good step that followed a retry"; fail=1; }
+chk "$(sed -n 's/^restart_required //p' "$T/state/fields")/$(pu_state)" "1/" "20l-9: restart required, nothing open"
+conf manual off
+reset_state 50; rm -f "$PU"; printf "$SIM_BOARD" > "$T/sim.txt"
+TSX_FAKE_POST_UPDATE_RC=1 NOWDATE=2026-02-13 NOWHHMM=12:30 run now >/dev/null
+echo boot-51 > "$T/bootid"; NOWDATE=2026-02-13 NOWHHMM=12:31 run boot >/dev/null
+printf '(1/1) Upgrading libfoo (1.0-r0 -> 1.1-r0)\n' > "$T/sim.txt"
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-13 NOWHHMM=12:32 run now >/dev/null
+chk "$(ha .restart_required)" true "20l-9: AUTO_RESTART=off: Home Assistant shows restart required"
+conf manual on
+
+# 20l-10: L2, post-update by hand from an empty state: restart required, Install then restarts
+reset_state 52; rm -f "$PU"; reset_calls
+NOWDATE=2026-02-13 NOWHHMM=12:40 run check >/dev/null
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-13 NOWHHMM=12:41 run post-update >/dev/null
+chk "$(ha .restart_required)" true "20l-10: post-update from an empty state: restart required"
+NOWDATE=2026-02-13 NOWHHMM=12:42 run now >/dev/null
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20l-10: Install did not restart after post-update"; fail=1; }
+
+# 20l-11: R1, the restart-block file for tsx-panelctl
+reset_state 53; rm -f "$PU"; printf "$SIM_BOARD" > "$T/sim.txt"
+TSX_FAKE_POST_UPDATE_RC=0 TSX_FAKE_POST_UPDATE_SLEEP=2 NOWDATE=2026-02-13 NOWHHMM=12:50 run now >/dev/null &
+RP=$!; sleep 1
+chk "$(cat "$T/run/restart-block" 2>/dev/null)" busy "20l-11: busy while the install runs"
+wait $RP
+[ -e "$T/run/restart-block" ] && { echo "FAIL: 20l-11: the file stays after a good install"; fail=1; }
+reset_state 54; rm -f "$PU"; printf "$SIM_BOARD" > "$T/sim.txt"
+TSX_FAKE_POST_UPDATE_RC=23 NOWDATE=2026-02-13 NOWHHMM=12:55 run now >/dev/null
+chk "$(cat "$T/run/restart-block" 2>/dev/null)" "hold 23" "20l-11: hold 23 in the file"
+rm -f "$T/run/restart-block"; echo boot-55 > "$T/bootid"
+NOWDATE=2026-02-13 NOWHHMM=12:56 run boot >/dev/null
+chk "$(cat "$T/run/restart-block" 2>/dev/null)" "hold 23" "20l-11: the boot writes the file again (/run is new)"
+
+# 20l-12: R4, the board line in the status
+chk "$(TSX_FAKE_UPDATE_STATUS='fake boot line' run status | grep '^boot:')" "boot:           fake boot line" "20l-12: the board line in the status"
+
+# 20l-13: F1, one run at a time: now, the tick and post-update skip while another run holds the lock
+reset_state 56; rm -f "$PU" "$HOOK"; printf "$SIM_BOARD" > "$T/sim.txt"; : > "$T/tsx-autoupdate.log"
+mkdir -p "$T/run"
+( flock -x 9; sleep 3 ) 9>"$T/run/autoupdate.lock" & LP=$!; sleep 0.5
+NOWDATE=2026-02-14 NOWHHMM=12:00 run now >/dev/null 2>&1; r1=$?
+conf auto on; NOWDATE=2026-02-14 NOWHHMM=04:00 run >/dev/null 2>&1; r2=$?; conf manual on
+NOWDATE=2026-02-14 NOWHHMM=12:01 run post-update >/dev/null 2>&1; r3=$?
+chk "$r1/$r2/$r3" "0/0/1" "20l-13: the status of a skipped now, tick and post-update"
+grep -qE '^APK (update|upgrade)' "$T/apk.calls" && { echo "FAIL: 20l-13: apk ran while another run held the lock"; fail=1; }
+[ ! -s "$PU" ] && [ ! -s "$HOOK" ] || { echo "FAIL: 20l-13: a hook ran while another run held the lock"; fail=1; }
+chk "$(grep -c 'another tsx-autoupdate run is active' "$T/tsx-autoupdate.log")" 3 "20l-13: three skip lines"
+wait $LP
+# two installs at once: the second one skips, the first one installs and restarts once
+reset_calls; rm -f "$PU"
+TSX_FAKE_POST_UPDATE_RC=0 TSX_FAKE_POST_UPDATE_SLEEP=2 NOWDATE=2026-02-14 NOWHHMM=12:10 run now >/dev/null 2>&1 &
+RP=$!; sleep 1
+NOWDATE=2026-02-14 NOWHHMM=12:10 run now >/dev/null 2>&1
+wait $RP
+chk "$(grep -cE '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls")/$(grep -c '^CALL reboot' "$T/calls")" "1/1" "20l-13: two Install presses: one apk upgrade, one restart"
+
+# 20l-14: C14b of the review: a run by hand that ends with 1 after a hold keeps the hold (and the restart block)
+reset_state 57; rm -f "$PU"; printf "$SIM_BOARD" > "$T/sim.txt"; conf manual on
+TSX_FAKE_POST_UPDATE_RC=13 NOWDATE=2026-02-15 NOWHHMM=12:00 run now >/dev/null
+: > "$T/sim.txt"
+chk "$(pu_state)/$(cat "$T/run/restart-block" 2>/dev/null)" "hold 13/hold 13" "20l-14: hold 13 and its restart block"
+out=$(TSX_FAKE_POST_UPDATE_RC=1 NOWDATE=2026-02-15 NOWHHMM=12:01 run post-update 2>&1); rc=$?
+chk "$rc/$(pu_state)/$(cat "$T/run/restart-block" 2>/dev/null)" "1/hold 13/hold 13" "20l-14: post-update ends with 1: the hold and the block stay"
+case $out in *"The hold 13 stays"*) :;; *) echo "FAIL: 20l-14: post-update text '$out'"; fail=1;; esac
+chk "$(jf "$T/run/update.json" .last_result)/$(ha .title)" "post-update hook rc=1 (the hold 13 stays)/Update stopped: check the panel" "20l-14: last_result and title"
+reset_calls
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-15 NOWHHMM=12:02 run now >/dev/null
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20l-14: Install restarted while the hold stays"; fail=1; }
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-02-15 NOWHHMM=12:03 run post-update >/dev/null 2>&1
+chk "$(pu_state)/$(ha .restart_required)" "/true" "20l-14: only status 0 ends the hold"
+[ -e "$T/run/restart-block" ] && { echo "FAIL: 20l-14: the block stays after the hold ended"; fail=1; }
+
+# 20l-15: E2, a new boot ends a stale in_progress on a board with the hook, also with an empty post_update
+reset_state 58; rm -f "$PU"
+NOWDATE=2026-02-15 NOWHHMM=12:10 run check >/dev/null
+sed -i -e 's/^in_progress.*/in_progress 1/' "$T/state/fields"
+echo boot-59 > "$T/bootid"; NOWDATE=2026-02-15 NOWHHMM=12:11 run boot >/dev/null
+chk "$(sed -n 's/^in_progress //p' "$T/state/fields")/$(ha .in_progress)" "0/false" "20l-15: the boot ends in_progress (post_update empty)"
+[ -e "$T/run/restart-block" ] && { echo "FAIL: 20l-15: a restart block after the boot"; fail=1; }
+unset TSX_FAKE_PRE_UPDATE TSX_FAKE_PRE_UPDATE_PEEK TSX_FAKE_POST_UPDATE TSX_FAKE_POST_UPDATE_FIELDS
+reset_state 45
+# 20l-16: a board without the hook keeps its old behaviour: the boot leaves in_progress as it is
+NOWDATE=2026-02-15 NOWHHMM=12:20 run check >/dev/null
+sed -i -e 's/^in_progress.*/in_progress 1/' "$T/state/fields"
+echo boot-60 > "$T/bootid"; NOWDATE=2026-02-15 NOWHHMM=12:21 run boot >/dev/null
+chk "$(sed -n 's/^in_progress //p' "$T/state/fields")" "1" "20l-16: no hook: the boot does not touch in_progress"
+[ -e "$T/run/restart-block" ] && { echo "FAIL: 20l-16: no hook: a restart-block file"; fail=1; }
+reset_state 61
+
 # ---- 14: no Chromium call at all ------------------------------------------------
 grep -qi chromium "$T/apk.calls" "$T/calls" "$T/tsx-autoupdate.log" && { echo "FAIL: 14: a Chromium call or log line"; fail=1; }
+grep -q '^APK-FD8.*autoupdate.lock' "$T/fd8.log" 2>/dev/null && { echo "FAIL: 14: apk upgrade got the descriptor of the lock"; fail=1; }
 
-[ $fail = 0 ] && echo "PASS tsx-autoupdate flow (check/install/window/idle/status/healthcheck/repositories/kernel/new packages/panel app)"
+[ $fail = 0 ] && echo "PASS tsx-autoupdate flow (check/install/window/idle/status/healthcheck/repositories/kernel/new packages/panel app/board hooks)"
 exit $fail

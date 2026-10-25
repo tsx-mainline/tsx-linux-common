@@ -48,7 +48,8 @@ The service `tsx-autoupdate` adds a line to `/etc/crontabs/root`. `crond` runs `
 
 1. It runs `apk update` and `apk upgrade --simulate`. The pending list holds the upgrades and the new packages (a new dependency of an upgraded package).
 2. In the mode `auto`, it installs only inside `WINDOW` and only while the screen is idle. In the mode `manual`, it stops here.
-3. After the install, it restarts the panel if a package in the list needs a restart, `AUTO_RESTART` is on, and the time is inside `WINDOW`.
+3. After the install, it runs the board step `tsx_board_post_update`, if the board has one (see [Board hooks](#board-hooks)).
+4. Then it restarts the panel if a package in the list needs a restart, `AUTO_RESTART` is on, the time is inside `WINDOW`, and the board step did not fail.
 
 If an earlier install left "restart required" and `AUTO_RESTART` is on later, the next run in the window with an idle screen restarts the panel.
 
@@ -98,16 +99,71 @@ The screen service writes the screen state to `/run/tsx-idled.state`. `tsx-idled
 
 If the file does not exist (a panel app that does not write it), the screen is idle when every backlight in `/sys/class/backlight` is at 0. With no file and no backlight, the screen is never idle.
 
-## Board hook
+## Board hooks
 
-A board can define the function `tsx_board_pre_update` in `board.sh`. A board with A/B boot uses it to arm its boot slot, so that a bad upgrade falls back to the old system.
+A board can define two functions in `board.sh`. Both are optional. Without them, the install works as before.
+
+| Function | When it runs | Use |
+|---|---|---|
+| `tsx_board_pre_update` | After the check found packages, before `apk upgrade` | A board with A/B boot arms its boot slot, so that a bad upgrade falls back to the old system. |
+| `tsx_board_post_update` | After `apk upgrade`, before the restart | A board writes the new kernel into its boot partition. |
+
+`tsx-autoupdate` writes the output of both functions to the log. A plain `apk upgrade` runs neither function. On a board that has them, install the packages with `tsx-autoupdate` (or the Install button of Home Assistant).
+
+### Before the install
 
 1. `tsx-autoupdate` runs `apk update` and `apk upgrade --simulate`.
 2. If no package is pending, it stops. It does not call the function.
-3. Before it runs `apk upgrade`, it calls the function and writes the output to the log.
+3. Before it runs `apk upgrade`, it calls `tsx_board_pre_update`.
 4. If the function exits with a non-zero status, `tsx-autoupdate` does not start `apk upgrade`. It logs `ABORTED` and the status, and sets `last_result` to `pre-update hook rc=N`.
 
-An aborted install changes nothing. The packages stay pending, and the next install tries again. Without the function, the install starts at once.
+An aborted install changes nothing. The packages stay pending, and the next install tries again.
+
+### After the install
+
+`tsx-autoupdate` calls `tsx_board_post_update` after `apk upgrade` and before the restart. It calls the function also after a failed `apk upgrade`, because a part of the packages can be installed. The terminal signals are ignored while the function runs, so a transfer is never cut short. The status of the function decides what follows:
+
+| Status | Meaning | What `tsx-autoupdate` does |
+|---|---|---|
+| 0 | Done | The restart rule applies (see "Restart rule"). |
+| 1 | Not done, and nothing needs a person | No restart. The next install runs the function again: in the window in the mode `auto`, or with Install. |
+| Any other | Not done, and a person must check the panel | No restart, no install, and no new try. The state stays across boots, until a person runs `tsx-autoupdate post-update`. |
+
+The status file keeps the state in the field `post_update`:
+
+| Value | State |
+|---|---|
+| empty | Nothing is open. A board without the function always has this value. |
+| `owed` | `apk upgrade` started, and the function did not end (for example after a power loss). |
+| `retry 1` | The function exited with 1. |
+| `hold N` | The function exited with N. A later status 1 does not end a hold: only status 0 does. |
+
+On a board with the function, each new boot ends a stale `in_progress` (no run survives a boot). A board without the function keeps the old behaviour.
+
+A new try with no pending package runs only `tsx_board_post_update`, not `tsx_board_pre_update`. So the function must be safe to run again alone, and it must prepare the restart itself (a board with A/B boot arms its slot in it). After a good new try, the state "restart required" applies, because the function can change what the next boot starts. If packages are pending, the new try is a full install, with both functions. Then a good function also sets "restart required", also when the packages of that install need no restart.
+
+While the state is not empty, nothing asks for a restart. `restart_required` is false in `update-ha-state.json`, and Home Assistant shows this:
+
+| State | Title | Latest version | Release notes |
+|---|---|---|---|
+| `owed`, `retry 1` | `Update not finished` | `<release> (not finished)` | The step did not end or failed. "Press Install to try the step again." |
+| `hold N` | `Update stopped: check the panel` | `<release> (not finished)` | The step failed with N. "Do not restart and do not switch off the panel." A person checks the panel, then runs `tsx-autoupdate post-update`. |
+
+The notes name the step and the meaning of the status when the board gives them: the variable `TSX_POST_UPDATE_STEP` (for example "writing the new kernel into boot_a") and the function `tsx_board_post_update_meaning N`. After a failed `apk upgrade` the notes say that the install failed, not that the packages are installed.
+
+`last_result` is `post-update hook rc=1` or `post-update hook rc=N (held)`. After a failed `apk upgrade` it also names that failure: `apk upgrade rc=3; post-update hook rc=1`. `tsx-autoupdate status` shows the line `board step` while the state is not empty.
+
+`tsx-autoupdate post-update` runs the function once, by hand. It shows the output on the terminal and in the log, and it never restarts the panel. After status 0 the state is empty and "restart required" is set: Install (`tsx-autoupdate now`) or `reboot` restarts the panel. After status 1 during a hold, the hold and the restart block stay. Use it after a hold, when the cause is clear, and after a plain `apk upgrade`.
+
+A board can also define `tsx_board_update_status`. It prints a line when the boot state of the board does not match the installed packages (for example a kernel from a plain `apk upgrade`). `tsx-autoupdate status` shows it as the line `boot`.
+
+### One run at a time
+
+`tsx-autoupdate now`, the scheduled run and `tsx-autoupdate post-update` take the lock `/run/tsx/autoupdate.lock` (`flock`, without a wait). When another run holds it, the new run logs "another tsx-autoupdate run is active" and ends. `post-update` then exits with 1, the others with 0. So no run restarts the panel in the middle of the `apk upgrade` of another run. `apk` and the board functions do not get the descriptor of the lock, so a program that they leave behind cannot keep it. The commands `check`, `refresh`, `boot`, `status`, `get` and `healthcheck` take no lock. A panel without `flock` runs without the lock.
+
+### Restart block
+
+On a board with `tsx_board_post_update`, `tsx-autoupdate` writes `/run/tsx/restart-block` at each status write: `busy` while an install with the function runs, `hold N` during a hold. Without a reason it removes the file. The command `reboot` of `tsx-panelctl` (the Restart button of Home Assistant and of the panel) then restarts nothing and logs the reason. `busy` counts only while a run holds the lock, so a file that a killed run left behind blocks nothing. On the console, `tsx-panelctl reboot --force` restarts anyway. A board without the function has no such file, and its restart works as before.
 
 ## Restart rule
 
@@ -153,6 +209,7 @@ The panel app writes `/run/tsx/panel-app.state` at its start, at its first frame
 | `tsx-autoupdate refresh` | Write the status files again from the saved state and the settings. It calls no `apk`. |
 | `tsx-autoupdate boot` | Record the running release. The service calls it at each boot. |
 | `tsx-autoupdate get mode\|auto-restart` | Print a setting |
+| `tsx-autoupdate post-update` | Run the board step after an install (`tsx_board_post_update`) again, by hand. It never restarts the panel, and it sets "restart required" after a good step. See [Board hooks](#board-hooks). |
 | `tsx-autoupdate status` | The mode, the versions, the pending packages, "restart required", the last install, the health result, the repository state and, when one waits, a newer LED bar image |
 
 | File | Contents |

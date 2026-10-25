@@ -20,6 +20,19 @@
 #                       appends the number of "APK upgrade" lines of the file
 #                       TSX_FAKE_PRE_UPDATE_PEEK to the file and exits with
 #                       TSX_FAKE_PRE_UPDATE_RC (default 0)
+#   TSX_FAKE_POST_UPDATE a file: the board then has tsx_board_post_update.
+#                       It appends a line "N P" to the file: N is the number
+#                       of apk upgrade lines (not --simulate) of the file
+#                       TSX_FAKE_PRE_UPDATE_PEEK, P is the field in_progress
+#                       of the status file TSX_FAKE_POST_UPDATE_FIELDS. It
+#                       prints one line and exits with TSX_FAKE_POST_UPDATE_RC
+#                       (default 0)
+#                       With it the board also has
+#                       tsx_board_post_update_meaning ("fake meaning N").
+#                       TSX_FAKE_POST_UPDATE_SLEEP makes the hook wait that
+#                       many seconds first.
+#   TSX_FAKE_UPDATE_STATUS  a line: the board then has tsx_board_update_status,
+#                       which prints it
 #   TSX_PKG_PREFIX      not set here, so the default tsx-$TSX_FAMILY applies.
 #                       A test sets it in the environment to try another prefix.
 
@@ -76,4 +89,23 @@ if [ -n "${TSX_FAKE_PRE_UPDATE:-}" ]; then
 		grep -c '^APK upgrade$' "${TSX_FAKE_PRE_UPDATE_PEEK:-/dev/null}" >> "$TSX_FAKE_PRE_UPDATE" || :
 		return "${TSX_FAKE_PRE_UPDATE_RC:-0}"
 	}
+fi
+
+# tsx_board_post_update: the optional hook that tsx-autoupdate runs after
+# apk upgrade. The fake board has it only when a test asks for it.
+if [ -n "${TSX_FAKE_POST_UPDATE:-}" ]; then
+	tsx_board_post_update() {
+		_fb_n=$(grep -cE '^APK upgrade( --force-missing-repositories)?$' "${TSX_FAKE_PRE_UPDATE_PEEK:-/dev/null}")
+		_fb_p=$(sed -n 's/^in_progress //p' "${TSX_FAKE_POST_UPDATE_FIELDS:-/dev/null}" 2>/dev/null)
+		[ -z "${TSX_FAKE_POST_UPDATE_SLEEP:-}" ] || sleep "$TSX_FAKE_POST_UPDATE_SLEEP"
+		echo "$_fb_n ${_fb_p:-?}" >> "$TSX_FAKE_POST_UPDATE"
+		echo "fake post-update hook rc=${TSX_FAKE_POST_UPDATE_RC:-0}"
+		return "${TSX_FAKE_POST_UPDATE_RC:-0}"
+	}
+fi
+if [ -n "${TSX_FAKE_POST_UPDATE:-}" ]; then
+	tsx_board_post_update_meaning() { echo "fake meaning $1"; }
+fi
+if [ -n "${TSX_FAKE_UPDATE_STATUS:-}" ]; then
+	tsx_board_update_status() { echo "$TSX_FAKE_UPDATE_STATUS"; }
 fi
