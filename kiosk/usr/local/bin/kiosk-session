@@ -236,6 +236,16 @@ if [ $sway = 1 ] && [ "$ROLE" = session ]; then
 	squeekboard) osk="squeekboard";;
 	wvkbd) osk="wvkbd-mobintl --hidden -L $KIOSK_OSK_HEIGHT -H $KIOSK_OSK_HEIGHT --fn 'DejaVu Sans 20'";;
 	esac
+	# KIOSK_DARK=on: the keyboard takes a dark style too. squeekboard (GTK3)
+	# loads the style-<theme>:<variant>.css of its resources. It reads the theme
+	# from GTK_THEME, and Adwaita:dark picks style-Adwaita:dark.css. wvkbd gets
+	# a dark color set (rrggbb).
+	if [ "${KIOSK_DARK:-off}" = on ]; then
+		case "$KIOSK_OSK" in
+		squeekboard) osk="GTK_THEME=Adwaita:dark $osk";;
+		wvkbd) osk="$osk --bg 0f0f0f --fg 2d2d2d --fg-sp 202020 --press 646464 --press-sp 646464 --text ffffff --text-sp ffffff";;
+		esac
+	fi
 	if [ -n "$osk" ]; then
 		cat > "$XDG_RUNTIME_DIR/kiosk-osk.sh" <<EOF
 #!/bin/sh

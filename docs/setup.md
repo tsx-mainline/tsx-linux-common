@@ -131,6 +131,8 @@ The setting `KIOSK_DARK` (`on` or `off`, default `off`) makes the kiosk browser 
 
 Home Assistant uses its dark theme when the theme of the user profile is "Auto". The page also starts with the dark loading screen (`#111111`) and not a white one. `tsx-kiosk-reveal` reads the background color of the page after it painted, so the area behind the page is dark too.
 
+The on-screen keyboard also follows the setting. `squeekboard` starts with `GTK_THEME=Adwaita:dark`, so it loads its dark style (`style-Adwaita:dark.css`). `wvkbd` starts with a dark color set (`--bg`, `--fg`, `--fg-sp`, `--press`, `--press-sp`, `--text` and `--text-sp`). With `KIOSK_DARK=off` both keyboards start with the same command as before. The quick-settings overlay and the setup page always use dark colors, so they do not change.
+
 | Where | How |
 |---|---|
 | Setup page | The select *Dark mode of the browser* in the *Display* card. It shows only on a panel with a kiosk browser. |
