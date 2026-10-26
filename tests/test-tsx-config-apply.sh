@@ -226,6 +226,19 @@ for v in ftp://x.example.org 'https://a b' 'http://' relative/path; do
 done
 set_ APK_URL /media/usb/tsx-aports >/dev/null 2>&1 && ok "APK_URL local directory accepted" || bad "APK_URL local directory rejected"
 
+# The testing channel of tsx-aports is the same site under /testing. APK_URL
+# alone selects it. Going back to stable removes the testing lines.
+printf '%s\n' "$ALP" > "$REPOS"; rm -f "$FX/etc/tsx/apk-url.default"; TSX_CONF="$CFG" busybox sh "$SCRIPT" unset APK_URL >/dev/null
+set_ APK_URL https://tsx-aports.unexceptional.net/testing >/dev/null; applyb
+[ "$(sed -n 2,3p "$REPOS")" = "https://tsx-aports.unexceptional.net/testing/v3.24/common
+https://tsx-aports.unexceptional.net/testing/v3.24/fake" ] && ok "APK_URL=<site>/testing: testing/v3.24/common and testing/v3.24/<category>" || bad "testing lines wrong: $(cat "$REPOS")"
+[ "$(tail -n 2 "$REPOS")" = "$ALP" ] && ok "testing URL: Alpine lines kept, after ours" || bad "testing URL: Alpine lines changed"
+set_ APK_URL https://tsx-aports.unexceptional.net/testing/ >/dev/null; applyb
+[ "$(grep -c 'testing/v3.24/common$' "$REPOS")" = 1 ] && ok "testing URL with a trailing /: one block" || bad "trailing /: $(cat "$REPOS")"
+TSX_CONF="$CFG" busybox sh "$SCRIPT" unset APK_URL >/dev/null; applyb
+[ "$(sed -n 2,3p "$REPOS")" = "https://tsx-aports.unexceptional.net/v3.24/common
+https://tsx-aports.unexceptional.net/v3.24/fake" ] && [ "$(grep -c testing "$REPOS")" = 0 ] && ok "unset APK_URL: back to stable, no testing line left" || bad "back to stable: $(cat "$REPOS")"
+
 echo "== KIOSK_DARK: the override /run/tsx/kiosk.conf for kiosk-session =="
 apply_ >/dev/null 2>&1
 grep -q '^KIOSK_DARK=' "$FX/run/tsx/kiosk.conf" && bad "KIOSK_DARK in the override while unset" || ok "unset: no KIOSK_DARK line (kiosk.conf of /etc counts)"

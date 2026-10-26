@@ -221,3 +221,14 @@ The panel app writes `/run/tsx/panel-app.state` at its start, at its first frame
 | `/var/log/tsx-autoupdate.log` | The log |
 
 If only the repositories of this project (`APK_URL`) are unreachable, the status shows a warning and the Alpine updates still install. An unreachable Alpine repository stops the install.
+
+## Test packages (the testing channel)
+
+The apk repository has a testing tree next to the normal one. It has everything that the normal tree has, and the packages that are still being tested. To make a panel use it, set `APK_URL` to the testing address and apply it:
+
+```
+tsx-config set APK_URL https://tsx-aports.unexceptional.net/testing
+tsx-config apply
+```
+
+`tsx-config apply` then lists `https://tsx-aports.unexceptional.net/testing/<alpine-branch>/common` and `https://tsx-aports.unexceptional.net/testing/<alpine-branch>/<category>` first in `/etc/apk/repositories`. The next `tsx-autoupdate` check or `apk upgrade` installs the test packages. To go back, run `tsx-config unset APK_URL` and `tsx-config apply`. Packages that were installed from testing stay until a newer version of the normal tree replaces them. See the README of tsx-aports ("Testing channel").
