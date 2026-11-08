@@ -32,7 +32,7 @@ echo "\$1 \$(cat $T/bl/fakebl/brightness)" >> $T/calls
 EOF
 chmod +x $T/disp
 conf() {
-	printf 'RAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nBLANK_TIMEOUT=0\nBRIGHTNESS_DAY=10\nBRIGHTNESS_NIGHT=10\nBACKLIGHT_MAX=29\nNIGHT_START=0\nNIGHT_END=0\nWAKE_SWALLOW_MS=200\n' > $T/kiosk.conf
+	printf 'RAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nRAMP_WAKE_MS=0\nBLANK_TIMEOUT=0\nBRIGHTNESS_DAY=10\nBRIGHTNESS_NIGHT=10\nBACKLIGHT_MAX=29\nNIGHT_START=0\nNIGHT_END=0\nWAKE_SWALLOW_MS=200\n' > $T/kiosk.conf
 	printf '%s\n' "$@" >> $T/kiosk.conf
 }
 exec 7<>$T/input/event0

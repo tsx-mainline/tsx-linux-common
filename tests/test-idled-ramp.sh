@@ -39,16 +39,16 @@ waitb() { # VALUE SECONDS
 sample() { local end=$(( $(MS) + $2 )) ; : > $1; while [ "$(MS)" -lt "$end" ]; do b >> $1; sleep 0.02; done; }
 
 echo "== the floor"
-start 4095 'BRIGHTNESS_DAY=2400\nBRIGHTNESS_NIGHT=2400\nBACKLIGHT_MAX=4095\nBACKLIGHT_MIN=123\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\n'
+start 4095 'BRIGHTNESS_DAY=2400\nBRIGHTNESS_NIGHT=2400\nBACKLIGHT_MAX=4095\nBACKLIGHT_MIN=123\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nRAMP_WAKE_MS=0\n'
 [ "$(st min)" = 123 ] && ok "brightness.state has min 123" || bad "min line: '$(st min)'"
 echo -3000 > $T/run/brightness-offset; waitb 123 2 && ok "offset -3000 stops at the floor (123)" || bad "offset below the floor: $(b)"
 echo 50 > $T/run/brightness; rm -f $T/run/brightness-offset; waitb 123 2 && ok "an absolute level of 50 is raised to 123" || bad "override below the floor: $(b)"
 rm -f $T/run/brightness; echo 20 > $T/run/als-level; waitb 123 7 && ok "an als-level of 20 is raised to 123" || bad "als-level below the floor: $(b)"
 kill -USR2 $PID; waitb 0 2 && ok "blanking still turns the backlight off" || bad "blank: $(b)"
 kill -USR1 $PID; waitb 123 2 && ok "wake: back at the floor level" || bad "wake: $(b)"
-start 4095 'BRIGHTNESS_DAY=2400\nBRIGHTNESS_NIGHT=2400\nBACKLIGHT_MAX=4095\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\n'
+start 4095 'BRIGHTNESS_DAY=2400\nBRIGHTNESS_NIGHT=2400\nBACKLIGHT_MAX=4095\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nRAMP_WAKE_MS=0\n'
 [ "$(st min)" = 123 ] && ok "default floor on 0..4095 is 123 (3 percent)" || bad "default min: '$(st min)'"
-start 47 'BRIGHTNESS_DAY=23\nBRIGHTNESS_NIGHT=23\nBACKLIGHT_MAX=29\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\n'
+start 47 'BRIGHTNESS_DAY=23\nBRIGHTNESS_NIGHT=23\nBACKLIGHT_MAX=29\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nRAMP_WAKE_MS=0\n'
 [ "$(st min)" = 1 ] && ok "default floor on 0..47 is 1" || bad "default min on 47: '$(st min)'"
 echo -40 > $T/run/brightness-offset; waitb 1 2 && ok "0..47: offset -40 stops at 1" || bad "0..47 floor: $(b)"
 
@@ -94,6 +94,19 @@ echo "== a ramp that a new change cuts"
 start 4095 'BRIGHTNESS_DAY=2400\nBRIGHTNESS_NIGHT=2400\nBACKLIGHT_MAX=4095\nBACKLIGHT_MIN=123\nRAMP_SLIDER_MS=400\nRAMP_AUTO_MS=2000\n'
 echo -2000 > $T/run/brightness-offset; sleep 0.15; echo -200 > $T/run/brightness-offset
 waitb 2200 2 && ok "a second change in the middle of a ramp ends at its own level" || bad "cut ramp: $(b)"
+
+echo "== the wake fades in (RAMP_WAKE_MS)"
+start 47 'BRIGHTNESS_DAY=23\nBRIGHTNESS_NIGHT=23\nBACKLIGHT_MAX=29\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nRAMP_WAKE_MS=400\n'
+kill -USR2 $PID; waitb 0 2 && ok "blank: backlight 0" || bad "blank: $(b)"
+kill -USR1 $PID; sample $T/s4 700
+grep -qx 0 $T/s4 && sed -n '/^[1-9]/,$p' $T/s4 | grep -qx 0 && bad "the fade went back to 0" || true
+[ "$(tail -n 1 $T/s4)" = 23 ] && ok "the fade ends at the level (23)" || bad "end $(tail -n 1 $T/s4)"
+[ "$(grep -v '^0$' $T/s4 | head -n 1)" -lt 10 ] && ok "the fade starts low ($(grep -v '^0$' $T/s4 | head -n 1))" || bad "first lit level $(grep -v '^0$' $T/s4 | head -n 1)"
+grep -v '^0$' $T/s4 | sort -n | diff -q - <(grep -v '^0$' $T/s4) >/dev/null && ok "the fade only goes up" || bad "the fade is not monotone"
+[ "$(sort -u $T/s4 | wc -l)" -ge 5 ] && ok "the fade has steps ($(sort -u $T/s4 | wc -l) levels)" || bad "the fade jumped"
+start 47 'BRIGHTNESS_DAY=23\nBRIGHTNESS_NIGHT=23\nBACKLIGHT_MAX=29\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nRAMP_WAKE_MS=0\n'
+kill -USR2 $PID; waitb 0 2; kill -USR1 $PID; sample $T/s5 300
+[ "$(grep -v '^0$' $T/s5 | sort -u)" = 23 ] && ok "RAMP_WAKE_MS=0: the wake jumps to 23" || bad "RAMP_WAKE_MS=0 levels: $(sort -u $T/s5 | tr '\n' ' ')"
 
 echo "== $N passed, $F failed"
 [ $F = 0 ] && echo "PASS tsx-idled ramp" || exit 1

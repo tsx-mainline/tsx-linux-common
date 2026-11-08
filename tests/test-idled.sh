@@ -15,6 +15,7 @@ BLANK_TIMEOUT=2
 BRIGHTNESS_DAY=10
 RAMP_SLIDER_MS=0
 RAMP_AUTO_MS=0
+RAMP_WAKE_MS=0
 BRIGHTNESS_NIGHT=10
 BACKLIGHT_MAX=29
 NIGHT_START=0
@@ -135,7 +136,7 @@ grep -q 'overlay gesture fivefinger (hold)' $T/log || fail "the OVERLAY_GESTURE 
 # A value that is not known gives one log line and counts as fivefinger (a four-finger value of an old config).
 run_gesture() { # the extra config lines
 	rm -rf $T/osk $T/ovl $T/run4; mkdir -p $T/run4
-	printf 'BLANK_TIMEOUT=0\nBRIGHTNESS_DAY=10\nBRIGHTNESS_NIGHT=10\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nNIGHT_START=0\nNIGHT_END=0\nOSK_GESTURE=threefinger\nOSK_TAP_MS=500\nOSK_TOGGLE_CMD="echo x >> %s/osk"\nOVERLAY_CMD="echo y >> %s/ovl"\nDISPLAY_POWER_CMD=\n' "$T" "$T" > $T/gesture.conf
+	printf 'BLANK_TIMEOUT=0\nBRIGHTNESS_DAY=10\nBRIGHTNESS_NIGHT=10\nRAMP_SLIDER_MS=0\nRAMP_AUTO_MS=0\nRAMP_WAKE_MS=0\nNIGHT_START=0\nNIGHT_END=0\nOSK_GESTURE=threefinger\nOSK_TAP_MS=500\nOSK_TOGGLE_CMD="echo x >> %s/osk"\nOVERLAY_CMD="echo y >> %s/ovl"\nDISPLAY_POWER_CMD=\n' "$T" "$T" > $T/gesture.conf
 	printf '%s\n' "$@" >> $T/gesture.conf
 	TSX_INPUT_DIR=$T/input TSX_BACKLIGHT_DIR=$T/bl TSX_STATE_FILE=$T/state4 TSX_RUN_DIR=$T/run4 $BIN -c $T/gesture.conf -v 2>$T/log4 &
 	PID=$!; sleep 0.5

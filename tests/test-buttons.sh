@@ -35,6 +35,7 @@ NIGHT_END=0
 OSK_GESTURE=off
 RAMP_SLIDER_MS=0
 RAMP_AUTO_MS=0
+RAMP_WAKE_MS=0
 C
 # The buttons.conf of the test has no SLIDE_STEP: the board layer (0) applies.
 # SLIDE_GAP_MS is long, so a short press that waits for a slide shows clearly.

@@ -31,7 +31,9 @@
  *    of the ambient light level, the schedule or a reload takes RAMP_AUTO_MS
  *    (default 2000). 0 = jump. The ramp is linear in the slider scale of
  *    tsx-level.h, so it looks even. The daemon has no timer while no ramp
- *    runs. The wake from blank and the start set the level at once.
+ *    runs. The start sets the level at once. The wake from blank fades the
+ *    backlight in from the floor level over RAMP_WAKE_MS (default 300, 0 =
+ *    jump), so the screen does not light up in one step.
  *  - KEY_POWER (the power key of the panel) toggles blank and wake
  *    when POWER_KEY=blank.
  *  - On-screen keyboard toggle (OSK_GESTURE=threefinger|twofinger|off): a
@@ -120,7 +122,7 @@ struct cfg {
 	int day, night;         /* backlight steps */
 	int bl_max;             /* cap, <= max_brightness */
 	int bl_min;             /* floor of a lit level, -1 = share of max_brightness */
-	int ramp_slider_ms, ramp_auto_ms;
+	int ramp_slider_ms, ramp_auto_ms, ramp_wake_ms;
 	int power_key;          /* 1 = KEY_POWER toggles blank */
 	int night_start, night_end; /* hour 0-23; equal = no night */
 	int swallow;            /* grab while blank */
@@ -188,7 +190,7 @@ static long long now_ms(void)
 static void cfg_defaults(struct cfg *c)
 {
 	c->blank_timeout = 300; c->day = -1; c->night = -1; c->bl_max = -1; c->bl_min = -1; c->power_key = 1;
-	c->ramp_slider_ms = 400; c->ramp_auto_ms = 1000;
+	c->ramp_slider_ms = 400; c->ramp_auto_ms = 1000; c->ramp_wake_ms = 300;
 	c->night_start = 22; c->night_end = 7; c->swallow = 1; c->swallow_ms = 700;
 	strcpy(c->backlight, "auto");
 	c->osk_gesture = 3; c->osk_tap_ms = 500;
@@ -218,6 +220,7 @@ static void cfg_parse(struct cfg *c, const char *cfgfile, int first)
 		I("NIGHT_END", night_end); I("SWALLOW_WAKE_TOUCH", swallow);
 		I("WAKE_SWALLOW_MS", swallow_ms); I("BACKLIGHT_MAX", bl_max);
 		I("BACKLIGHT_MIN", bl_min); I("RAMP_SLIDER_MS", ramp_slider_ms); I("RAMP_AUTO_MS", ramp_auto_ms);
+		I("RAMP_WAKE_MS", ramp_wake_ms);
 		if (!strcmp(p, "POWER_KEY")) c->power_key = !strcmp(v, "blank");
 		if (!strcmp(p, "BACKLIGHT") && *v) snprintf(c->backlight, sizeof c->backlight, "%s", v);
 		if (!strcmp(p, "OSK_GESTURE")) c->osk_gesture = !strcmp(v, "threefinger") ? 3 : !strcmp(v, "twofinger") ? 2 : 0;
@@ -408,7 +411,7 @@ static long long hold_until;   /* boot hold (see the header), 0 = none */
 
 /* The ramp: from ramp_from to ramp_to over ramp_ms, in the position scale of
  * tsx-level.h. ramp_next is the time of the next step. */
-enum { RAMP_NONE, RAMP_FAST, RAMP_SLOW };
+enum { RAMP_NONE, RAMP_FAST, RAMP_SLOW, RAMP_WAKE };
 static int ramp_on, ramp_from, ramp_to, ramp_ms;
 static long long ramp_t0, ramp_next;
 
@@ -444,7 +447,8 @@ static void ramp_step(long long t)
 }
 
 /* mode: RAMP_NONE jumps. RAMP_FAST is a change that the user made (the slider).
- * RAMP_SLOW is a change of the ambient light, the schedule or the config. */
+ * RAMP_SLOW is a change of the ambient light, the schedule or the config.
+ * RAMP_WAKE is the wake from blank: a fade from the floor level. */
 static void backlight_on(int mode)
 {
 	int max, lvl = target_level();
@@ -475,9 +479,9 @@ static void backlight_on(int mode)
 	int actual = read_int(bldir, "brightness");
 	if (ramp_on && lvl == ramp_to && actual == cur_level) goto done;
 	if (lvl != cur_level || actual != lvl) {
-		int ms = mode == RAMP_FAST ? C.ramp_slider_ms : C.ramp_auto_ms;
+		int ms = mode == RAMP_FAST ? C.ramp_slider_ms : mode == RAMP_WAKE ? C.ramp_wake_ms : C.ramp_auto_ms;
 		ramp_on = 0;
-		if (mode == RAMP_NONE || ms <= 0 || actual <= 0 || actual == lvl) {
+		if (mode == RAMP_NONE || ms <= 0 || (actual <= 0 && mode != RAMP_WAKE) || actual == lvl) {
 			write_level(lvl);
 		} else {
 			ramp_on = 1; ramp_from = actual < st_min ? st_min : actual > max ? max : actual;
@@ -554,7 +558,7 @@ static void screen_on(void)
 {
 	display_power(1);
 	cur_level = -1;
-	backlight_on(RAMP_NONE);
+	backlight_on(RAMP_WAKE);
 }
 
 static void grab_all(int on)
