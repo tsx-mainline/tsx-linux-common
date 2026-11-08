@@ -172,6 +172,11 @@ int main(void)
 				|| t.y < 60 || t.y + t.h + 66 + 12 > h || t.x + t.w > w;      /* sun above, level text below */
 			for (int k = B_AUTO; full && k < NBTN; k++)
 				bad |= b[k].y < 0 || b[k].y + b[k].h > h || b[k].x < t.x + t.w || b[k].x + b[k].w > w || b[k].h < 60;
+			if (full) {   /* the panel on the surface over the whole output */
+				struct rect p = overlay_full_panel(ow, oh);
+				bad |= p.x != ow - MARGIN_R - FULL_W || p.y != mv || p.w != w || p.h != h || p.x < 0
+					|| p.y + p.h + mv != oh;
+			}
 			printf("%s %dx%d: %s surface %dx%d, margin %d%s\n", bad ? "FAIL" : "ok", ow, oh,
 			       full ? "full" : "slider", w, h, mv, bad ? " (does not fit)" : "");
 			fails += bad;

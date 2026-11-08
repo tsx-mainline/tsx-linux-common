@@ -11,6 +11,10 @@
  * portrait-flipped: 800x1280 or 600x1024) is much higher. The margins then
  * grow, so the surface is never higher than on the 10-inch landscape panel.
  * The surface stays centered on the edge.
+ *
+ * The full overlay is a layer surface over the whole output. It dims the
+ * page and holds the panel (the size above) at the right edge. A touch on
+ * the dim part closes the overlay. The slider stays a small surface.
  */
 #ifndef TSX_OVERLAY_LAYOUT_H
 #define TSX_OVERLAY_LAYOUT_H
@@ -35,6 +39,14 @@ static inline int overlay_margin_v(int full, int out_h)
 	int mv = full ? FULL_MARGIN_V : SLIDER_MARGIN_V, max_h = full ? FULL_MAX_H : SLIDER_MAX_H;
 	if (out_h - 2 * mv > max_h) mv = (out_h - max_h) / 2;
 	return mv;
+}
+
+/* The panel of the full overlay, in the coordinates of a surface that covers
+ * the whole output (ow x oh px). */
+static inline struct rect overlay_full_panel(int ow, int oh)
+{
+	int mv = overlay_margin_v(1, oh);
+	return (struct rect){ ow - MARGIN_R - FULL_W, mv, FULL_W, oh - 2 * mv };
 }
 
 /* The slider track and the buttons, in surface coordinates, for a surface

@@ -10,11 +10,14 @@
  *   slider   compact brightness bar, shown while a finger slides along the
  *            front keys. It hides OVERLAY_SLIDER_MS after the last step.
  *   full     brightness slider, Auto brightness, Screen off, Reload page and
- *            Close. It hides OVERLAY_FULL_MS after the last touch on it.
+ *            Close. The surface covers the whole output: it dims the page
+ *            and holds the panel at the right edge. A touch on the dim part
+ *            closes it (OVERLAY_DIM_GUARD_MS after the show at the earliest).
+ *            It hides OVERLAY_FULL_MS after the last touch on it.
  *   hide, toggle
  * Keyboard interactivity is NONE. The overlay never takes the keyboard focus
  * from Chromium, so the on-screen keyboard keeps working. Touches outside the
- * surface still go to the page.
+ * slider surface still go to the page. The full overlay takes all touches.
  *
  * The overlay only shows state (/run/tsx/brightness.state from tsx-idled and
  * /run/tsx/als.state from tsx-als). It hands every action to tsx-panelctl
@@ -42,7 +45,8 @@
  * pointer input both work (pointer: a mouse, or a virtual pointer in tests).
  *
  * Env (tests / tuning): TSX_RUN_DIR (/run/tsx), OVERLAY_SLIDER_MS (1500),
- * OVERLAY_FULL_MS (8000), TSX_OVERLAY_VERBOSE=1.
+ * OVERLAY_FULL_MS (8000), OVERLAY_DIM (the alpha of the dim part, 0.55),
+ * OVERLAY_DIM_GUARD_MS (400), TSX_OVERLAY_VERBOSE=1.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -84,13 +88,16 @@ static struct buffer bufs[2];
 
 static const char *rundir = "/run/tsx";
 static char ctlpath[PATH_MAX], panelctl[PATH_MAX], bstate[PATH_MAX], astate[PATH_MAX];
-static int ctl_fd = -1, verbose, slider_ms = 1500, full_ms = 8000;
+static int ctl_fd = -1, verbose, slider_ms = 1500, full_ms = 8000, dim_guard_ms = 400;
+static double dim = 0.55;
 static volatile sig_atomic_t sig_term;
 
 static enum mode mode = HIDDEN, want_mode = HIDDEN;
 static int configured, surf_w, surf_h;
 static int cur_mv, out_h;                /* the top and bottom margin of the surface, and the output height */
-static long long hide_at;
+static long long hide_at, shown_at;
+static struct rect pan;                  /* the panel in surface coordinates (the slider: the whole surface) */
+static int damage_all;                   /* the next commit damages the whole surface (the dim part) */
 
 /* the state on show */
 static int level = -1, base = -1, offset, override, maxlvl = 31, minlvl = 1, als_auto = -1;
@@ -247,7 +254,9 @@ static void sun(cairo_t *c, double cx, double cy, double r)
 
 static void layout(void)
 {
-	overlay_layout(mode != SLIDER, surf_h, &r_track, r_btn);
+	if (mode == FULL) pan = overlay_full_panel(surf_w, surf_h);
+	else pan = (struct rect){ 0, 0, surf_w, surf_h };
+	overlay_layout(mode != SLIDER, pan.h, &r_track, r_btn);
 }
 
 static void draw(cairo_t *c, int w, int h)
@@ -255,9 +264,11 @@ static void draw(cairo_t *c, int w, int h)
 	int shown = drag_level > 0 ? drag_level : level;
 	char s[32];
 	cairo_set_operator(c, CAIRO_OPERATOR_SOURCE);
-	cairo_set_source_rgba(c, 0, 0, 0, 0);
+	cairo_set_source_rgba(c, 0, 0, 0, mode == FULL ? dim : 0);   /* the dim part */
 	cairo_paint(c);
 	cairo_set_operator(c, CAIRO_OPERATOR_OVER);
+	cairo_translate(c, pan.x, pan.y);
+	w = pan.w; h = pan.h;
 	rounded(c, 1, 1, w - 2, h - 2, 28);
 	cairo_set_source_rgba(c, 0.08, 0.09, 0.11, 0.95);
 	cairo_fill_preserve(c);
@@ -357,7 +368,9 @@ static void redraw(void)
 	cairo_surface_flush(b->cs);
 	b->busy = 1;
 	wl_surface_attach(surface, b->wb, 0, 0);
-	wl_surface_damage(surface, 0, 0, surf_w, surf_h);
+	/* The dim part never changes: after the first frame, only the panel. */
+	if (damage_all) { wl_surface_damage(surface, 0, 0, surf_w, surf_h); damage_all = 0; }
+	else wl_surface_damage(surface, pan.x, pan.y, pan.w, pan.h);
 	wl_surface_commit(surface);
 }
 
@@ -369,7 +382,10 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *l, uint32_
 	(void)data;
 	zwlr_layer_surface_v1_ack_configure(l, serial);
 	if (w) surf_w = w;
-	if (h) {
+	if (mode == FULL) {
+		/* The surface covers the output, so its size is the output size. */
+		if (h) out_h = surf_h = h;
+	} else if (h) {
 		/* The output height. It also changes when the screen turns. If
 		 * another margin is due, set it and wait for the next configure. */
 		out_h = (int)h + 2 * cur_mv;
@@ -384,6 +400,7 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *l, uint32_
 	}
 	layout();       /* the height comes from the output */
 	configured = 1;
+	damage_all = 1;
 	redraw();
 }
 
@@ -411,9 +428,12 @@ static void show(enum mode m)
 	int w = m == FULL ? FULL_W : SLIDER_W, mv = overlay_margin_v(m == FULL, out_h);
 	read_state();
 	if (m == mode && surface) return;
+	/* The slider and the full overlay have other anchors: a new surface. */
+	if (surface) surface_destroy();
 	mode = m;
 	surf_w = w;
-	if (!surface) surf_h = 0; /* the configure event brings the height */
+	surf_h = 0;     /* the configure event brings the size */
+	shown_at = now_ms();
 	layout();
 	if (!surface) {
 		surface = wl_compositor_create_surface(compositor);
@@ -421,15 +441,23 @@ static void show(enum mode m)
 			ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "tsx-overlay");
 		zwlr_layer_surface_v1_add_listener(layer, &layer_listener, NULL);
 		zwlr_layer_surface_v1_set_anchor(layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT |
-			ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
+			ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+			(m == FULL ? ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT : 0));
 		zwlr_layer_surface_v1_set_exclusive_zone(layer, -1);   /* never moves the page */
 		zwlr_layer_surface_v1_set_keyboard_interactivity(layer, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
 		configured = 0;
 	}
-	/* height 0 + top/bottom anchors: the compositor sizes it to the output */
-	cur_mv = mv;
-	zwlr_layer_surface_v1_set_margin(layer, mv, MARGIN_R, mv, 0);
-	zwlr_layer_surface_v1_set_size(layer, w, 0);
+	if (m == FULL) {
+		/* size 0 x 0 + four anchors: the compositor gives the whole output */
+		cur_mv = 0;
+		zwlr_layer_surface_v1_set_margin(layer, 0, 0, 0, 0);
+		zwlr_layer_surface_v1_set_size(layer, 0, 0);
+	} else {
+		/* height 0 + top/bottom anchors: the compositor sizes it to the output */
+		cur_mv = mv;
+		zwlr_layer_surface_v1_set_margin(layer, mv, MARGIN_R, mv, 0);
+		zwlr_layer_surface_v1_set_size(layer, w, 0);
+	}
 	wl_surface_commit(surface);     /* -> configure -> redraw */
 	if (verbose) logm("show %s", m == FULL ? "full" : "slider");
 }
@@ -460,8 +488,22 @@ static void slider_at(double y)
 	set_level(tsx_pos_to_level(frac, minlvl, maxlvl));
 }
 
+/* A press on the dim part of the full overlay closes it. The guard time
+ * after the show keeps a finger of the opening gesture from closing it. */
+static int press_outside(double x, double y)
+{
+	if (mode != FULL || in_rect(&pan, x, y)) return 0;
+	if (now_ms() - shown_at >= dim_guard_ms) {
+		if (verbose) logm("touch outside the panel: close");
+		hide();
+	}
+	return 1;
+}
+
 static void press_down(double x, double y)
 {
+	if (press_outside(x, y)) return;
+	x -= pan.x; y -= pan.y;
 	keep_open();
 	pressed = hit(x, y); press_inside = 1;
 	if (pressed == B_SLIDER) { drag_level = -1; read_state(); slider_at(y); }
@@ -471,6 +513,7 @@ static void press_down(double x, double y)
 static void press_move(double x, double y)
 {
 	if (pressed == B_NONE) return;
+	x -= pan.x; y -= pan.y;
 	keep_open();
 	if (pressed == B_SLIDER) { slider_at(y); redraw(); return; }
 	int in = in_rect(&r_btn[pressed], x, y);
@@ -636,6 +679,10 @@ int main(void)
 	if (getenv("TSX_RUN_DIR")) rundir = getenv("TSX_RUN_DIR");
 	if (getenv("OVERLAY_SLIDER_MS")) slider_ms = atoi(getenv("OVERLAY_SLIDER_MS"));
 	if (getenv("OVERLAY_FULL_MS")) full_ms = atoi(getenv("OVERLAY_FULL_MS"));
+	if (getenv("OVERLAY_DIM")) dim = atof(getenv("OVERLAY_DIM"));
+	if (dim < 0) dim = 0;
+	if (dim > 1) dim = 1;
+	if (getenv("OVERLAY_DIM_GUARD_MS")) dim_guard_ms = atoi(getenv("OVERLAY_DIM_GUARD_MS"));
 	verbose = getenv("TSX_OVERLAY_VERBOSE") && atoi(getenv("TSX_OVERLAY_VERBOSE"));
 	snprintf(ctlpath, sizeof ctlpath, "%s/overlay.ctl", rundir);
 	snprintf(panelctl, sizeof panelctl, "%s/panelctl", rundir);
