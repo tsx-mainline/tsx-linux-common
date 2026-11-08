@@ -14,9 +14,11 @@
 #     a real panel with injected touches.
 #   - kiosk-session puts the sway lines into the session config.
 #   - the layout of tsx-overlay (tsx-overlay-layout.h) on the four outputs
-#     (1280x800, 1024x600, and both turned). It must stay unchanged in
+#     (1280x800, 1024x600, and both turned). The slider must stay unchanged in
 #     landscape. In portrait it must be no higher than the 10-inch landscape
-#     overlay, and everything must be inside.
+#     slider. The default tile grid must fit and sit in the middle. Also the
+#     placement rules (x and y first, flow, overlap left out) and a grid that
+#     is too big.
 # The last two parts compile C with CC (default gcc). The other parts need
 # busybox and python3.
 set -eu
@@ -157,35 +159,121 @@ echo "== tsx-overlay layout on the four outputs (CC=$CC) =="
 cat > "$T/ov.c" <<'C'
 #include <stdio.h>
 #include "tsx-overlay-layout.h"
+static int fails;
+static void want(const char *what, int got, int exp)
+{
+	printf("%s %s: %d (want %d)\n", got == exp ? "ok" : "FAIL", what, got, exp);
+	fails += got != exp;
+}
+/* the space left and right (and above and below) differs by 1 px at most */
+static int centered(const struct rect *p, int ow, int oh)
+{
+	int dx = p->x - (ow - p->x - p->w), dy = p->y - (oh - p->y - p->h);
+	return dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1;
+}
+static struct ov_layout parsed(const struct ov_grid *g)
+{
+	struct ov_layout L;
+	memset(&L, 0, sizeof L);
+	L.grid = *g;
+	return L;
+}
 int main(void)
 {
 	static const int out[][2] = { { 1280, 800 }, { 1024, 600 }, { 800, 1280 }, { 600, 1024 } };
-	int fails = 0;
-	for (int i = 0; i < 4; i++)
-		for (int full = 0; full <= 1; full++) {
-			int ow = out[i][0], oh = out[i][1], mv = overlay_margin_v(full, oh), h = oh - 2 * mv;
-			int w = full ? FULL_W : SLIDER_W, max_h = full ? FULL_MAX_H : SLIDER_MAX_H;
-			struct rect t, b[NBTN];
-			overlay_layout(full, h, &t, b);
-			int bad = h <= 0 || h > max_h || w + MARGIN_R > ow
-				|| (oh <= 800 && mv != (full ? FULL_MARGIN_V : SLIDER_MARGIN_V))   /* landscape: as before */
-				|| t.y < 60 || t.y + t.h + 66 + 12 > h || t.x + t.w > w;      /* sun above, level text below */
-			for (int k = B_AUTO; full && k < NBTN; k++)
-				bad |= b[k].y < 0 || b[k].y + b[k].h > h || b[k].x < t.x + t.w || b[k].x + b[k].w > w || b[k].h < 60;
-			if (full) {   /* the panel on the surface over the whole output */
-				struct rect p = overlay_full_panel(ow, oh);
-				bad |= p.x != ow - MARGIN_R - FULL_W || p.y != mv || p.w != w || p.h != h || p.x < 0
-					|| p.y + p.h + mv != oh;
-			}
-			printf("%s %dx%d: %s surface %dx%d, margin %d%s\n", bad ? "FAIL" : "ok", ow, oh,
-			       full ? "full" : "slider", w, h, mv, bad ? " (does not fit)" : "");
+	struct ov_layout D;
+	struct ov_slot sl[OV_MAX_ITEMS];
+	ov_layout_default(&D);
+	/* the slider: unchanged in landscape, no higher than 600 px in portrait */
+	for (int i = 0; i < 4; i++) {
+		int ow = out[i][0], oh = out[i][1], mv = overlay_margin_v(oh), h = oh - 2 * mv;
+		struct rect t = overlay_slider_track(h);
+		int bad = h <= 0 || h > SLIDER_MAX_H || SLIDER_W + MARGIN_R > ow || (oh <= 800 && mv != SLIDER_MARGIN_V)
+			|| t.y < 60 || t.y + t.h + 66 + 12 > h || t.x + t.w > SLIDER_W;
+		printf("%s %dx%d: slider surface %dx%d, margin %d\n", bad ? "FAIL" : "ok", ow, oh, SLIDER_W, h, mv);
+		fails += bad;
+	}
+	/* the default grid: fits, is centered, no tile leaves the panel */
+	for (int i = 0; i < 4; i++) {
+		int ow = out[i][0], oh = out[i][1];
+		struct ov_geom g = ov_geometry(&D.grid, ow, oh);
+		int n = ov_place(&D, sl), bad = n != 9;
+		bad |= g.panel.x < OV_MARGIN || g.panel.y < OV_MARGIN || g.panel.x + g.panel.w > ow - OV_MARGIN
+			|| g.panel.y + g.panel.h > oh - OV_MARGIN;
+		bad |= !centered(&g.panel, ow, oh);
+		for (int k = 0; k < n; k++) {
+			struct rect r = ov_cell_rect(&g, sl[k].cell);
+			bad |= r.x < 0 || r.y < 0 || r.x + r.w > g.panel.w || r.y + r.h > g.panel.h || r.w < 40 || r.h < 40;
+		}
+		printf("%s %dx%d: default grid, panel %dx%d at %d,%d, tile %d, gap %d\n", bad ? "FAIL" : "ok", ow, oh,
+		       g.panel.w, g.panel.h, g.panel.x, g.panel.y, g.tile, g.gap);
+		fails += bad;
+	}
+	{   /* 1280x800: the size from the file, not scaled */
+		struct ov_geom g = ov_geometry(&D.grid, 1280, 800);
+		want("1280x800 tile is 150", g.tile, 150);
+		want("1280x800 panel width", g.panel.w, 4 * 150 + 3 * 12 + 2 * OV_PAD);
+		want("1280x800 panel height", g.panel.h, 3 * 150 + 2 * 12 + 2 * OV_PAD);
+		want("800x1280 tile is 150", ov_geometry(&D.grid, 800, 1280).tile, 150);
+		want("600x1024 tile is scaled down", ov_geometry(&D.grid, 600, 1024).tile < 150, 1);
+	}
+	{   /* the default layout as in the picture: brightness 1x3, volume 2x1 */
+		struct rect w;
+		ov_place(&D, sl);
+		w = sl[0].cell; want("brightness cell", w.x == 0 && w.y == 0 && w.w == 1 && w.h == 3, 1);
+		w = sl[1].cell; want("auto_brightness cell", w.x == 1 && w.y == 0, 1);
+		w = sl[3].cell; want("reload_page cell", w.x == 3 && w.y == 0, 1);
+		w = sl[4].cell; want("dark_mode cell", w.x == 1 && w.y == 1, 1);
+		w = sl[6].cell; want("setup cell", w.x == 3 && w.y == 1, 1);
+		w = sl[7].cell; want("volume cell", w.x == 1 && w.y == 2 && w.w == 2 && w.h == 1, 1);
+		w = sl[8].cell; want("close cell", w.x == 3 && w.y == 2, 1);
+	}
+	{   /* x and y first, the others flow into the first free cells */
+		struct ov_layout L = parsed(&(struct ov_grid){ 3, 2, 10, 100 });
+		ov_item_set(&L, WT_CLOCK, -1, -1, 1, 1);       /* flows after the fixed widgets: 0,0 and 1,0 are taken, so 2,0 */
+		ov_item_set(&L, WT_INFO, 0, 0, 2, 1);          /* fixed: 0,0 and 1,0 */
+		ov_item_set(&L, WT_SETUP, -1, -1, 1, 1);       /* flows to 0,1 */
+		ov_item_set(&L, WT_CLOSE, 2, 1, 1, 1);         /* fixed: 2,1 */
+		ov_item_set(&L, WT_KEYBOARD, -1, -1, 1, 1);    /* flows to 1,1 */
+		want("count", ov_place(&L, sl), 5);
+		want("fixed widget placed first: clock goes after it", sl[0].cell.x == 2 && sl[0].cell.y == 0, 1);
+		want("info at 0,0 width 2", sl[1].cell.x == 0 && sl[1].cell.y == 0 && sl[1].cell.w == 2, 1);
+		want("setup flows to 0,1", sl[2].cell.x == 0 && sl[2].cell.y == 1, 1);
+		want("close at 2,1", sl[3].cell.x == 2 && sl[3].cell.y == 1, 1);
+		want("keyboard flows to 1,1", sl[4].cell.x == 1 && sl[4].cell.y == 1, 1);
+	}
+	{   /* an overlapping widget is left out, so is one outside the grid or with no free place */
+		struct ov_layout L = parsed(&(struct ov_grid){ 2, 2, 10, 100 });
+		ov_item_set(&L, WT_INFO, 0, 0, 2, 1);
+		ov_item_set(&L, WT_CLOCK, 1, 0, 1, 1);         /* overlaps the first: out */
+		ov_item_set(&L, WT_SETUP, 1, 1, 2, 1);         /* leaves the grid: out */
+		ov_item_set(&L, WT_CLOSE, -1, -1, 3, 1);       /* wider than the grid: out */
+		ov_item_set(&L, WT_KEYBOARD, -1, -1, 1, 1);    /* 0,1 */
+		ov_item_set(&L, WT_REBOOT, -1, -1, 1, 1);      /* 1,1 */
+		ov_item_set(&L, WT_LED_BAR, -1, -1, 1, 1);     /* no free place: out */
+		want("count", ov_place(&L, sl), 3);
+		want("slot 0 is item 0", sl[0].item, 0);
+		want("slot 1 is the keyboard", sl[1].item, 4);
+		want("slot 2 is the reboot tile", sl[2].item, 5);
+		want("keyboard at 0,1", sl[1].cell.x == 0 && sl[1].cell.y == 1, 1);
+	}
+	{   /* a grid that is too big is scaled down and still centered */
+		struct ov_grid big = { 12, 12, 40, 400 };
+		for (int i = 0; i < 4; i++) {
+			struct ov_geom g = ov_geometry(&big, out[i][0], out[i][1]);
+			int bad = g.tile >= 400 || g.tile < 1 || g.panel.x < OV_MARGIN || g.panel.y < OV_MARGIN
+				|| g.panel.x + g.panel.w > out[i][0] - OV_MARGIN || g.panel.y + g.panel.h > out[i][1] - OV_MARGIN
+				|| !centered(&g.panel, out[i][0], out[i][1]);
+			printf("%s %dx%d: 12x12 tiles of 400 px scaled to %d px, panel %dx%d\n", bad ? "FAIL" : "ok",
+			       out[i][0], out[i][1], g.tile, g.panel.w, g.panel.h);
 			fails += bad;
 		}
+	}
 	return fails != 0;
 }
 C
 if $CC -O2 -Wall -Wextra -Werror -I"$HERE/kiosk/src" -o "$T/ov" "$T/ov.c" && "$T/ov" > "$T/ov.out"; then
-	ok "all eight layouts fit"; sed 's/^/      /' "$T/ov.out"
+	ok "the slider and the tile grid fit on the four outputs"; sed 's/^/      /' "$T/ov.out"
 else
 	bad "overlay layout"; cat "$T/ov.out" 2>/dev/null
 fi

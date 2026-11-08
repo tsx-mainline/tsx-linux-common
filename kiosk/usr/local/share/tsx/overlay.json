@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "timeout": 30,
+  "grid": {"columns": 4, "rows": 3, "gap": 12, "tile": 150},
+  "widgets": [
+    {"type": "brightness", "h": 3},
+    {"type": "auto_brightness"},
+    {"type": "screen_off"},
+    {"type": "reload_page"},
+    {"type": "dark_mode"},
+    {"type": "keyboard"},
+    {"type": "setup"},
+    {"type": "volume", "w": 2},
+    {"type": "close"}
+  ]
+}

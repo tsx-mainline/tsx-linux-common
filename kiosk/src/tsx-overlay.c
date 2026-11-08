@@ -1,41 +1,55 @@
 /*
  * tsx-overlay: local quick settings for the kiosk (sway session only).
  *
- * A wlr-layer-shell surface on the OVERLAY layer at the right edge of the
- * screen. When the panel hangs in portrait, it stays at the right edge, at
- * most as high as on a landscape panel, and centered (tsx-overlay-layout.h).
- * The surface stays hidden (no surface at all) until tsx-idled (the
- * five-finger hold) or tsx-buttons (a key) asks for it over
- * /run/tsx/overlay.ctl:
- *   slider   compact brightness bar, shown while a finger slides along the
- *            front keys. It hides OVERLAY_SLIDER_MS after the last step.
- *   full     brightness slider, Auto brightness, Screen off, Reload page and
- *            Close. The surface covers the whole output: it dims the page
- *            and holds the panel at the right edge. A touch on the dim part
- *            closes it (OVERLAY_DIM_GUARD_MS after the show at the earliest).
- *            It hides OVERLAY_FULL_MS after the last touch on it.
+ * A wlr-layer-shell surface on the OVERLAY layer. The surface stays hidden (no
+ * surface at all) until tsx-idled (the five-finger hold) or tsx-buttons (a
+ * key) asks for it over /run/tsx/overlay.ctl:
+ *   slider   compact brightness bar at the right edge of the screen, shown
+ *            while a finger slides along the front keys. When the panel hangs
+ *            in portrait, it stays at the right edge, at most as high as on a
+ *            landscape panel, and centered (tsx-overlay-layout.h). It hides
+ *            OVERLAY_SLIDER_MS after the last step.
+ *   full     a grid of tiles in the middle of the screen. The surface covers
+ *            the whole output: it dims the page and holds the panel. A touch
+ *            on the dim part (outside the panel) closes it
+ *            (OVERLAY_DIM_GUARD_MS after the show at the earliest). It hides
+ *            "timeout" seconds (layout file, default 30) after the last touch on it.
  *   hide, toggle
+ * The grid, the size of the tiles and the widgets come from a layout file
+ * (tsx-overlay-config.h): TSX_OVERLAY_LAYOUT (tests), /var/lib/tsx/overlay.json
+ * (the user), /usr/local/share/tsx/overlay.json (the package). The first file
+ * that exists wins. A missing or bad file gives the built-in layout, so the
+ * overlay always opens. The program reads the file again at each show. The
+ * format is in docs/buttons.md ("Quick-settings overlay").
  * Keyboard interactivity is NONE. The overlay never takes the keyboard focus
  * from Chromium, so the on-screen keyboard keeps working. Touches outside the
  * slider surface still go to the page. The full overlay takes all touches.
  *
- * The overlay only shows state (/run/tsx/brightness.state from tsx-idled and
- * /run/tsx/als.state from tsx-als). It hands every action to tsx-panelctl
- * (FIFO /run/tsx/panelctl, group kiosk, a fixed command list):
- *   brightness-offset N   the slider. The local manual setting is an offset
- *                         on top of ALS or the day/night schedule.
- *                         The slider runs from the floor (the "min" line of
- *                         brightness.state) to the top level. On a wide
- *                         range, the position maps to the level with a
- *                         square (tsx-level.h), so the dark end has finer
- *                         steps. The label shows the level as a percent of
- *                         the top level.
- *   als auto on|off
- *   blank on
- *   reload-page
- *   setup                 brings the on-panel setup page back up for about
- *                         15 minutes, even on an already-configured panel
- *                         (see the "Setup page" docs of the board repository).
+ * The overlay shows state (/run/tsx/brightness.state from tsx-idled,
+ * /run/tsx/als.state from tsx-als, and "tsx-panelctl get/has" for the rest).
+ * It hands every action to tsx-panelctl (FIFO /run/tsx/panelctl, group kiosk,
+ * a fixed command list). The widgets and their commands:
+ *   brightness       the slider: brightness-offset N. The local manual setting
+ *                    is an offset on top of ALS or the day/night schedule.
+ *                    The slider runs from the floor (the "min" line of
+ *                    brightness.state) to the top level. On a wide range, the
+ *                    position maps to the level with a square (tsx-level.h),
+ *                    so the dark end has finer steps. The label shows the
+ *                    level as a percent of the top level.
+ *   auto_brightness  als auto on|off
+ *   screen_off       blank on
+ *   reload_page      reload-page
+ *   setup            setup: brings the on-panel setup page back up for about
+ *                    15 minutes, even on an already-configured panel (see the
+ *                    "Setup page" docs of the board repository).
+ *   close            no command
+ *   volume           the slider: volume N (get volume, get mute)
+ *   dark_mode        dark-mode on|off (get dark-mode). The kiosk restarts.
+ *   keyboard         no command: runs "tsx-osk toggle" itself (it works for
+ *                    user kiosk) and closes the overlay.
+ *   clock, info      no tap action
+ *   reboot           reboot, after a second tap within 3 s
+ *   led_bar          ledbar on|off (has ledbar, get ledbar)
  * It runs as the kiosk user, never as root.
  *
  * Why C and cairo on wl_shm: the process stays resident, so the slider appears
@@ -44,16 +58,24 @@
  * process of a few MB and no wakeups while the overlay is hidden. Touch and
  * pointer input both work (pointer: a mouse, or a virtual pointer in tests).
  *
+ * Build: cc -Wall -Wextra -o tsx-overlay tsx-overlay.c wlr-layer-shell-
+ * unstable-v1-protocol.c xdg-shell-protocol.c $(pkg-config --cflags --libs
+ * cairo wayland-client) -lcjson
+ *
  * Env (tests / tuning): TSX_RUN_DIR (/run/tsx), OVERLAY_SLIDER_MS (1500),
- * OVERLAY_FULL_MS (8000), OVERLAY_DIM (the alpha of the dim part, 0.55),
- * OVERLAY_DIM_GUARD_MS (400), TSX_OVERLAY_VERBOSE=1.
+ * OVERLAY_FULL_MS (replaces the "timeout" of the layout file), OVERLAY_DIM (the alpha of the dim part, 0.55),
+ * OVERLAY_DIM_GUARD_MS (400), TSX_OVERLAY_LAYOUT (a layout file in front of
+ * the others), TSX_PANELCTL_BIN (/usr/local/sbin/tsx-panelctl), TSX_OSK_BIN
+ * (/usr/local/bin/tsx-osk), TSX_OVERLAY_VERBOSE=1.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <limits.h>
 #include <math.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -62,13 +84,15 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <arpa/inet.h>
 
 #include <cairo.h>
 #include <wayland-client.h>
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
-#include "tsx-overlay-layout.h"
+#include "tsx-overlay-config.h"
 #include "tsx-level.h"
 
 enum mode { HIDDEN, SLIDER, FULL };
@@ -88,13 +112,14 @@ static struct buffer bufs[2];
 
 static const char *rundir = "/run/tsx";
 static char ctlpath[PATH_MAX], panelctl[PATH_MAX], bstate[PATH_MAX], astate[PATH_MAX];
-static int ctl_fd = -1, verbose, slider_ms = 1500, full_ms = 8000, dim_guard_ms = 400;
+static char ctlbin[PATH_MAX] = "/usr/local/sbin/tsx-panelctl", oskbin[PATH_MAX] = "/usr/local/bin/tsx-osk";
+static int ctl_fd = -1, verbose, slider_ms = 1500, full_ms = -1, dim_guard_ms = 400;   /* full_ms -1: the layout file */
 static double dim = 0.55;
 static volatile sig_atomic_t sig_term;
 
 static enum mode mode = HIDDEN, want_mode = HIDDEN;
 static int configured, surf_w, surf_h;
-static int cur_mv, out_h;                /* the top and bottom margin of the surface, and the output height */
+static int cur_mv, out_h;                /* the top and bottom margin of the slider surface, and the output height */
 static long long hide_at, shown_at;
 static struct rect pan;                  /* the panel in surface coordinates (the slider: the whole surface) */
 static int damage_all;                   /* the next commit damages the whole surface (the dim part) */
@@ -103,16 +128,32 @@ static int damage_all;                   /* the next commit damages the whole su
 static int level = -1, base = -1, offset, override, maxlvl = 31, minlvl = 1, als_auto = -1;
 static int drag_level = -1;              /* level under the finger while dragging */
 static long long drag_hold;              /* ...shown until tsx-idled reports it (or until this time) */
-static int pressed = B_NONE, press_inside, touch_id = -1, ptr_down;
+
+/* The state of the other widgets. -1 = the panel has none of it. */
+static int vol = -1, mute = -1, vol_drag = -1, dark = -1, ledbar = -1;
+static long long vol_sent, vol_read_at, reboot_armed;
+static int clock_min = -1;
+static char info_host[64], info_ip[48], info_ver[48];
+
+#define NOPRESS (-1)
+#define PRESS_SLIDER 1000                /* the press on the slider surface (mode SLIDER) */
+static int pressed = NOPRESS, press_inside, touch_id = -1, ptr_down;
 static double ptr_x, ptr_y;
 
 /*
- * Layout (surface coordinates, scale 1, see tsx-overlay-layout.h). The surface
- * spans the output height minus a top and a bottom margin. It is at most 600
- * px high (slider) or 720 px (full). On a portrait output the margins grow,
- * so the surface is no higher than that.
+ * The full overlay: lay is the layout file, slot[] the widgets that found a
+ * place, tile[] their rectangles in panel coordinates. The slider: r_track
+ * (see tsx-overlay-layout.h). The slider surface spans the output height
+ * minus a top and a bottom margin. It is at most 600 px high. On a portrait
+ * output the margins grow, so the surface is no higher than that.
  */
-static struct rect r_track, r_btn[NBTN];
+static struct ov_layout lay;
+static struct ov_slot slot[OV_MAX_ITEMS];
+static struct rect tile[OV_MAX_ITEMS];
+static struct ov_geom geom;
+static int nslot;
+static struct rect r_track;
+static char last_msg[256];
 
 static void logm(const char *fmt, ...)
 {
@@ -216,8 +257,6 @@ static void set_level(int l)
 	int b = base > 0 ? base : (level > 0 ? level - offset : l);
 	panelctl_send("brightness-offset %d", overlay_offset(l, b, maxlvl));
 }
-
-/* ---- drawing ---------------------------------------------------------------- */
 static void rounded(cairo_t *c, double x, double y, double w, double h, double r)
 {
 	cairo_new_sub_path(c);
@@ -252,74 +291,391 @@ static void sun(cairo_t *c, double cx, double cy, double r)
 	cairo_stroke(c);
 }
 
-static void layout(void)
+static int slot_type(int si) { return lay.item[slot[si].item].type; }
+
+static int has_widget(int type)
 {
-	if (mode == FULL) pan = overlay_full_panel(surf_w, surf_h);
-	else pan = (struct rect){ 0, 0, surf_w, surf_h };
-	overlay_layout(mode != SLIDER, pan.h, &r_track, r_btn);
+	for (int i = 0; i < nslot; i++) if (slot_type(i) == type) return 1;
+	return 0;
 }
 
-static void draw(cairo_t *c, int w, int h)
+/* ---- the other widgets: state ------------------------------------------------ */
+/* Run a command, keep the first line of its output. Return 0 if it exits 0. */
+static int run_read(const char *what, char *out, size_t n)
 {
-	int shown = drag_level > 0 ? drag_level : level;
-	char s[32];
+	char cmd[PATH_MAX + 48]; FILE *p; int st;
+	snprintf(cmd, sizeof cmd, "%s %s 2>/dev/null", ctlbin, what);
+	if (out) out[0] = 0;
+	if (!(p = popen(cmd, "r"))) return -1;
+	if (out && fgets(out, n, p)) out[strcspn(out, "\r\n")] = 0;
+	st = pclose(p);
+	return st == 0 ? 0 : -1;
+}
+
+/* Return 1 if anything shown changed. */
+static int read_volume(void)
+{
+	char b[32] = ""; int v = -1, m = -1, ch;
+	if (run_read("get volume", b, sizeof b) == 0 && b[0]) { v = atoi(b); if (v < 0) v = 0; if (v > 100) v = 100; }
+	if (v >= 0 && run_read("get mute", b, sizeof b) == 0) m = !strcmp(b, "on");
+	ch = v != vol || m != mute;
+	vol = v; mute = m;
+	return ch;
+}
+
+static void read_info(void)
+{
+	static const char *const ifs[] = { "eth0", "wlan0" };
+	struct ifaddrs *ifa, *p; FILE *f; char line[160];
+	if (gethostname(info_host, sizeof info_host - 1)) snprintf(info_host, sizeof info_host, "?");
+	snprintf(info_ip, sizeof info_ip, "no network");
+	if (!getifaddrs(&ifa)) {
+		for (unsigned i = 0; i < sizeof ifs / sizeof *ifs; i++)
+			for (p = ifa; p; p = p->ifa_next)
+				if (p->ifa_addr && p->ifa_addr->sa_family == AF_INET && !strcmp(p->ifa_name, ifs[i])) {
+					inet_ntop(AF_INET, &((struct sockaddr_in *)p->ifa_addr)->sin_addr, info_ip, sizeof info_ip);
+					i = 99; break;
+				}
+		freeifaddrs(ifa);
+	}
+	info_ver[0] = 0;
+	if ((f = fopen("/etc/tsx-release", "r"))) {
+		if (fgets(line, sizeof line, f)) { line[strcspn(line, "\r\n")] = 0; snprintf(info_ver, sizeof info_ver, "%.47s", line); }
+		fclose(f);
+	}
+	if (!info_ver[0] && (f = fopen("/lib/apk/db/installed", "r"))) {
+		int mine = 0;
+		while (fgets(line, sizeof line, f)) {
+			if (line[0] == '\n') mine = 0;
+			else if (!strncmp(line, "P:", 2)) mine = !strncmp(line + 2, "tsx-kiosk\n", 10);
+			else if (mine && !strncmp(line, "V:", 2)) {
+				line[strcspn(line, "\r\n")] = 0;
+				snprintf(info_ver, sizeof info_ver, "tsx %.43s", line + 2); break;
+			}
+		}
+		fclose(f);
+	}
+}
+
+/* Read the state that only the full overlay shows, once on each show. */
+static void read_ext(void)
+{
+	char b[48];
+	if (has_widget(WT_VOLUME)) { read_volume(); vol_read_at = now_ms() + 2000; }
+	if (has_widget(WT_DARK_MODE)) dark = run_read("get dark-mode", b, sizeof b) ? -1 : !strcmp(b, "on");
+	if (has_widget(WT_LED_BAR)) {
+		int a, c, d;
+		ledbar = -1;
+		if (run_read("has ledbar", NULL, 0) == 0) {
+			ledbar = 0;
+			if (run_read("get ledbar", b, sizeof b) == 0 && sscanf(b, "%d %d %d", &a, &c, &d) == 3) ledbar = a || c || d;
+		}
+	}
+	if (has_widget(WT_INFO)) read_info();
+	clock_min = -1;
+}
+
+/* Changes that come with time: the clock, the volume, the restart question. */
+static int tick_widgets(void)
+{
+	int ch = 0; long long t = now_ms();
+	if (mode != FULL) return 0;
+	if (reboot_armed && t >= reboot_armed) { reboot_armed = 0; ch = 1; }
+	if (has_widget(WT_CLOCK)) { int m = (int)(time(NULL) / 60); if (m != clock_min) { clock_min = m; ch = 1; } }
+	if (has_widget(WT_VOLUME) && vol_drag < 0 && t >= vol_read_at) { vol_read_at = t + 2000; ch |= read_volume(); }
+	return ch;
+}
+
+/* The layout file, read again at each show. The log gets a line only when
+ * the problem is new. */
+static void load_layout(void)
+{
+	const char *p[3] = { getenv("TSX_OVERLAY_LAYOUT"), OV_FILE_USER, OV_FILE_PACKAGE };
+	char msg[sizeof last_msg];
+	ov_layout_load(p, 3, &lay, msg, sizeof msg);
+	if (strcmp(msg, last_msg)) {
+		snprintf(last_msg, sizeof last_msg, "%s", msg);
+		if (msg[0]) logm("layout: %s", msg);
+	}
+}
+
+static void run_osk(void)
+{
+	pid_t pid = fork();
+	if (pid == 0) {
+		setsid();
+		execl(oskbin, "tsx-osk", "toggle", (char *)NULL);
+		_exit(127);
+	}
+	if (pid < 0) logm("fork: %s", strerror(errno));
+}
+
+static void set_vol(int v)
+{
+	long long t = now_ms();
+	if (v < 0) v = 0;
+	if (v > 100) v = 100;
+	if (v == vol_drag) return;
+	vol_drag = v;
+	if (t - vol_sent >= 80) { vol_sent = t; panelctl_send("volume %d", v); }   /* the last value goes out on release */
+}
+
+
+static void speaker(cairo_t *c, double cx, double cy, double r, int muted)
+{
+	cairo_move_to(c, cx - r * 0.9, cy - r * 0.3);
+	cairo_line_to(c, cx - r * 0.45, cy - r * 0.3);
+	cairo_line_to(c, cx + r * 0.05, cy - r * 0.8);
+	cairo_line_to(c, cx + r * 0.05, cy + r * 0.8);
+	cairo_line_to(c, cx - r * 0.45, cy + r * 0.3);
+	cairo_line_to(c, cx - r * 0.9, cy + r * 0.3);
+	cairo_close_path(c);
+	cairo_fill(c);
+	cairo_set_line_width(c, r * 0.14);
+	cairo_set_line_cap(c, CAIRO_LINE_CAP_ROUND);
+	if (muted) {
+		cairo_move_to(c, cx + r * 0.35, cy - r * 0.35); cairo_line_to(c, cx + r * 0.95, cy + r * 0.35);
+		cairo_move_to(c, cx + r * 0.95, cy - r * 0.35); cairo_line_to(c, cx + r * 0.35, cy + r * 0.35);
+	} else {
+		cairo_new_sub_path(c); cairo_arc(c, cx + r * 0.05, cy, r * 0.5, -M_PI / 4, M_PI / 4);
+		cairo_new_sub_path(c); cairo_arc(c, cx + r * 0.05, cy, r * 0.95, -M_PI / 4, M_PI / 4);
+	}
+	cairo_stroke(c);
+}
+
+static double text_w(cairo_t *c, const char *s, double size, int bold)
+{
+	cairo_text_extents_t te;
+	cairo_select_font_face(c, "DejaVu Sans", CAIRO_FONT_SLANT_NORMAL, bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
+	cairo_set_font_size(c, size);
+	cairo_text_extents(c, s, &te);
+	return te.x_advance;
+}
+
+/* One line of text, made smaller until it fits maxw. */
+static void fit_center(cairo_t *c, const char *s, double cx, double cy, double maxw, double size, int bold)
+{
+	while (size > 11 && text_w(c, s, size, bold) > maxw) size *= 0.92;
+	text_center(c, s, cx, cy, size, bold);
+}
+
+/* A title of one line, or of two lines when it does not fit in one. */
+static void title_center(cairo_t *c, const char *s, double cx, double cy, double maxw, double size, int bold)
+{
+	char a[64], *sp = NULL, *p;
+	if (text_w(c, s, size, bold) <= maxw || !strchr(s, ' ')) { fit_center(c, s, cx, cy, maxw, size, bold); return; }
+	snprintf(a, sizeof a, "%s", s);
+	for (p = a; *p; p++)    /* the space nearest to the middle */
+		if (*p == ' ' && (!sp || labs(p - a - (long)strlen(a) / 2) < labs(sp - a - (long)strlen(a) / 2))) sp = p;
+	*sp = 0;
+	while (size > 11 && (text_w(c, a, size, bold) > maxw || text_w(c, sp + 1, size, bold) > maxw)) size *= 0.92;
+	text_center(c, a, cx, cy - size * 0.6, size, bold);
+	text_center(c, sp + 1, cx, cy + size * 0.6, size, bold);
+}
+
+static void layout(void)
+{
+	if (mode == FULL) {
+		nslot = 0;
+		if (surf_w <= 0 || surf_h <= 0) return;
+		geom = ov_geometry(&lay.grid, surf_w, surf_h);
+		pan = geom.panel;
+		nslot = ov_place(&lay, slot);
+		for (int i = 0; i < nslot; i++) tile[i] = ov_cell_rect(&geom, slot[i].cell);
+	} else {
+		pan = (struct rect){ 0, 0, surf_w, surf_h };
+		r_track = overlay_slider_track(pan.h);
+	}
+}
+
+/* The scale of the text and the icons: 1 on a tile of 150 px. */
+static double kscale(void)
+{
+	double k = geom.tile / 150.0;
+	return k < 0.5 ? 0.5 : k > 1.5 ? 1.5 : k;
+}
+
+/* The track of a slider tile r (panel coordinates). A tile that is wider than
+ * high has a horizontal track. */
+static void tile_track(struct rect r, double k, struct rect *t, int *vert, int *compact)
+{
+	*vert = r.h >= r.w;
+	*compact = r.h < 250 * k;
+	if (*vert) {
+		double tw = 70 * k, top = r.y + (*compact ? 56 : 90) * k, bot = r.y + r.h - (*compact ? 56 : 80) * k;
+		if (tw > r.w * 0.6) tw = r.w * 0.6;
+		if (bot - top < 20) bot = top + 20;
+		*t = (struct rect){ (int)(r.x + (r.w - tw) / 2), (int)top, (int)tw, (int)(bot - top) };
+	} else {
+		double th = 44 * k, left = r.x + 64 * k, right = r.x + r.w - 116 * k;   /* room for "100 %" */
+		if (th > r.h * 0.5) th = r.h * 0.5;
+		if (right - left < 30) right = left + 30;
+		*t = (struct rect){ (int)left, (int)(r.y + (r.h - th) / 2 - 8 * k), (int)(right - left), (int)th };
+	}
+}
+
+/* A slider on the track t. frac < 0 = no value. The slider mode and the tiles
+ * both use it, with k = 1 for the slider mode. */
+static void draw_slider(cairo_t *c, struct rect t, int vert, int compact, double k, double frac, int speaker_icon,
+			int muted, const char *txt, const char *sub, const double col[3])
+{
+	cairo_set_source_rgba(c, col[0], col[1], col[2], 1);
+	if (vert) {
+		double cx = t.x + t.w / 2.0, iy = t.y - (compact ? 28 : 50) * k, ir = (compact ? 16 : 22) * k;
+		if (speaker_icon) speaker(c, cx, iy, ir, muted); else sun(c, cx, iy, ir);
+	} else {
+		double iy = t.y + t.h / 2.0;
+		if (speaker_icon) speaker(c, t.x - 32 * k, iy, 20 * k, muted); else sun(c, t.x - 32 * k, iy, 20 * k);
+	}
+	rounded(c, t.x, t.y, t.w, t.h, (vert ? t.w : t.h) / 2.0);
+	cairo_set_source_rgba(c, 1, 1, 1, 0.14);
+	cairo_fill(c);
+	if (frac >= 0) {
+		if (vert) {
+			double fh = t.w + frac * (t.h - t.w);
+			rounded(c, t.x, t.y + t.h - fh, t.w, fh, t.w / 2.0);
+		} else {
+			double fw = t.h + frac * (t.w - t.h);
+			rounded(c, t.x, t.y, fw, t.h, t.h / 2.0);
+		}
+		cairo_set_source_rgba(c, col[0], col[1], col[2], 0.95);
+		cairo_fill(c);
+	}
+	cairo_set_source_rgba(c, 1, 1, 1, 0.95);
+	if (vert) {
+		double cx = t.x + t.w / 2.0;
+		text_center(c, txt, cx, t.y + t.h + (compact ? 28 : 32) * k, (compact ? 24 : 30) * k, 1);
+		if (sub[0] && !compact) {
+			cairo_set_source_rgba(c, 1, 1, 1, 0.6);
+			text_center(c, sub, cx, t.y + t.h + 66 * k, 18 * k, 0);
+		}
+	} else {
+		text_center(c, txt, t.x + t.w + 58 * k, t.y + t.h / 2.0, 26 * k, 1);
+		if (sub[0]) {
+			cairo_set_source_rgba(c, 1, 1, 1, 0.6);
+			text_center(c, sub, t.x + t.w / 2.0, t.y + t.h + 22 * k, 18 * k, 0);
+		}
+	}
+}
+
+/* How the level came about: auto (ALS) plus or minus the manual offset, or a
+ * fixed level from Home Assistant or a key action. */
+static void bright_text(char *s, size_t n, int shown, char *sub, size_t sn)
+{
+	if (shown > 0) snprintf(s, n, "%d %%", overlay_percent(shown, maxlvl)); else snprintf(s, n, "-");
+	if (override > 0) snprintf(sub, sn, "fixed");
+	else if (offset) snprintf(sub, sn, "%s %+d", als_auto == 1 ? "auto" : "sched", offset);
+	else snprintf(sub, sn, "%s", als_auto == 1 ? "auto" : "sched");
+}
+
+static const double COL_SUN[3] = { 1.0, 0.78, 0.30 }, COL_VOL[3] = { 0.45, 0.75, 1.0 };
+static const char *const def_label[WT_COUNT] = {
+	"", "", "Auto brightness", "Screen off", "Reload page", "Setup", "Close", "", "Dark mode", "Keyboard",
+	"", "", "Restart", "LED bar"
+};
+
+static void draw_tile(cairo_t *c, int si)
+{
+	const struct ov_item *it = &lay.item[slot[si].item];
+	struct rect r = tile[si], t;
+	double k = kscale(), cx = r.x + r.w / 2.0, cy = r.y + r.h / 2.0, radius = 22 * k;
+	int type = it->type, vert, compact, down = pressed == si && press_inside;
+	int armed = type == WT_REBOOT && reboot_armed && now_ms() < reboot_armed;
+	int on = 0, dis = 0;
+	const char *title = it->label[0] ? it->label : def_label[type], *sub = "";
+	char s[64], s2[64];
+
+	if (type == WT_UNKNOWN) return;      /* its cells stay empty */
+	switch (type) {
+	case WT_AUTO_BRIGHTNESS: dis = als_auto < 0; on = als_auto == 1; sub = dis ? "no sensor" : on ? "on" : "off"; break;
+	case WT_DARK_MODE: dis = dark < 0; on = dark == 1; sub = dis ? "n/a" : on ? "on" : "off"; break;
+	case WT_LED_BAR: dis = ledbar < 0; on = ledbar == 1; sub = dis ? "no LED bar" : on ? "on" : "off"; break;
+	case WT_VOLUME: dis = vol < 0; break;
+	default: break;
+	}
+	rounded(c, r.x, r.y, r.w, r.h, radius);
+	if (armed) cairo_set_source_rgba(c, 0.80, 0.18, 0.18, down ? 1.0 : 0.9);
+	else if (down && type != WT_BRIGHTNESS && type != WT_VOLUME) cairo_set_source_rgba(c, 1, 1, 1, 0.35);
+	else if (on) cairo_set_source_rgba(c, 1.0, 0.78, 0.30, 0.85);
+	else cairo_set_source_rgba(c, 1, 1, 1, dis ? 0.05 : type == WT_CLOCK || type == WT_INFO ? 0.08 : 0.13);
+	cairo_fill(c);
+
+	switch (type) {
+	case WT_BRIGHTNESS: {
+		int shown = drag_level > 0 ? drag_level : level;
+		tile_track(r, k, &t, &vert, &compact);
+		bright_text(s, sizeof s, shown, s2, sizeof s2);
+		draw_slider(c, t, vert, compact, k, shown > 0 ? tsx_level_to_pos(shown, minlvl, maxlvl) : -1, 0, 0, s, s2, COL_SUN);
+		break;
+	}
+	case WT_VOLUME: {
+		int v = vol_drag >= 0 ? vol_drag : vol;
+		if (dis) {
+			cairo_set_source_rgba(c, 1, 1, 1, 0.35);
+			speaker(c, cx, cy - 24 * k, 20 * k, 0);
+			fit_center(c, "no audio", cx, cy + 22 * k, r.w - 16, 20 * k, 0);
+			break;
+		}
+		tile_track(r, k, &t, &vert, &compact);
+		snprintf(s, sizeof s, "%d %%", v);
+		draw_slider(c, t, vert, compact, k, v / 100.0, 1, mute == 1, s, mute == 1 ? "muted" : "", COL_VOL);
+		break;
+	}
+	case WT_CLOCK: {
+		time_t now = time(NULL); struct tm tm; localtime_r(&now, &tm);
+		strftime(s, sizeof s, "%H:%M", &tm); strftime(s2, sizeof s2, "%a %d %b", &tm);
+		cairo_set_source_rgba(c, 1, 1, 1, 0.95);
+		fit_center(c, s, cx, cy - 12 * k, r.w - 16, 48 * k, 1);
+		cairo_set_source_rgba(c, 1, 1, 1, 0.6);
+		fit_center(c, s2, cx, cy + 30 * k, r.w - 16, 20 * k, 0);
+		break;
+	}
+	case WT_INFO:
+		cairo_set_source_rgba(c, 1, 1, 1, 0.95);
+		fit_center(c, info_host, cx, cy - 26 * k, r.w - 16, 20 * k, 1);
+		cairo_set_source_rgba(c, 1, 1, 1, 0.75);
+		fit_center(c, info_ip, cx, cy, r.w - 16, 18 * k, 0);
+		fit_center(c, info_ver, cx, cy + 26 * k, r.w - 16, 16 * k, 0);
+		break;
+	default:
+		if (on) cairo_set_source_rgba(c, 0.08, 0.09, 0.11, 1);
+		else cairo_set_source_rgba(c, 1, 1, 1, dis ? 0.35 : 0.95);
+		if (armed) title = "Tap again to restart";
+		{
+			int two = text_w(c, title, 24 * k, 1) > r.w - 16 && strchr(title, ' ');
+			title_center(c, title, cx, cy - (sub[0] ? (two ? 26 : 14) * k : 0), r.w - 16, 24 * k, 1);
+			if (sub[0]) fit_center(c, sub, cx, cy + (two ? 38 : 24) * k, r.w - 16, 20 * k, 0);
+		}
+		break;
+	}
+}
+
+static void draw(cairo_t *c)
+{
 	cairo_set_operator(c, CAIRO_OPERATOR_SOURCE);
 	cairo_set_source_rgba(c, 0, 0, 0, mode == FULL ? dim : 0);   /* the dim part */
 	cairo_paint(c);
 	cairo_set_operator(c, CAIRO_OPERATOR_OVER);
 	cairo_translate(c, pan.x, pan.y);
-	w = pan.w; h = pan.h;
-	rounded(c, 1, 1, w - 2, h - 2, 28);
+	rounded(c, 1, 1, pan.w - 2, pan.h - 2, 28);
 	cairo_set_source_rgba(c, 0.08, 0.09, 0.11, 0.95);
 	cairo_fill_preserve(c);
 	cairo_set_source_rgba(c, 1, 1, 1, 0.15);
 	cairo_set_line_width(c, 2);
 	cairo_stroke(c);
 
-	/* brightness slider */
-	struct rect t = r_track;
-	double cx = t.x + t.w / 2.0;
-	cairo_set_source_rgba(c, 1.0, 0.78, 0.30, 1);
-	sun(c, cx, t.y - 50, 22);
-	rounded(c, t.x, t.y, t.w, t.h, t.w / 2.0);
-	cairo_set_source_rgba(c, 1, 1, 1, 0.14);
-	cairo_fill(c);
-	if (shown > 0) {
-		double frac = tsx_level_to_pos(shown, minlvl, maxlvl);
-		double fh = t.w + frac * (t.h - t.w);
-		rounded(c, t.x, t.y + t.h - fh, t.w, fh, t.w / 2.0);
-		cairo_set_source_rgba(c, 1.0, 0.78, 0.30, 0.95);
-		cairo_fill(c);
-		snprintf(s, sizeof s, "%d %%", overlay_percent(shown, maxlvl));
-	} else snprintf(s, sizeof s, "-");
-	cairo_set_source_rgba(c, 1, 1, 1, 0.95);
-	text_center(c, s, cx, t.y + t.h + 32, 30, 1);
-	/* How the level came about: auto (ALS) plus or minus the manual offset,
-	 * or a fixed level from Home Assistant or a key action. */
-	if (override > 0) snprintf(s, sizeof s, "fixed");
-	else if (offset) snprintf(s, sizeof s, "%s %+d", als_auto == 1 ? "auto" : "sched", offset);
-	else snprintf(s, sizeof s, "%s", als_auto == 1 ? "auto" : "sched");
-	cairo_set_source_rgba(c, 1, 1, 1, 0.6);
-	text_center(c, s, cx, t.y + t.h + 66, 18, 0);
-
-	if (mode != FULL) return;
-	static const char *label[NBTN] = { "", "Auto brightness", "Screen off", "Reload page", "Setup", "Close" };
-	for (int i = B_AUTO; i < NBTN; i++) {
-		struct rect b = r_btn[i];
-		int on = i == B_AUTO && als_auto == 1, dis = i == B_AUTO && als_auto < 0;
-		rounded(c, b.x, b.y, b.w, b.h, 22);
-		if (pressed == i && press_inside) cairo_set_source_rgba(c, 1, 1, 1, 0.35);
-		else if (on) cairo_set_source_rgba(c, 1.0, 0.78, 0.30, 0.85);
-		else cairo_set_source_rgba(c, 1, 1, 1, dis ? 0.05 : 0.13);
-		cairo_fill(c);
-		if (on) cairo_set_source_rgba(c, 0.08, 0.09, 0.11, 1);
-		else cairo_set_source_rgba(c, 1, 1, 1, dis ? 0.35 : 0.95);
-		text_center(c, label[i], b.x + b.w / 2.0, b.y + b.h / 2.0 - (i == B_AUTO ? 14 : 0), 24, 1);
-		if (i == B_AUTO)
-			text_center(c, als_auto < 0 ? "no sensor" : on ? "on" : "off", b.x + b.w / 2.0, b.y + b.h / 2.0 + 24, 20, 0);
+	if (mode == FULL) {
+		for (int i = 0; i < nslot; i++) draw_tile(c, i);
+		return;
+	}
+	/* the slider mode */
+	{
+		int shown = drag_level > 0 ? drag_level : level;
+		char s[32], sub[32];
+		bright_text(s, sizeof s, shown, sub, sizeof sub);
+		draw_slider(c, r_track, 1, 0, 1, shown > 0 ? tsx_level_to_pos(shown, minlvl, maxlvl) : -1, 0, 0, s, sub, COL_SUN);
 	}
 }
-
 /* ---- wl_shm buffers --------------------------------------------------------- */
 static void buffer_release(void *data, struct wl_buffer *wb) { (void)wb; ((struct buffer *)data)->busy = 0; }
 static const struct wl_buffer_listener buffer_listener = { .release = buffer_release };
@@ -363,7 +719,7 @@ static void redraw(void)
 	struct buffer *b = buffer_get(surf_w, surf_h);
 	if (!b) return;          /* both busy: the next event redraws */
 	cairo_t *c = cairo_create(b->cs);
-	draw(c, surf_w, surf_h);
+	draw(c);
 	cairo_destroy(c);
 	cairo_surface_flush(b->cs);
 	b->busy = 1;
@@ -389,7 +745,7 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *l, uint32_
 		/* The output height. It also changes when the screen turns. If
 		 * another margin is due, set it and wait for the next configure. */
 		out_h = (int)h + 2 * cur_mv;
-		int mv = overlay_margin_v(mode == FULL, out_h);
+		int mv = overlay_margin_v(out_h);
 		if (mv != cur_mv) {
 			cur_mv = mv;
 			zwlr_layer_surface_v1_set_margin(l, mv, MARGIN_R, mv, 0);
@@ -420,12 +776,12 @@ static void surface_destroy(void)
 	if (surface) wl_surface_destroy(surface);
 	layer = NULL; surface = NULL; configured = 0;
 	for (int i = 0; i < 2; i++) buffer_free(&bufs[i]);
-	pressed = B_NONE; touch_id = -1; ptr_down = 0; drag_level = -1;
+	pressed = NOPRESS; touch_id = -1; ptr_down = 0; drag_level = -1;
 }
 
 static void show(enum mode m)
 {
-	int w = m == FULL ? FULL_W : SLIDER_W, mv = overlay_margin_v(m == FULL, out_h);
+	int w = SLIDER_W, mv = overlay_margin_v(out_h);
 	read_state();
 	if (m == mode && surface) return;
 	/* The slider and the full overlay have other anchors: a new surface. */
@@ -434,6 +790,12 @@ static void show(enum mode m)
 	surf_w = w;
 	surf_h = 0;     /* the configure event brings the size */
 	shown_at = now_ms();
+	reboot_armed = 0;
+	if (m == FULL) {
+		load_layout();        /* an edit of the file applies at the next show */
+		nslot = ov_place(&lay, slot);
+		read_ext();
+	}
 	layout();
 	if (!surface) {
 		surface = wl_compositor_create_surface(compositor);
@@ -467,29 +829,49 @@ static void hide(void)
 	if (mode == HIDDEN) return;
 	surface_destroy();
 	mode = HIDDEN;
+	reboot_armed = 0; vol_drag = -1;
 	if (verbose) logm("hide");
 }
 
-static void keep_open(void) { hide_at = now_ms() + (mode == FULL ? full_ms : slider_ms); }
+
+/* The full overlay: OVERLAY_FULL_MS (tests) or the "timeout" of the layout
+ * file. A timeout of 0 keeps it open until a touch closes it. */
+static void keep_open(void)
+{
+	long long ms = slider_ms;
+	if (mode == FULL) ms = full_ms > 0 ? full_ms : lay.timeout_s > 0 ? lay.timeout_s * 1000LL : 365LL * 86400000;
+	hide_at = now_ms() + ms;
+}
 
 /* ---- input -------------------------------------------------------------------- */
 static int hit(double x, double y)
 {
-	for (int i = 0; i < NBTN; i++) if (r_btn[i].w && in_rect(&r_btn[i], x, y)) return i;
-	return B_NONE;
+	for (int i = 0; i < nslot; i++) if (in_rect(&tile[i], x, y)) return i;
+	return NOPRESS;
 }
 
-static void slider_at(double y)
+static int is_slider(int p)
 {
-	struct rect t = r_track;
-	double frac = (t.y + t.h - y) / t.h;
+	return p == PRESS_SLIDER || (p >= 0 && (slot_type(p) == WT_BRIGHTNESS || (slot_type(p) == WT_VOLUME && vol >= 0)));
+}
+
+/* The finger is at x, y (panel coordinates) on the slider p. */
+static void slider_at(int p, double x, double y)
+{
+	struct rect t; int vert, compact;
+	double frac;
+	if (p == PRESS_SLIDER) { t = r_track; vert = 1; }
+	else tile_track(tile[p], kscale(), &t, &vert, &compact);
+	frac = vert ? (t.y + t.h - y) / t.h : (x - t.x) / t.w;
 	if (frac < 0) frac = 0;
 	if (frac > 1) frac = 1;
-	set_level(tsx_pos_to_level(frac, minlvl, maxlvl));
+	if (p != PRESS_SLIDER && slot_type(p) == WT_VOLUME) set_vol((int)(frac * 100 + 0.5));
+	else set_level(tsx_pos_to_level(frac, minlvl, maxlvl));
 }
 
-/* A press on the dim part of the full overlay closes it. The guard time
- * after the show keeps a finger of the opening gesture from closing it. */
+/* A press on the dim part of the full overlay (outside the panel) closes it.
+ * The guard time after the show keeps a finger of the opening gesture from
+ * closing it. */
 static int press_outside(double x, double y)
 {
 	if (mode != FULL || in_rect(&pan, x, y)) return 0;
@@ -505,35 +887,61 @@ static void press_down(double x, double y)
 	if (press_outside(x, y)) return;
 	x -= pan.x; y -= pan.y;
 	keep_open();
-	pressed = hit(x, y); press_inside = 1;
-	if (pressed == B_SLIDER) { drag_level = -1; read_state(); slider_at(y); }
+	if (mode == SLIDER) pressed = y >= 60 && y < pan.h - 40 ? PRESS_SLIDER : NOPRESS;
+	else pressed = hit(x, y);
+	press_inside = 1;
+	if (is_slider(pressed)) {
+		if (pressed == PRESS_SLIDER || slot_type(pressed) == WT_BRIGHTNESS) { drag_level = -1; read_state(); }
+		slider_at(pressed, x, y);
+	}
 	redraw();
 }
 
 static void press_move(double x, double y)
 {
-	if (pressed == B_NONE) return;
+	if (pressed == NOPRESS) return;
 	x -= pan.x; y -= pan.y;
 	keep_open();
-	if (pressed == B_SLIDER) { slider_at(y); redraw(); return; }
-	int in = in_rect(&r_btn[pressed], x, y);
+	if (is_slider(pressed)) { slider_at(pressed, x, y); redraw(); return; }
+	int in = in_rect(&tile[pressed], x, y);
 	if (in != press_inside) { press_inside = in; redraw(); }
 }
 
 static void press_up(void)
 {
-	int b = pressed;
-	pressed = B_NONE;
-	if (b == B_SLIDER) { keep_open(); drag_hold = now_ms() + 700; redraw(); return; }
-	if (b == B_NONE || !press_inside) { redraw(); return; }
-	switch (b) {
-	case B_AUTO:
+	int p = pressed;
+	pressed = NOPRESS;
+	if (p == NOPRESS) { redraw(); return; }
+	if (is_slider(p)) {
+		keep_open();
+		if (p != PRESS_SLIDER && slot_type(p) == WT_VOLUME) {
+			if (vol_drag >= 0) { panelctl_send("volume %d", vol_drag); vol = vol_drag; vol_drag = -1; vol_read_at = now_ms() + 1500; }
+		} else drag_hold = now_ms() + 700;
+		redraw(); return;
+	}
+	if (!press_inside) { redraw(); return; }
+	switch (slot_type(p)) {
+	case WT_AUTO_BRIGHTNESS:
 		if (als_auto >= 0) { panelctl_send("als auto %s", als_auto == 1 ? "off" : "on"); als_auto = !als_auto; }
 		keep_open(); redraw(); break;
-	case B_BLANK: panelctl_send("blank on"); hide(); break;
-	case B_RELOAD: panelctl_send("reload-page"); hide(); break;
-	case B_SETUP: panelctl_send("setup"); hide(); break;
-	case B_CLOSE: hide(); break;
+	case WT_SCREEN_OFF: panelctl_send("blank on"); hide(); break;
+	case WT_RELOAD_PAGE: panelctl_send("reload-page"); hide(); break;
+	case WT_SETUP: panelctl_send("setup"); hide(); break;
+	case WT_CLOSE: hide(); break;
+	case WT_DARK_MODE:
+		/* the kiosk restarts, so this overlay goes with it */
+		if (dark >= 0) { panelctl_send("dark-mode %s", dark ? "off" : "on"); dark = !dark; hide(); }
+		else redraw();
+		break;
+	case WT_KEYBOARD: hide(); run_osk(); break;
+	case WT_LED_BAR:
+		if (ledbar >= 0) { panelctl_send("ledbar %s", ledbar ? "off" : "on"); ledbar = !ledbar; }
+		keep_open(); redraw(); break;
+	case WT_REBOOT:
+		if (reboot_armed && now_ms() < reboot_armed) { reboot_armed = 0; panelctl_send("reboot"); hide(); }
+		else { reboot_armed = now_ms() + 3000; keep_open(); redraw(); }
+		break;
+	default: redraw(); break;     /* clock, info, an unknown widget: no action */
 	}
 }
 
@@ -557,7 +965,7 @@ static void touch_motion(void *d, struct wl_touch *t, uint32_t time, int32_t id,
 	if (id == touch_id) press_move(wl_fixed_to_double(x), wl_fixed_to_double(y));
 }
 static void touch_frame(void *d, struct wl_touch *t) { (void)d; (void)t; }
-static void touch_cancel(void *d, struct wl_touch *t) { (void)d; (void)t; touch_id = -1; pressed = B_NONE; redraw(); }
+static void touch_cancel(void *d, struct wl_touch *t) { (void)d; (void)t; touch_id = -1; pressed = NOPRESS; redraw(); }
 static void touch_shape(void *d, struct wl_touch *t, int32_t id, wl_fixed_t a, wl_fixed_t b) { (void)d; (void)t; (void)id; (void)a; (void)b; }
 static void touch_orient(void *d, struct wl_touch *t, int32_t id, wl_fixed_t o) { (void)d; (void)t; (void)id; (void)o; }
 static const struct wl_touch_listener touch_listener = {
@@ -682,6 +1090,9 @@ int main(void)
 	if (getenv("OVERLAY_DIM")) dim = atof(getenv("OVERLAY_DIM"));
 	if (dim < 0) dim = 0;
 	if (dim > 1) dim = 1;
+	if (getenv("TSX_PANELCTL_BIN")) snprintf(ctlbin, sizeof ctlbin, "%s", getenv("TSX_PANELCTL_BIN"));
+	if (getenv("TSX_OSK_BIN")) snprintf(oskbin, sizeof oskbin, "%s", getenv("TSX_OSK_BIN"));
+	ov_layout_default(&lay);
 	if (getenv("OVERLAY_DIM_GUARD_MS")) dim_guard_ms = atoi(getenv("OVERLAY_DIM_GUARD_MS"));
 	verbose = getenv("TSX_OVERLAY_VERBOSE") && atoi(getenv("TSX_OVERLAY_VERBOSE"));
 	snprintf(ctlpath, sizeof ctlpath, "%s/overlay.ctl", rundir);
@@ -715,12 +1126,13 @@ int main(void)
 		long long t = now_ms();
 		int to = -1;
 		if (mode != HIDDEN) {
-			if (t >= hide_at && pressed == B_NONE) { hide(); continue; }
+			if (t >= hide_at && pressed == NOPRESS) { hide(); continue; }
 			to = drag_level > 0 ? 100 : 250;   /* follow tsx-idled/ALS changes while shown */
 			if (hide_at - t < to) to = hide_at - t < 0 ? 0 : (int)(hide_at - t);
 		}
 		if (ctl_fd < 0) { ctl_open(); if (ctl_fd < 0 && (to < 0 || to > 5000)) to = 5000; }
 
+		while (waitpid(-1, NULL, WNOHANG) > 0) ;   /* the keyboard command */
 		while (wl_display_prepare_read(dpy) != 0) wl_display_dispatch_pending(dpy);
 		if (wl_display_flush(dpy) < 0 && errno != EAGAIN) { wl_display_cancel_read(dpy); break; }
 		struct pollfd pfd[2] = { { .fd = wl_display_get_fd(dpy), .events = POLLIN }, { .fd = ctl_fd, .events = POLLIN } };
@@ -735,8 +1147,8 @@ int main(void)
 		else wl_display_cancel_read(dpy);
 		if (wl_display_dispatch_pending(dpy) < 0) break;
 		if (ctl_fd >= 0 && (pfd[1].revents & POLLIN)) ctl_read();
-		if (mode != HIDDEN && pressed == B_NONE) {
-			int ch = read_state();
+		if (mode != HIDDEN && pressed == NOPRESS) {
+			int ch = read_state() | tick_widgets();
 			/* The slider keeps the released value until tsx-idled has it. */
 			if (drag_level > 0 && (level == drag_level || now_ms() >= drag_hold)) { drag_level = -1; ch = 1; }
 			if (ch) redraw();

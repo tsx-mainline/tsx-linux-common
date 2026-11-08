@@ -153,6 +153,94 @@ The highest backlight level is the `max` line of `/run/tsx/brightness.state`. Wi
 | `tsx-panelctl has keypad` | Succeeds when the panel has keys. |
 | `tsx-panelctl has keyleds` | Succeeds when the keys have LEDs (`leds yes`). |
 
+## Quick-settings overlay
+
+The overlay is the panel that shows brightness, volume and other quick settings. The program `tsx-overlay` draws it in the sway session. A key action (`overlay full`) or a hold of five fingers opens it. The `full` overlay dims the page and shows a grid of tiles in the middle of the screen. A touch outside the grid closes it. The overlay also closes 30 s after the last touch. The `timeout` key of the layout file changes this time. The `slider` overlay is a small brightness bar at the right edge. It does not use the layout file.
+
+### Layout file
+
+A JSON file sets the grid and the widgets. The format is a subset of the layout format of the panel app (see [Panel app](panel-app.md)). The program uses the first file that exists in this list:
+
+1. The file in the environment variable `TSX_OVERLAY_LAYOUT`. Tests use it.
+2. `/var/lib/tsx/overlay.json`. This is the file of the user. It stays after an image update.
+3. `/usr/local/share/tsx/overlay.json`. This is the default file of the package.
+
+The program reads the file each time the overlay opens. An edit applies at the next open. A missing file, a file that is not valid JSON and a file with a wrong value give the built-in layout. This is the same layout as the default file. The overlay always opens. The program writes one line to the log that names the problem.
+
+| Key | Required | Meaning |
+|---|---|---|
+| `version` | yes | Always 1. |
+| `timeout` | no | The time in seconds from the last touch to the close, 0 to 3600 (default 30). With 0, the overlay stays open until a touch closes it. |
+| `grid` | no | `columns` (1 to 12, default 4), `rows` (1 to 12, default 3), `gap` in pixels (0 to 40, default 12) and `tile`, the size of a tile in pixels (60 to 400, default 150). |
+| `widgets` | yes | The widgets, 1 to 48. |
+
+A widget has the key `type` and these optional keys:
+
+| Key | Meaning |
+|---|---|
+| `w`, `h` | The size in cells. Default 1. |
+| `x`, `y` | The cell of the top left corner, from 0. Give both or none. |
+| `label` | The text on the tile. It applies to the button widgets and the toggle widgets. |
+
+The placement follows the rules of the cards of the panel app. The widgets with `x` and `y` get their cells first, in the order of the list. The other widgets get the first free cells, row by row. A widget that overlaps an earlier widget, that leaves the grid or that has no free place is left out. A widget with an unknown `type` takes its cells and stays empty. The program logs it once.
+
+The panel is centered on the screen, in landscape and in portrait. A grid that leaves less than 24 px around the panel is scaled down: the tiles, the gap and the space around them.
+
+### Widgets
+
+| Type | Tile | Command to `tsx-panelctl` |
+|---|---|---|
+| `brightness` | A slider with the sun icon, the percent and the source (`auto`, `sched` or `fixed`). It is vertical, or horizontal when the tile is wider than high. | `brightness-offset N` |
+| `auto_brightness` | A toggle. It shows `no sensor` and does nothing on a panel with no light sensor. | `als auto on\|off` |
+| `screen_off` | A button. | `blank on` |
+| `reload_page` | A button. | `reload-page` |
+| `setup` | A button. It opens the setup page for about 15 minutes. | `setup` |
+| `close` | A button. It closes the overlay. | none |
+| `volume` | A slider with the speaker icon and the percent. It shows `muted` while the Sendspin player is muted. It shows `no audio` and does nothing on a panel with no volume. | `volume N` |
+| `dark_mode` | A toggle with `on` or `off`. The kiosk restarts, so the overlay closes. It shows `n/a` where the panel has no kiosk browser. | `dark-mode on\|off` |
+| `keyboard` | A button. It closes the overlay and runs `/usr/local/bin/tsx-osk toggle`. | none |
+| `clock` | The local time and date. It updates each minute. | none |
+| `info` | The host name, the IP address of `eth0` or `wlan0` and the version of `tsx-kiosk`. | none |
+| `reboot` | A button. The first tap turns the tile red with `Tap again to restart` for 3 s. A second tap in that time restarts the panel. | `reboot` |
+| `led_bar` | A toggle with `on` or `off`. It shows `no LED bar` and does nothing on a panel with no LED bar. | `ledbar on\|off` |
+
+A button acts when the finger lifts inside its tile. A slider follows the finger. The overlay runs as the kiosk user and sends each command through the FIFO of `tsx-panelctl`. See [Security](security.md).
+
+### Default layout
+
+The default file has a grid of 4 columns and 3 rows. The tile `brightness` has 1 column and 3 rows. The tile `volume` has 2 columns.
+
+```
++--------+--------+--------+--------+
+| bright | Auto   | Screen | Reload |
+| ness   | bright | off    | page   |
+|        +--------+--------+--------+
+|        | Dark   | Key    | Setup  |
+|        | mode   | board  |        |
+|        +--------+--------+--------+
+|        | Volume          | Close  |
++--------+-----------------+--------+
+```
+
+`clock`, `info`, `reboot` and `led_bar` are not in the default layout.
+
+### Example
+
+This file has a small grid of 3 columns and 2 rows. It shows the clock over two cells, a brightness slider, the restart button and the LED bar toggle.
+
+```json
+{
+  "version": 1,
+  "grid": {"columns": 3, "rows": 2, "gap": 10, "tile": 140},
+  "widgets": [
+    {"type": "clock", "w": 2},
+    {"type": "close"},
+    {"type": "brightness", "w": 2},
+    {"type": "reboot", "label": "Restart"}
+  ]
+}
+```
+
 ## Home Assistant
 
 | Entity | ESPHome object id | MQTT |
