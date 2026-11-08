@@ -10,8 +10,8 @@
 #   KIOSK_OSK=wvkbd        sway + wvkbd (starts hidden. A three-finger tap or
 #                          "tsx-osk toggle" shows or hides it)
 # Under sway it also runs the quick-settings overlay tsx-overlay (brightness,
-# auto brightness, screen off, reload. KIOSK_OVERLAY=on). A five-finger tap
-# shows or hides it (OVERLAY_GESTURE, read by tsx-idled). A key of a board with
+# auto brightness, screen off, reload. KIOSK_OVERLAY=on). A five-finger hold
+# shows or hides it (OVERLAY_GESTURE and OVERLAY_HOLD_MS, read by tsx-idled). A key of a board with
 # front keys can show it too (the overlay action of tsx-buttons).
 # Cage has no layer-shell, so there is no overlay there. A key that runs the
 # overlay action runs OVERLAY_FALLBACK of buttons.conf instead.

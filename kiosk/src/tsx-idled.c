@@ -42,11 +42,17 @@
  *    The default is three fingers, because Chromium opens its context menu on
  *    a two-finger tap.
  *  - Quick-settings overlay (OVERLAY_GESTURE=fivefinger|off, default
- *    fivefinger): a tap with exactly five fingers runs OVERLAY_CMD (default:
- *    "toggle" to the FIFO /run/tsx/overlay.ctl of tsx-overlay, only if that
- *    FIFO exists). The tap needs the exact number, so a five-finger tap never
- *    runs the keyboard toggle. Another value gives one log line and counts as
- *    fivefinger.
+ *    fivefinger): five fingers held on the screen for OVERLAY_HOLD_MS
+ *    (default 5000) run OVERLAY_CMD (default: "toggle" to the FIFO
+ *    /run/tsx/overlay.ctl of tsx-overlay, only if that FIFO exists). The
+ *    command runs while the fingers are still down, once per touch. A sixth
+ *    finger does not stop the hold. A drop below five fingers for more than
+ *    HOLD_GRACE_MS, or a finger that moves more than HOLD_SLOP from its start
+ *    point, stops it until all fingers lift. A hold that starts while the
+ *    screen is blank or the daemon swallows a gesture does nothing.
+ *    OVERLAY_HOLD_MS=0 gives the old quick tap: exactly five fingers, all up
+ *    within OSK_TAP_MS. Another OVERLAY_GESTURE value gives one log line and
+ *    counts as fivefinger.
  *  - Signals: SIGUSR1 = wake now, SIGUSR2 = blank now, SIGHUP = reload config.
  *  - The daemon writes its state to /run/tsx-idled.state ("on <level>" or
  *    "blank").
@@ -123,7 +129,8 @@ struct cfg {
 	int osk_gesture;        /* fingers of the tap that runs osk_cmd, 0 = off */
 	int osk_tap_ms;
 	char osk_cmd[512];
-	int overlay_gesture;    /* fingers of the tap that runs overlay_cmd, 0 = off */
+	int overlay_gesture;    /* fingers of the gesture that runs overlay_cmd, 0 = off */
+	int overlay_hold_ms;    /* hold time of that gesture, 0 = a quick tap */
 	char overlay_cmd[512];
 	int als_watch;          /* 1 = a change of als-level applies at once */
 	char disp_cmd[512];     /* display output on/off command, "" = none */
@@ -141,6 +148,14 @@ static char bldir[PATH_MAX];
 static int verbose;
 static volatile sig_atomic_t sig_wake, sig_blank, sig_hup, sig_term;
 
+/* A finger count below the hold count for longer than this stops the hold
+ * (a short controller dropout does not). */
+#define HOLD_GRACE_MS 300
+/* A finger that moves farther than this (touch units, each axis) from its
+ * start point stops the hold. */
+#define HOLD_SLOP 100
+enum { HOLD_IDLE, HOLD_RUN, HOLD_DONE };
+
 /* A five-finger tap needs five slots. A touch controller has 10 slots or a
  * few more (for example 11). The daemon ignores a slot number of MAXSLOT or
  * more. */
@@ -150,6 +165,9 @@ struct dev {
 	/* multitouch state for the OSK tap */
 	int slot, id[MAXSLOT], x[MAXSLOT], y[MAXSLOT], x0[MAXSLOT], y0[MAXSLOT];
 	int maxc, moved; long long t0;
+	/* the overlay hold: HOLD_IDLE until enough fingers are down, HOLD_DONE
+	 * after it ran or stopped, until all fingers lift */
+	int hold; long long hold_t0, hold_lost;
 };
 static struct dev devs[MAXDEV];
 static int ndev;
@@ -175,7 +193,7 @@ static void cfg_defaults(struct cfg *c)
 	strcpy(c->backlight, "auto");
 	c->osk_gesture = 3; c->osk_tap_ms = 500;
 	strcpy(c->osk_cmd, "/usr/local/bin/tsx-osk toggle");
-	c->overlay_gesture = 5;
+	c->overlay_gesture = 5; c->overlay_hold_ms = 5000;
 	strcpy(c->overlay_cmd, "timeout 2 sh -c '[ -p /run/tsx/overlay.ctl ] && echo toggle > /run/tsx/overlay.ctl'");
 	strcpy(c->disp_cmd, "/usr/local/bin/tsx-display-power");
 	c->disp_timeout_ms = 3000;
@@ -212,6 +230,7 @@ static void cfg_parse(struct cfg *c, const char *cfgfile, int first)
 				c->overlay_gesture = 5;
 			}
 		}
+		I("OVERLAY_HOLD_MS", overlay_hold_ms);
 		if (!strcmp(p, "OVERLAY_CMD") && *v) snprintf(c->overlay_cmd, sizeof c->overlay_cmd, "%s", v);
 		I("ALS_WATCH", als_watch);
 		/* An empty value turns the display power control off. */
@@ -575,11 +594,11 @@ static void scan_devices(int want_grab)
 	closedir(d);
 }
 
-static void run_tap_cmd(int fingers, const char *cmd)
+static void run_cmd(const char *what, int fingers, const char *cmd)
 {
 	pid_t pid;
 	if (!cmd[0]) return;
-	logm("%d-finger tap: %s", fingers, cmd);
+	logm("%d-finger %s: %s", fingers, what, cmd);
 	if ((pid = fork()) == 0) {
 		setsid();
 		execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
@@ -588,12 +607,42 @@ static void run_tap_cmd(int fingers, const char *cmd)
 	if (pid < 0) logm("fork: %s", strerror(errno));
 }
 
+/* The overlay hold after a touch report with n fingers down. far = a finger
+ * moved more than HOLD_SLOP. hold_check() runs the command when the time is
+ * up, also when the controller sends no report for still fingers. */
+static void hold_track(struct dev *d, int n, int far, long long t)
+{
+	if (n == 0) { d->hold = HOLD_IDLE; return; }
+	if (d->hold == HOLD_DONE || !C.overlay_gesture || C.overlay_hold_ms <= 0) return;
+	if (far) { d->hold = HOLD_DONE; if (verbose) logm("overlay hold stopped (finger moved)"); return; }
+	if (n >= C.overlay_gesture) {
+		if (d->hold == HOLD_IDLE) { d->hold = HOLD_RUN; d->hold_t0 = t; if (verbose) logm("overlay hold start"); }
+		d->hold_lost = 0;
+	} else if (d->hold == HOLD_RUN && !d->hold_lost) d->hold_lost = t;
+}
+
+/* Run or stop a hold whose time is up. Returns the ms until the next hold
+ * deadline, or -1 when no hold runs. */
+static int hold_check(struct dev *d, long long t)
+{
+	long long due;
+	if (d->hold != HOLD_RUN) return -1;
+	if (d->hold_lost) {
+		due = d->hold_lost + HOLD_GRACE_MS;
+		if (t >= due) { d->hold = HOLD_DONE; if (verbose) logm("overlay hold stopped (fingers lifted)"); return -1; }
+		return (int)(due - t);
+	}
+	due = d->hold_t0 + C.overlay_hold_ms;
+	if (t >= due) { d->hold = HOLD_DONE; run_cmd("hold", C.overlay_gesture, C.overlay_cmd); return -1; }
+	return (int)(due - t);
+}
+
 /* Multitouch type B tracking for the tap gestures. Returns the number of
  * fingers when a tap (all down and up within OSK_TAP_MS, none moved) has just
- * ended, else 0. */
+ * ended, else 0. It also follows the overlay hold (hold_track). */
 static int mt_event(struct dev *d, const struct input_event *e, long long t)
 {
-	int s = d->slot, n = 0, fired = 0;
+	int s = d->slot, n = 0, fired = 0, far = 0;
 	if (e->type != EV_ABS && e->type != EV_SYN) return 0;
 	if (e->type == EV_ABS) {
 		switch (e->code) {
@@ -612,9 +661,11 @@ static int mt_event(struct dev *d, const struct input_event *e, long long t)
 	for (int k = 0; k < MAXSLOT; k++) {
 		if (d->id[k] < 0) continue;
 		n++;
-		if (d->x0[k] < 0) { d->x0[k] = d->x[k]; d->y0[k] = d->y[k]; }
-		else if (abs(d->x[k] - d->x0[k]) > 40 || abs(d->y[k] - d->y0[k]) > 40) d->moved = 1;
+		if (d->x0[k] < 0) { d->x0[k] = d->x[k]; d->y0[k] = d->y[k]; continue; }
+		if (abs(d->x[k] - d->x0[k]) > 40 || abs(d->y[k] - d->y0[k]) > 40) d->moved = 1;
+		if (abs(d->x[k] - d->x0[k]) > HOLD_SLOP || abs(d->y[k] - d->y0[k]) > HOLD_SLOP) far = 1;
 	}
+	hold_track(d, n, far, t);
 	if (n > 0 && d->maxc == 0) { d->t0 = t; d->moved = 0; }
 	if (n > d->maxc) d->maxc = n;
 	if (n == 0 && d->maxc > 0) {
@@ -725,11 +776,12 @@ int main(int argc, char **argv)
 	}
 	watch_rundir();
 	load_timeout(1);
-	logm("timeout %ds%s, day %d, night %d (%02d-%02d h), cap %d, backlight %s, osk gesture %s, overlay gesture %s",
+	logm("timeout %ds%s, day %d, night %d (%02d-%02d h), cap %d, backlight %s, osk gesture %s, overlay gesture %s%s",
 	     eff_timeout, eff_timeout != C.blank_timeout ? " (runtime override)" : "",
 	     C.day, C.night, C.night_start, C.night_end, C.bl_max, bldir[0] ? bldir : "none",
 	     C.osk_gesture == 3 ? "threefinger" : C.osk_gesture == 2 ? "twofinger" : "off",
-	     C.overlay_gesture == 5 ? "fivefinger" : "off");
+	     C.overlay_gesture == 5 ? "fivefinger" : "off",
+	     !C.overlay_gesture ? "" : C.overlay_hold_ms > 0 ? " (hold)" : " (tap)");
 	/* A previous instance can have stopped while the output was off. */
 	display_power(1);
 	backlight_on(RAMP_NONE);
@@ -766,6 +818,8 @@ int main(int argc, char **argv)
 		}
 		if (ramp_on && ramp_next - t < to) to = ramp_next - t < 0 ? 0 : (int)(ramp_next - t);
 		if (swallowing && swallow_until - t < to) to = swallow_until - t < 0 ? 0 : (int)(swallow_until - t);
+		if (!blanked && !swallowing)
+			for (int i = 0; i < ndev; i++) { int h = hold_check(&devs[i], t); if (h >= 0 && h < to) to = h; }
 
 		struct pollfd pfd[MAXDEV + 1];
 		int np = ndev;
@@ -828,10 +882,16 @@ int main(int argc, char **argv)
 			} else if (swallowing) {
 				swallow_until = t + C.swallow_ms; /* extend the swallow until the gesture ends */
 			} else if (osk && osk == C.osk_gesture) {
-				run_tap_cmd(osk, C.osk_cmd);
-			} else if (osk && osk == C.overlay_gesture) {
-				run_tap_cmd(osk, C.overlay_cmd);
+				run_cmd("tap", osk, C.osk_cmd);
+			} else if (osk && osk == C.overlay_gesture && C.overlay_hold_ms <= 0) {
+				run_cmd("tap", osk, C.overlay_cmd);
 			}
+		}
+		/* The overlay hold: a hold that started on a blank screen or in a
+		 * swallowed gesture never runs. The others run when their time is up. */
+		for (int i = 0; i < ndev; i++) {
+			if (blanked || swallowing) { if (devs[i].hold == HOLD_RUN) devs[i].hold = HOLD_DONE; }
+			else hold_check(&devs[i], t);
 		}
 	}
 	grab_all(0);

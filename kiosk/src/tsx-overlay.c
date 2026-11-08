@@ -5,7 +5,7 @@
  * screen. When the panel hangs in portrait, it stays at the right edge, at
  * most as high as on a landscape panel, and centered (tsx-overlay-layout.h).
  * The surface stays hidden (no surface at all) until tsx-idled (the
- * five-finger tap) or tsx-buttons (a key) asks for it over
+ * five-finger hold) or tsx-buttons (a key) asks for it over
  * /run/tsx/overlay.ctl:
  *   slider   compact brightness bar, shown while a finger slides along the
  *            front keys. It hides OVERLAY_SLIDER_MS after the last step.
