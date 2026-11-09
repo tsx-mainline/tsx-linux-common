@@ -21,9 +21,9 @@ Exit code: 0 when the browser took the command, 1 when it did not (DevTools
 off, no page, no KIOSK_URL, an error reply), 2 for a wrong command line.
 
 Env overrides (also for tests): TSX_DEVTOOLS (host:port, default
-127.0.0.1:9222), TSX_KIOSK_CONF (default /etc/kiosk.conf), TSX_RUN_DIR
+127.0.0.1:9222), TSX_KIOSK_CONF (the user file, default /etc/kiosk.conf), TSX_RUN_DIR
 (default /run/tsx. tsx-config apply writes kiosk.conf there with the
-KIOSK_URL of panel.conf. It wins over /etc/kiosk.conf).
+KIOSK_URL of panel.conf. It wins over /etc/kiosk.conf and the package defaults).
 """
 import base64
 import http.client
@@ -34,6 +34,15 @@ import struct
 import sys
 import urllib.parse
 import urllib.request
+
+# tsx_conf (tsx-base): the layers of kiosk.conf. On the panel it is in
+# /usr/local/lib/tsx. A checkout has it in base/.
+for _lib in (os.environ.get("TSX_BASE_LIB_DIR", "/usr/local/lib/tsx"),
+             os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", "..",
+                          "base", "usr", "local", "lib", "tsx")):
+    if _lib not in sys.path:
+        sys.path.append(_lib)
+import tsx_conf  # noqa: E402
 
 TIMEOUT = 3
 
@@ -53,21 +62,11 @@ def usage():
 
 
 def configured_url():
-    """KIOSK_URL as kiosk-session reads it: /etc/kiosk.conf, then the override
-    in the run directory."""
+    """KIOSK_URL as kiosk-session reads it: the package defaults, /etc/kiosk.conf,
+    then the override in the run directory."""
     run = os.environ.get("TSX_RUN_DIR", "/run/tsx")
-    url = ""
-    for path in (os.environ.get("TSX_KIOSK_CONF", "/etc/kiosk.conf"), os.path.join(run, "kiosk.conf")):
-        try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                lines = f.read().splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            line = line.strip()
-            if line.startswith("KIOSK_URL="):
-                url = line.split("=", 1)[1].split(" #", 1)[0].strip().strip("'\"")
-    return url
+    return tsx_conf.get("kiosk.conf", "KIOSK_URL", os.environ.get("TSX_KIOSK_CONF", "/etc/kiosk.conf"),
+                        None, os.path.join(run, "kiosk.conf"))
 
 
 def page_socket_url(devtools):

@@ -8,6 +8,8 @@ set -eu
 . "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$(dirname "$0")/lib/paths.sh"
+export TSX_DEFAULTS_DIR=$(defaults_dir)   # the defaults of the packages, as on the panel
+export TSX_CONF_SH=$(P usr/local/lib/tsx/conf.sh)
 T=${KEEPT:-$(mktemp -d)}; [ -n "${KEEPT:-}" ] || trap 'rm -rf "$T"' EXIT; mkdir -p "$T/bin" "$T/run" "$T/bl/x"
 # the stub of tsx-panelctl: the LED bar and the key LEDs are there, `send` logs, `get volume` has no
 # value, `get backlight-pct` gives 57 (the percent of the slider, not the level 17 of tsx-idled)
@@ -36,8 +38,8 @@ printf '%s\n' 'tsx/tsx-kiosk/ledbar/rgb/set 255,0,0' 'tsx/tsx-kiosk/ledbar/brigh
 	'tsx/tsx-kiosk/auto_restart/set ON' 'tsx/tsx-kiosk/auto_restart/set maybe' \
 	'tsx/tsx-kiosk/dark_mode/set ON' 'tsx/tsx-kiosk/dark_mode/set maybe' 'tsx/tsx-kiosk/dark_mode/set OFF' 'tsx/tsx-kiosk/dark_mode/set on' |
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
-	TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_PANEL_BOARD_CONF=$TSX_BOARD_DIR/panel-board.conf TSX_BACKLIGHT_DIR=$T/bl \
+	TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
+	TSX_KIOSK_CONF=$T/none TSX_PANEL_BOARD_CONF=$TSX_BOARD_DIR/panel-board.conf TSX_BACKLIGHT_DIR=$T/bl \
 	TSX_MQTT_PREV_KEY="prog1 short 11:59:00" sh "$(P usr/local/sbin/tsx-mqtt)" > "$T/out" 2>&1
 sleep 0.3   # let the backgrounded "tsx-autoupdate now &" (update/set) finish logging
 fail=0
@@ -118,7 +120,7 @@ nk=$(grep -c 'homeassistant/event/tsx-kiosk/key_.*/config {' "$T/out")
 printf 'button extra KEY_F21\nbutton prog1 KEY_F22\n' > "$T/buttons-more.conf"
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled \
 	TSX_BUTTONS_CONF=$T/buttons-more.conf TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
-	TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T/outkeys" 2>&1
+	TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T/outkeys" 2>&1
 nk=$(grep -c 'homeassistant/event/tsx-kiosk/key_.*/config {' "$T/outkeys")
 [ "$nk" = 8 ] && grep -q 'homeassistant/event/tsx-kiosk/key_extra/config {' "$T/outkeys" \
 	|| { echo "FAIL: $nk key events with an extra key in buttons.conf, want 8"; fail=1; }
@@ -140,7 +142,7 @@ chmod +x "$T6/bin/tsx-panelctl"
 printf '%s' '{"installed_version":"0.3.5","latest_version":"0.3.6","title":"TSX HOST packages","release_summary":"restart needed after install","in_progress":false}' > "$T6/run/update-ha-state.json"
 upd_run() {  # upd_run OUTFILE
 	PATH=$T6/bin:/usr/bin:/bin TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T6/run TSX_IDLED_STATE=$T/idled \
-		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl \
 		sh "$(P usr/local/sbin/tsx-mqtt)" > "$1" 2>&1
 }
 upd_run "$T6/out1" < /dev/null
@@ -204,15 +206,15 @@ grep -qF 'dark_mode/state' "$T6/out8" && { echo "FAIL: dark mode: a state is pub
 printf '#!/bin/sh\ncase "$1" in has) exit 1;; esac\n' > "$T/bin-nokl-panelctl"; mkdir -p "$T/bin-nokl"
 cp "$T/bin-nokl-panelctl" "$T/bin-nokl/tsx-panelctl"; chmod +x "$T/bin-nokl/tsx-panelctl"
 PATH=$T/bin-nokl:/usr/bin:/bin TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
-	TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T/outnokl" 2>&1
+	TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
+	TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T/outnokl" 2>&1
 grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/key_leds/config ' "$T/outnokl" || { echo "FAIL: no key LEDs: the light is not cleared"; fail=1; }
 [ "$(grep -c 'homeassistant/event/tsx-kiosk/key_.*/config {' "$T/outnokl")" = 7 ] || { echo "FAIL: no key LEDs: the key events must stay"; fail=1; }
 # a panel without a LED bar tool, front keys and eMMC wear: those entities are
 # not announced, and an older discovery topic of them is cleared
 mkdir -p "$T/bin-bare"
 PATH=$T/bin-bare:/usr/bin:/bin TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl \
 	sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T/outbare" 2>&1
 grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/ledbar/config ' "$T/outbare" || { echo "FAIL: bare: the LED bar entity is not cleared"; fail=1; }
 grep -qx 'PUB (retained) homeassistant/light/tsx-kiosk/key_leds/config ' "$T/outbare" || { echo "FAIL: bare: the key LED entity is not cleared"; fail=1; }
@@ -235,7 +237,7 @@ ledbar_case() {  # ledbar_case "hw.conf text" "ledbar.usb text" announced|cleare
 	[ "$2" = NOFILE ] || printf '%b' "$2" > "$T/run-led/ledbar.usb"
 	printf '%s\n' 'tsx/tsx-kiosk/ledbar/set ON' 'tsx/tsx-kiosk/ledbar/rgb/set 255,0,0' 'tsx/tsx-kiosk/ledbar/brightness/set 128' 'tsx/tsx-kiosk/screen/set ON' |
 	PATH=$T/bin-led:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run-led TSX_IDLED_STATE=$T/idled \
-		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl \
 		sh "$(P usr/local/sbin/tsx-mqtt)" > "$T/outled" 2>&1
 	if [ "$3" = announced ]; then
 		grep -qF 'PUB (retained) homeassistant/light/tsx-kiosk/ledbar/config {' "$T/outled" || { echo "FAIL: $4: the LED bar light is not announced"; fail=1; }
@@ -269,8 +271,8 @@ printf 'want 0 0 0\nlast 60 0 0\nout 0 0 0\n' > "$T4/run/ledbar.state"
 printf '%s\n' 'tsx/tsx-kiosk/ledbar/set ON' 'tsx/tsx-kiosk/ledbar/brightness/set 128' 'tsx/tsx-kiosk/ledbar/set ON' \
 	'tsx/tsx-kiosk/ledbar/set OFF' 'tsx/tsx-kiosk/ledbar/set ON' |
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T4/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
-	TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_PANEL_BOARD_CONF=$TSX_BOARD_DIR/panel-board.conf TSX_BACKLIGHT_DIR=$T/bl \
+	TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
+	TSX_KIOSK_CONF=$T/none TSX_PANEL_BOARD_CONF=$TSX_BOARD_DIR/panel-board.conf TSX_BACKLIGHT_DIR=$T/bl \
 	sh "$(P usr/local/sbin/tsx-mqtt)" > "$T4/out" 2>&1
 chk4() { grep -qF -- "$1" "$T4/out" || { echo "FAIL: restore: missing: $1"; fail=1; }; }
 chk4 'PUB (retained) tsx/tsx-kiosk/ledbar/state OFF'
@@ -291,8 +293,8 @@ ledcase() {  # ledcase NAME STATE-TEXT COMMANDS...  (the output is in $T4/NAME.o
 	rm -f "$T4/run/mqtt/pending" "$T4/run/mqtt/rgb" "$T4/run/mqtt/bri"
 	printf '%s\n' "$@" |
 	PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T4/run TSX_IDLED_STATE=$T/idled \
-		TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
-		TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_PANEL_BOARD_CONF=$TSX_BOARD_DIR/panel-board.conf TSX_BACKLIGHT_DIR=$T/bl \
+		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$TSX_BOARD_DIR/buttons-board.conf \
+		TSX_KIOSK_CONF=$T/none TSX_PANEL_BOARD_CONF=$TSX_BOARD_DIR/panel-board.conf TSX_BACKLIGHT_DIR=$T/bl \
 		sh "$(P usr/local/sbin/tsx-mqtt)" > "$T4/$lc.out" 2>&1
 }
 sends4() { grep 'CALL tsx-panelctl send ledbar' "$T4/$1.out" | sed 's/^CALL tsx-panelctl send //' | tr '\n' ';'; }
@@ -312,7 +314,7 @@ eq4 "$(sends4 two-turns)" 'ledbar set 78 18 0;ledbar off;ledbar set 0 100 0;' "t
 # no last color: HA gets brightness 0 as before
 printf 'want 0 0 0\nlast -1 -1 -1\n' > "$T4/run/ledbar.state"
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T4/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	TSX_BUTTONS_CONF=$T/none TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl \
 	sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T4/out2" 2>&1
 grep -qF 'PUB (retained) tsx/tsx-kiosk/ledbar/brightness 0' "$T4/out2" && grep -qF 'PUB (retained) tsx/tsx-kiosk/ledbar/rgb 0,0,0' "$T4/out2" \
 	|| { echo "FAIL: restore: no last color must give brightness 0 and rgb 0,0,0"; fail=1; }
@@ -334,7 +336,7 @@ chmod +x "$T5/bin/tsx-panelctl"
 fxrun() {  # fxrun OUT  (the state file $T5/run/ledbar.state, the stdin commands)
 	rm -f "$T5/run/mqtt/pending"   # the service removes it at its start
 	PATH=$T5/bin:$PATH FXDIR=$T5 TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T5/run TSX_IDLED_STATE=$T/idled \
-		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl \
 		sh "$(P usr/local/sbin/tsx-mqtt)" > "$1" 2>&1
 }
 chk5() { grep -qF -- "$2" "$1" || { echo "FAIL: effects: missing: $2"; fail=1; }; }
@@ -409,7 +411,7 @@ T3=$T/hw; mkdir -p "$T3/run"
 printf 'life_a 0x01\nlife_b 0x0b\neol 0x02\n' > "$T3/run/emmc.state"
 printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T3/run/als.state"
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T3/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	TSX_BUTTONS_CONF=$T/none TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl \
 	sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T3/out" 2>&1
 chk3() { grep -qF -- "$1" "$T3/out" || { echo "FAIL: emmc: missing: $1"; fail=1; }; }
 grep '/config {' "$T3/out" | while read -r _ _ t j; do echo "$j" | jq -e . >/dev/null || { echo "FAIL: bad JSON $t"; exit 1; }; done || fail=1
@@ -422,7 +424,7 @@ chk3 'PUB (retained) tsx/tsx-kiosk/emmc/eol warning'
 chk3 'PUB (retained) tsx/tsx-kiosk/als/lux 12.5'
 printf 'life_a 0x00\nlife_b 0x03\neol 0x03\n' > "$T3/run/emmc.state"
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T3/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	TSX_BUTTONS_CONF=$T/none TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl \
 	sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T3/out2" 2>&1
 grep -qF 'PUB (retained) tsx/tsx-kiosk/emmc/life_a none' "$T3/out2" && grep -qF 'PUB (retained) tsx/tsx-kiosk/emmc/life_b 30' "$T3/out2" \
 	&& grep -qF 'PUB (retained) tsx/tsx-kiosk/emmc/eol urgent' "$T3/out2" || { echo "FAIL: emmc: unreported life must be none, 0x03 must be 30 and urgent"; fail=1; }
@@ -438,7 +440,7 @@ T2=$(mktemp -d); mkdir -p "$T2/run"
 printf 'BROKER=base.example\nPORT=1883\n' > "$T2/mqtt.conf"
 printf 'BROKER=override.example\nPORT=8883\n' > "$T2/run/mqtt.conf"
 PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T2/mqtt.conf TSX_RUN_DIR=$T2/run TSX_IDLED_STATE=$T/idled \
-	TSX_BUTTONS_CONF=$(P etc/tsx/buttons.conf) TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+	TSX_BUTTONS_CONF=$T/none TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl \
 	sh "$(P usr/local/sbin/tsx-mqtt)" < /dev/null > "$T2/out" 2>&1
 grep -q '^-h override.example$' "$T2/run/mqtt/mosquitto_pub" || { echo "FAIL: panel.conf override: BROKER not read from /run/tsx/mqtt.conf ($(cat "$T2/run/mqtt/mosquitto_pub" 2>/dev/null))"; fail=1; }
 grep -q '^-p 8883$' "$T2/run/mqtt/mosquitto_pub" || { echo "FAIL: panel.conf override: PORT not read from /run/tsx/mqtt.conf"; fail=1; }

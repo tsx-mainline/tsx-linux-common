@@ -21,11 +21,13 @@
 set -u
 # The board values: the DRM driver names and the sound card. Test hook: TSX_BOARD_CONF.
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
-. /etc/kiosk.conf
-[ -r /etc/tsx/panel-board.conf ] && . /etc/tsx/panel-board.conf   # the values of the board
-# panel.conf overrides (KIOSK_URL, KIOSK_DARK, TZ_NAME). tsx-config apply generates them
-# at boot. See the header of tsx-config.
-[ -r /run/tsx/kiosk.conf ] && . /run/tsx/kiosk.conf
+_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}   # tsx-base. A checkout has it in base/.
+[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../../base/usr/local/lib/tsx/conf.sh
+. "$_cs"
+# Layers, a later one wins: the package defaults, the board values, /etc/kiosk.conf (the
+# user file) and the panel.conf overrides (KIOSK_URL, KIOSK_DARK, TZ_NAME). tsx-config apply
+# generates the last one at boot. See the header of tsx-config.
+tsx_conf_load kiosk.conf /etc/kiosk.conf /etc/tsx/panel-board.conf /run/tsx/kiosk.conf
 # URL chosen with a front-panel key when DevTools is off (tsx-buttons, NAV_FALLBACK=restart)
 [ -s /run/tsx/kiosk-url ] && KIOSK_URL=$(cat /run/tsx/kiosk-url)
 # The on-panel setup page shows when nothing is configured yet, or for ~15

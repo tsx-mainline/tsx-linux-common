@@ -16,7 +16,10 @@ AMIXER=${AMIXER:-amixer}
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 CARD=$TSX_SOUND_CARD
 DUCK_MEDIA=20 LED=none LED_COLOR="0 40 100"
-[ -r "$CONF" ] && . "$CONF"
+_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}   # tsx-base. A checkout has it in base/.
+[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../../base/usr/local/lib/tsx/conf.sh
+. "$_cs"
+tsx_conf_load voice.conf "$CONF"
 SAVED=$RUN/voice-duck
 
 media() { $AMIXER -c "$CARD" sget Media 2>/dev/null | sed -n 's/.*\[\([0-9]\{1,3\}\)%\].*/\1/p' | head -1; }

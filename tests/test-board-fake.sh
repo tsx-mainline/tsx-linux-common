@@ -220,9 +220,9 @@ ds=$(grep -n 'KIOSK_DARK' "$KS" | grep -c 'set -- "\$@" --force-dark-mode')
 dline=$(grep -n -- '--force-dark-mode' "$KS" | head -n 1 | cut -d: -f1); xline=$(grep -n 'set -- "\$@" \$KIOSK_EXTRA_FLAGS' "$KS" | head -n 1 | cut -d: -f1)
 [ -n "$dline" ] && [ -n "$xline" ] && [ "$dline" -lt "$xline" ] && ok "the dark flags come before KIOSK_EXTRA_FLAGS (the extra flags can override)" || bad "order of dark flags ($dline) and extra flags ($xline)"
 # the override of tsx-config apply wins over /etc/kiosk.conf, and the default is off
-kc=$(sed -n '/^\. \/etc\/kiosk.conf/,/^\[ -s \/run\/tsx\/kiosk-url \]/p' "$KS")
-case "$kc" in *'. /run/tsx/kiosk.conf'*) ok "kiosk-session reads /run/tsx/kiosk.conf after /etc/kiosk.conf";; *) bad "kiosk-session does not read the override: $kc";; esac
-grep -qx 'KIOSK_DARK=off' "$HERE/kiosk/etc/kiosk.conf" && ok "kiosk.conf: KIOSK_DARK=off by default" || bad "kiosk.conf has no KIOSK_DARK=off"
+grep -q 'tsx_conf_load kiosk.conf /etc/kiosk.conf /etc/tsx/panel-board.conf /run/tsx/kiosk.conf' "$KS" \
+	&& ok "kiosk-session reads /run/tsx/kiosk.conf after /etc/kiosk.conf" || bad "kiosk-session does not read the override"
+grep -qx 'KIOSK_DARK=off' "$HERE/kiosk/usr/local/share/tsx/defaults/kiosk.conf" && ok "kiosk.conf: KIOSK_DARK=off by default" || bad "kiosk.conf has no KIOSK_DARK=off"
 # name order, only *.sh, and every safe file runs
 H=$T/h3; mkhooks "$H"
 hk "$H" 10-a.sh 'order=a'

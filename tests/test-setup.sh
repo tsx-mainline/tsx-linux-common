@@ -80,7 +80,7 @@ grep -q '^command_user="tsx-setup:tsx-setup"$' "$HERE/setup/etc/init.d/tsx-setup
 grep -q 'checkpath -f -o tsx-setup:tsx-setup .*/var/log/tsx-setupd.log' "$HERE/setup/etc/init.d/tsx-setupd" \
 	&& ok "init.d/tsx-setupd gives tsx-setup its own log file (supervise-daemon opens it as that user)" \
 	|| bad "init.d/tsx-setupd: no tsx-setup-owned /var/log/tsx-setupd.log (the daemon exits 1 on the panel)"
-for k in $(sed -n 's/^\([A-Z_]*\)=.*/\1/p' "$HERE/setup/etc/tsx/setup.conf"); do
+for k in $(sed -n 's/^\([A-Z_]*\)=.*/\1/p' "$HERE/setup/usr/local/share/tsx/defaults/setup.conf"); do
 	grep -q "\"$k\"" "$SETUPD" \
 		&& ok "setup.conf key $k is read by tsx-setupd" \
 		|| bad "setup.conf key $k is not read by tsx-setupd (a dead knob)"

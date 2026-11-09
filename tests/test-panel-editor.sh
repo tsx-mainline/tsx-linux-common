@@ -341,16 +341,18 @@ sleep 1.5
 [ "$(jget stale < "$SJ" 2>/dev/null)" = "" ] || [ ! -e "$SJ" ] && ok "the start removes a file of an earlier run" || bad "stale screen.json: $(cat "$SJ")"
 rm -f "$RUNDIR/setup-open"
 
-echo "== the mode: auto looks for the kiosk.conf, on and off set it =="
-mode() {  # mode CONF_VALUE ENV_VALUE KIOSK_CONF_EXISTS -> True/False
+echo "== the mode: auto looks for the defaults file of kiosk.conf, on and off set it =="
+mode() {  # mode CONF_VALUE ENV_VALUE KIOSK_DEFAULTS_EXIST -> True/False
 	printf 'TSX_SETUP_KIOSK=%s\n' "$1" > "$T/mode.conf"
-	rm -f "$T/mode-kiosk.conf"; [ "$3" = yes ] && : > "$T/mode-kiosk.conf"
+	rm -rf "$T/mode-defaults"; mkdir -p "$T/mode-defaults"; [ "$3" = yes ] && : > "$T/mode-defaults/kiosk.conf"
+	: > "$T/mode-kiosk.conf"   # a user file that stays behind does not turn the kiosk on
 	env -u TSX_SETUP_KIOSK ${2:+TSX_SETUP_KIOSK=$2} TSX_SETUP_CONF="$T/mode.conf" TSX_RUN_DIR="$T/ic-run" TSX_KIOSK_CONF="$T/mode-kiosk.conf" \
+		TSX_DEFAULTS_DIR="$T/mode-defaults" \
 		TSX_SETUP_PLUGIN_DIR="$T/none" python3 -c 'import sys, importlib.machinery as m
 d = m.SourceFileLoader("setupd", sys.argv[1]).load_module()
 print(d.kiosk_enabled())' "$SETUPD" 2>/dev/null
 }
-[ "$(mode auto "" yes)" = True ] && [ "$(mode auto "" no)" = False ] && ok "auto: on when kiosk.conf exists, off when it does not" || bad "auto mode"
+[ "$(mode auto "" yes)" = True ] && [ "$(mode auto "" no)" = False ] && ok "auto: on when the defaults of kiosk.conf exist, off when they do not (the user file does not matter)" || bad "auto mode"
 [ "$(mode "" "" yes)" = True ] && [ "$(mode "" "" no)" = False ] && ok "no setting is auto" || bad "default mode"
 [ "$(mode on "" no)" = True ] && [ "$(mode off "" yes)" = False ] && ok "on and off in setup.conf win over the file" || bad "on/off mode"
 [ "$(mode off on yes)" = True ] && ok "the environment replaces the setup.conf key" || bad "env mode"

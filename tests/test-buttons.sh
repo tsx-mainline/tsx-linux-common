@@ -7,7 +7,7 @@
 # The keys come from the board layer of the made-up board (tests/boards/fake):
 # seven keys with seven key LEDs. The board layer sets SLIDE_STEP=0. A test
 # buttons.conf adds the bindings, and later the settings that replace the
-# board layer. A last part runs the daemon with the buttons.conf template of
+# board layer. A last part runs the daemon with the buttons.conf defaults of
 # this repo, which has no keys and no bindings.
 # Usage: tests/test-buttons.sh      (builds both daemons with host gcc)
 set -euo pipefail
@@ -24,6 +24,8 @@ echo 25 > $T/bl/fakebl/max_brightness; echo 8 > $T/bl/fakebl/brightness
 mkfifo $T/input/event0
 echo "test-token-123" > $T/ha-token
 cp $SRC/tests/boards/fake/buttons-board.conf $T/buttons-board.conf
+# the defaults of the packages: the files in usr/local/share/tsx/defaults
+mkdir -p $T/defaults; cp $SRC/buttons/usr/local/share/tsx/defaults/buttons.conf $SRC/kiosk/usr/local/share/tsx/defaults/kiosk.conf $T/defaults/
 cat > $T/kiosk.conf <<C
 KIOSK_URL="http://127.0.0.1:$HA_PORT/lovelace/0"
 BLANK_TIMEOUT=0
@@ -344,16 +346,19 @@ ok "button extra3 in buttons.conf replaces the key of the board layer: code 190 
 sed -i '/^button extra3 191/d;/^on extra3 short/d' $T/buttons.conf; kill -HUP $BPID; sleep 0.5
 
 # The top level of the backlight without brightness.state: BACKLIGHT_MAX of
-# kiosk.conf (19), then BACKLIGHT_MAX of the board layer panel-board.conf (it
-# wins), then the device (25). A "max" line of brightness.state comes first.
+# kiosk.conf (the user file, 19, it wins over the board layer), else
+# BACKLIGHT_MAX of the board layer panel-board.conf, then the device (25). A "max" line of brightness.state comes first.
 kill $IDLED_PID; sleep 0.5; rm -f $T/run/brightness.state
 echo 6 > $T/bl/fakebl/brightness
 press $X2 0.1; sleep 0.5
 [ "$(bl)" = 19 ] && [ "$(cat $T/run/brightness)" = 19 ] || fail "ceiling from kiosk.conf: device $(bl), override '$(cat $T/run/brightness 2>/dev/null)', want 19"
 echo "BACKLIGHT_MAX=12" > $T/panel-board.conf; kill -HUP $BPID; sleep 0.5
 press $X2 0.1; sleep 0.5
+[ "$(bl)" = 19 ] || fail "ceiling: the user file kiosk.conf must win over panel-board.conf: $(bl), want 19"
+sed -i '/^BACKLIGHT_MAX/d' $T/kiosk.conf; kill -HUP $BPID; sleep 0.5
+press $X2 0.1; sleep 0.5
 [ "$(bl)" = 12 ] || fail "ceiling from panel-board.conf: $(bl), want 12"
-sed -i '/^BACKLIGHT_MAX/d' $T/kiosk.conf; : > $T/panel-board.conf; kill -HUP $BPID; sleep 0.5
+: > $T/panel-board.conf; kill -HUP $BPID; sleep 0.5
 press $X2 0.1; sleep 0.5
 [ "$(bl)" = 25 ] || fail "ceiling from the device: $(bl), want 25"
 printf 'level 9\nbase 8\noffset 1\noverride 0\nmax 7\n' > $T/run/brightness.state
@@ -361,14 +366,14 @@ press $X2 0.1; sleep 0.5
 [ "$(bl)" = 7 ] || fail "ceiling from brightness.state: $(bl), want 7"
 press $P4 0.1; sleep 0.5
 [ "$(cat $T/run/brightness-offset 2>/dev/null)" = -1 ] || fail "relative change under max 7: offset '$(cat $T/run/brightness-offset 2>/dev/null)', want -1 (7 - base 8)"
-ok "backlight ceiling: max of brightness.state, else BACKLIGHT_MAX (panel-board.conf over kiosk.conf), else the device"
+ok "backlight ceiling: max of brightness.state, else BACKLIGHT_MAX (kiosk.conf over panel-board.conf), else the device"
 
 rm $T/ha-token; kill -HUP $BPID; sleep 0.5; n=$(nl_ $T/log/ha.log)
 press $P3 0.1; sleep 0.6; [ "$(nl_ $T/log/ha.log)" = "$n" ] || fail "HA call without token"
 [ ! -e $T/run/ha-auth.hdr ] || fail "auth header file left behind"
 ok "no token -> HA actions skipped"
 
-# The buttons.conf template of this repo: no keys and no bindings. With the
+# The buttons.conf defaults of this repo: no keys and no bindings. With the
 # board layer of the made-up board, the seven keys fire the HA event and
 # nothing else. Without a board layer, the daemon has no keys and no key LEDs.
 echo "test-token-123" > $T/ha-token
@@ -379,7 +384,7 @@ printf 'HA_TOKEN_FILE=%s/ha-token\nKIOSK_CONF=%s/kiosk.conf\nDEVTOOLS=127.0.0.1:
 printf 'KIOSK_URL="http://127.0.0.1:%s/lovelace/0"\nNIGHT_START=0\nNIGHT_END=0\n' $HA_PORT2 > $T/kiosk.conf
 env TSX_INPUT_DIR=$T/input2 TSX_LED_DIR=$T/leds2 TSX_BACKLIGHT_DIR=$T/bl TSX_RUN_DIR=$T/run2 TSX_IDLED_STATE=$T/none \
 	TSX_HOSTNAME=testpanel TSX_BUTTONS_BOARD_CONF=$T/buttons-board.conf TSX_PANEL_BOARD_CONF=$T/panel-board.conf \
-	$T/tsx-buttons -c $SRC/buttons/etc/tsx/buttons.conf -v 2>$T/buttons2.log & B2=$!; PIDS="$PIDS $B2"
+	TSX_DEFAULTS_DIR=$T/defaults $T/tsx-buttons -c $T/no-user-buttons.conf -v 2>$T/buttons2.log & B2=$!; PIDS="$PIDS $B2"
 exec 9<>$T/input2/event0
 key2() { python3 -c 'import struct,sys,time; t=time.time(); sys.stdout.buffer.write(struct.pack("llHHi",int(t),0,1,int(sys.argv[1]),int(sys.argv[2]))+struct.pack("llHHi",int(t),0,0,0,0))' "$@" >&9; }
 sleep 0.6
@@ -392,11 +397,11 @@ grep -q '"button":"prog3","press":"short","code":202' $T/log2/ha.log || fail "te
 [ "$(nl_ $T/log2/ha.log)" = $((n2 + 1)) ] || fail "template: a press made more than the HA event"
 [ "$(sed -n 's/^last //p' $T/run2/buttons.state | cut -d' ' -f1,2)" = "prog3 short" ] || fail "template: last line"
 [ "$(sed -n 's/^leds //p' $T/run2/buttons.state)" = yes ] || fail "template: leds yes expected"
-ok "buttons.conf template + board layer: 7 keys, 0 bindings, a press fires only the HA event, no refused line"
+ok "buttons.conf defaults + board layer, no user file: 7 keys, 0 bindings, a press fires only the HA event, no refused line"
 kill -TERM $B2; sleep 0.3
 env TSX_INPUT_DIR=$T/input2 TSX_LED_DIR=$T/leds2 TSX_BACKLIGHT_DIR=$T/bl TSX_RUN_DIR=$T/run2 TSX_IDLED_STATE=$T/none \
 	TSX_BUTTONS_BOARD_CONF=$T/no-board-layer TSX_PANEL_BOARD_CONF=$T/panel-board.conf \
-	$T/tsx-buttons -c $SRC/buttons/etc/tsx/buttons.conf -v 2>$T/buttons3.log & B3=$!; PIDS="$PIDS $B3"
+	TSX_DEFAULTS_DIR=$T/defaults $T/tsx-buttons -c $T/no-user-buttons.conf -v 2>$T/buttons3.log & B3=$!; PIDS="$PIDS $B3"
 sleep 0.6
 grep -q '^tsx-buttons: 0 buttons, 0 bindings, 0 key LEDs' $T/buttons3.log || fail "no board layer: $(grep ' buttons, ' $T/buttons3.log | tail -n 1)"
 [ "$(sed -n 's/^leds //p' $T/run2/buttons.state)" = no ] || fail "no board layer: leds no expected"

@@ -79,8 +79,11 @@ start() {
 	ebegin "TSX setup"
 	# Boot splash status line (does nothing when the text console has the screen)
 	/usr/local/bin/tsx-splash -s "starting services" -p 30 status 2>/dev/null
-	[ -r /etc/kiosk.conf ] && . /etc/kiosk.conf   # kiosk and ha profiles only
-	[ -r /run/tsx/kiosk.conf ] && . /run/tsx/kiosk.conf   # panel.conf overrides (tsx-config apply)
+	_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}   # tsx-base. A checkout has it in base/.
+	[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../base/usr/local/lib/tsx/conf.sh
+	. "$_cs"
+	# kiosk and ha profiles only: the defaults file exists only with tsx-kiosk
+	tsx_conf_load kiosk.conf /etc/kiosk.conf "" /run/tsx/kiosk.conf
 	apply_tz
 	mac=$(select_eth0_mac)
 	# On some boards eth0 sits behind a USB hub and can appear a moment after boot.

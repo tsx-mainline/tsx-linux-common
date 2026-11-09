@@ -11,6 +11,8 @@ set -u
 . "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 . "$HERE/tests/lib/paths.sh"
+export TSX_DEFAULTS_DIR=$(defaults_dir)   # the defaults of the packages, as on the panel
+export TSX_CONF_SH=$(P usr/local/lib/tsx/conf.sh)
 command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-presence-kind: no busybox on this host"; exit 0; }
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export PYTHONDONTWRITEBYTECODE=1
@@ -202,7 +204,7 @@ mq() {  # mq RAW  -> $T/mout
 	case $1 in empty) printf 'MIC=yes\n' > "$T/mrun/hw.conf";; *) printf 'MIC=yes\nPRESENCE=%s\n' "$1" > "$T/mrun/hw.conf";; esac
 	printf '%s\n' 'tsx/tsx-kiosk/screen/set ON' |
 	PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/mrun TSX_IDLED_STATE=$T/idled \
-		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl \
 		TSX_PANEL_BOARD_CONF=$TSX_BOARD_DIR/panel-board.conf sh "${MQBIN:-$(P usr/local/sbin/tsx-mqtt)}" > "$T/mout" 2>&1
 }
 for pair in $RULE; do

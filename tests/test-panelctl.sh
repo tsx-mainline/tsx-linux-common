@@ -271,7 +271,7 @@ rm -f "$T/run/als.state"; $PCTL get lux >/dev/null 2>&1 && bad "get lux with no 
 printf 'raw 12.50\nreport 12.5\nauto on\n' > "$T/run/als.state"
 printf '#!/bin/sh\n' > "$T/als.conf"; : > "$T/bin/tsx-ledbar-none"; chmod +x "$T/bin/tsx-ledbar-none"
 # the keys: a `button` line in the board layer. buttons.conf is the template of this repo (no keys).
-cp "$HERE/../buttons/etc/tsx/buttons.conf" "$T/buttons.conf"; printf '# board layer\nbutton prog1 KEY_PROG1 led=1\n' > "$T/buttons-board.conf"
+cp "$HERE/../buttons/usr/local/share/tsx/defaults/buttons.conf" "$T/buttons.conf"; printf '# board layer\nbutton prog1 KEY_PROG1 led=1\n' > "$T/buttons-board.conf"
 mkdir -p "$T/asound/FakeCard" "$T/nfc/nfc0"; printf 'count 0\nlast -\n' > "$T/run/nfc.state"
 for h in ledbar keypad keyleds als sound presence usbpower poe nfc; do $PCTL has $h && ok "has $h: yes" || bad "has $h: no"; done
 # has keypad reads the `button` lines: the board layer alone, buttons.conf alone, and not the template
@@ -281,7 +281,7 @@ printf '#button hidden KEY_PROG1\n' >> "$T/buttons.conf"
 $PCTL has keypad >/dev/null 2>&1; [ $? = 1 ] && ok "has keypad: a commented button line does not count" || bad "has keypad: counted a commented line"
 printf '  button prog2 KEY_PROG2\n' >> "$T/buttons.conf"
 $PCTL has keypad && ok "has keypad: yes with a button line in buttons.conf only" || bad "has keypad: no with a button line in buttons.conf"
-printf 'button prog1 KEY_PROG1 led=1\n' > "$T/buttons-board.conf"; cp "$HERE/../buttons/etc/tsx/buttons.conf" "$T/buttons.conf"
+printf 'button prog1 KEY_PROG1 led=1\n' > "$T/buttons-board.conf"; cp "$HERE/../buttons/usr/local/share/tsx/defaults/buttons.conf" "$T/buttons.conf"
 # has keyleds reads "leds yes" of buttons.state
 printf 'leds no\nled 128 day\n' > "$T/run/buttons.state"
 $PCTL has keyleds >/dev/null 2>&1; [ $? = 1 ] && ok "has keyleds: exit 1 with leds no" || bad "has keyleds: yes with leds no"
@@ -597,9 +597,11 @@ echo "rc-service \$*" >> "$T/dcmds.log"
 exit 0
 EOF
 chmod +x "$T/dbin/tsx-config" "$T/dbin/rc-service"
+# the defaults file of tsx-kiosk (its presence is "this panel has a kiosk") and the user file
+mkdir -p "$T/defaults"; printf '# kiosk\nKIOSK_URL=""\nKIOSK_DARK=off\n' > "$T/defaults/kiosk.conf"
 printf '# kiosk\nKIOSK_URL=""\nKIOSK_DARK=off\n' > "$T/kiosk.conf"
 : > "$T/dcmds.log"; rm -f "$T/dark.val" "$T/run5/kiosk.conf"
-DENV=(env PATH="$T/dbin:$PATH" TSX_RUN_DIR="$T/run5" TSX_KIOSK_CONF="$T/kiosk.conf" TSX_CONFIG_BIN="$T/dbin/tsx-config" TSX_RC_SERVICE="$T/dbin/rc-service"
+DENV=(env PATH="$T/dbin:$PATH" TSX_RUN_DIR="$T/run5" TSX_KIOSK_CONF="$T/kiosk.conf" TSX_DEFAULTS_DIR="$T/defaults" TSX_CONFIG_BIN="$T/dbin/tsx-config" TSX_RC_SERVICE="$T/dbin/rc-service"
 	TSX_PANEL_APP_STATE="$T/run5/panel-app.state" TSX_IDLED_STATE="$T/idled.state")
 dpc() { "${DENV[@]}" busybox sh "$SCRIPT" "$@"; }
 dstart() { # the daemon. exec makes $DPID the daemon itself, so that dstop kills it
@@ -660,10 +662,15 @@ mkdir -p "$T/proc/4243"; printf 'pid 4243\nstarted 1\n' > "$T/run5/panel-app.sta
 TSX_PROC_DIR="$T/proc" dpc has dark-mode 2>/dev/null && bad "has dark-mode while the panel app runs" || ok "has dark-mode is false while the panel app runs (its process exists)"
 TSX_PROC_DIR="$T/proc" dpc get dark-mode >/dev/null 2>&1 && bad "get dark-mode while the panel app runs" || ok "get dark-mode fails while the panel app owns the screen"
 rm -rf "$T/proc/4243" "$T/run5/panel-app.state"
-env TSX_RUN_DIR="$T/run5" TSX_KIOSK_CONF="$T/no-such-kiosk.conf" busybox sh "$SCRIPT" has dark-mode \
-	&& bad "has dark-mode without kiosk.conf" || ok "a panel with no kiosk.conf (the panel app): no dark-mode"
-env TSX_RUN_DIR="$T/run5" TSX_KIOSK_CONF="$T/no-such-kiosk.conf" busybox sh "$SCRIPT" state | grep -q '^dark-mode' \
-	&& bad "state lists dark-mode without kiosk.conf" || ok "state lists no dark-mode without kiosk.conf"
+env TSX_RUN_DIR="$T/run5" TSX_KIOSK_CONF="$T/kiosk.conf" TSX_DEFAULTS_DIR="$T/no-defaults" busybox sh "$SCRIPT" has dark-mode \
+	&& bad "has dark-mode without the defaults of kiosk.conf" || ok "a panel with no defaults file of kiosk.conf (the panel app): no dark-mode, also with an old user file"
+env TSX_RUN_DIR="$T/run5" TSX_KIOSK_CONF="$T/kiosk.conf" TSX_DEFAULTS_DIR="$T/no-defaults" busybox sh "$SCRIPT" state | grep -q '^dark-mode' \
+	&& bad "state lists dark-mode without the defaults of kiosk.conf" || ok "state lists no dark-mode without the defaults of kiosk.conf"
+# no user file at all: the value of the defaults
+rm -f "$T/kiosk.conf" "$T/run5/kiosk.conf"; printf 'KIOSK_DARK=on\n' > "$T/defaults/kiosk.conf"
+[ "$(dpc get dark-mode)" = on ] && ok "get dark-mode: the user file is missing, the defaults say on" || bad "get dark-mode with no user file: '$(dpc get dark-mode)'"
+printf 'KIOSK_DARK=off\n' > "$T/kiosk.conf"
+[ "$(dpc get dark-mode)" = off ] && ok "get dark-mode: the user file wins over the defaults" || bad "get dark-mode (user over defaults): '$(dpc get dark-mode)'"
 
 echo "== the group of the FIFO: the first group of TSX_PANELCTL_GROUPS that exists =="
 G=$(id -gn)

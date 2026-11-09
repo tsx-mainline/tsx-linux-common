@@ -69,6 +69,8 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "../../base/src/tsx-conf.h"
 #ifndef NO_LIBUSB
 #include <libusb-1.0/libusb.h>
 #endif
@@ -176,9 +178,10 @@ static char *trim(char *s)
 	return s;
 }
 
-static void load_conf(void)
+static void load_conf_file(const char *path, int layer, void *arg)
 {
-	FILE *f = fopen(conffile, "r"); char line[256];
+	FILE *f = fopen(path, "r"); char line[256];
+	(void)layer; (void)arg;
 	if (!f) return;
 	while (fgets(line, sizeof line, f)) {
 		char *s = trim(line), *eq;
@@ -188,6 +191,13 @@ static void load_conf(void)
 		/* BLANK and BLANK_DIM of an old file are ignored, tsx-ledbard logs them */
 	}
 	fclose(f);
+}
+
+/* The layers, a later one wins: the defaults file of the package, then the
+ * user file conffile. */
+static void load_conf(void)
+{
+	tsx_conf_each("ledbar.conf", NULL, conffile, NULL, load_conf_file, NULL);
 }
 
 /* ---- state --------------------------------------------------------------- */

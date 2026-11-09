@@ -64,9 +64,11 @@ PANEL_APP_DIRS=
 PANEL_APP_USER=
 PANEL_APP_LEDS=
 NAME= FRIENDLY_NAME= MAC=
-for f in "$CONF" "$BOARD_CONF"; do
-	if [ -r "$f" ]; then . "$f"; fi
-done
+_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}   # tsx-base. A checkout has it in base/.
+[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../../base/usr/local/lib/tsx/conf.sh
+. "$_cs"
+# The layers, a later one wins: the package defaults, the board file, then CONF (the user file).
+tsx_conf_load panel-app.conf "$CONF" "$BOARD_CONF"
 # The file of this panel holds only the three identity keys. Read them as
 # text, not as a script.
 state_get() {

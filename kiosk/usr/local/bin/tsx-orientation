@@ -51,6 +51,9 @@
 # Env for tests: TSX_SWAYMSG (swaymsg), TSX_RUN_USER_DIR (/run/user),
 # TSX_KIOSK_USER (kiosk), TSX_PANEL_ROTATE, TSX_CMDLINE, TSX_KIOSK_CONF.
 set -u
+_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}   # tsx-base. A checkout has it in base/.
+[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../../base/usr/local/lib/tsx/conf.sh
+. "$_cs"
 FILE=${TSX_ORIENTATION_FILE:-/etc/tsx/orientation}
 if [ "${1:-}" = -f ]; then
 	[ $# -ge 2 ] || { echo "tsx-orientation: -f needs a file" >&2; exit 2; }
@@ -80,7 +83,7 @@ mount_rot() {
 
 # KIOSK_TOUCH_MATRIX from kiosk.conf (six numbers), else nothing
 touch_override() {
-	v=$(sed -n 's/^KIOSK_TOUCH_MATRIX=//p' "${TSX_KIOSK_CONF:-/etc/kiosk.conf}" 2>/dev/null | tail -n 1 | tr -d '"'"'"'')
+	v=$(tsx_conf_get kiosk.conf KIOSK_TOUCH_MATRIX "${TSX_KIOSK_CONF:-/etc/kiosk.conf}")
 	set -- $v
 	[ $# = 6 ] && echo "$*"
 }

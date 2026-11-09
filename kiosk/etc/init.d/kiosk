@@ -36,9 +36,11 @@ start_pre() {
 	checkpath -d -m 0755 -o kiosk:kiosk /run/tsx/kiosk-ready.d
 	rm -f /run/tsx/kiosk-ready.d/ready /run/tsx/kiosk-ready.d/ready.tmp*
 	ln -sfn kiosk-ready.d/ready /run/tsx/kiosk.ready
-	. /etc/kiosk.conf
-	[ -r /etc/tsx/panel-board.conf ] && . /etc/tsx/panel-board.conf   # the values of the board
-	[ -r /run/tsx/kiosk.conf ] && . /run/tsx/kiosk.conf   # panel.conf overrides (tsx-config apply)
+	_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}   # tsx-base. A checkout has it in base/.
+	[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../base/usr/local/lib/tsx/conf.sh
+	. "$_cs"
+	# defaults, board, /etc/kiosk.conf (the user file), then the panel.conf overrides (tsx-config apply)
+	tsx_conf_load kiosk.conf /etc/kiosk.conf /etc/tsx/panel-board.conf /run/tsx/kiosk.conf
 	[ -n "${KIOSK_CACHE_DIR:-}" ] && checkpath -d -m 0700 -o kiosk:kiosk "$KIOSK_CACHE_DIR"
 	# Boot splash status line. It does nothing once sway has the screen, or
 	# when the text console has it. The address helps if the kiosk never

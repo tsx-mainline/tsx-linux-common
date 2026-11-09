@@ -115,11 +115,13 @@ PUBTO=${TSX_MQTT_PUB_TIMEOUT:-5}
 LASTPUBOK=1   # 0 after a publish fails or times out. The stop trap then skips the LWT offline publish
 
 BROKER= PORT=1883 USER= PASSWORD= CAFILE= DISCOVERY_PREFIX=homeassistant NODE_ID= BASE_TOPIC= DEVICE_NAME=
-[ -r "$CONF" ] && . "$CONF"
-# panel.conf overrides (MQTT_HOST/PORT/USER/PASSWORD through `tsx-config apply`).
-# They have the same precedence as /etc/kiosk.conf + /run/tsx/kiosk.conf in
-# kiosk-session -- the header of tsx-config
-[ -r "$R/mqtt.conf" ] && . "$R/mqtt.conf"
+# The layers: package defaults, the user file CONF, then the panel.conf
+# overrides (MQTT_HOST/PORT/USER/PASSWORD through `tsx-config apply`). The same
+# order as the kiosk.conf layers in kiosk-session -- the header of tsx-config
+_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}
+[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../../base/usr/local/lib/tsx/conf.sh
+. "$_cs"
+tsx_conf_load mqtt.conf "$CONF" "" "$R/mqtt.conf"
 if [ -z "$BROKER" ] && [ "$DRY" != 1 ]; then
 	echo "tsx-mqtt: BROKER not set in $CONF, nothing to do"; exit 0
 fi
@@ -424,7 +426,8 @@ screen_state() {
 
 blank_timeout_state() {  # seconds: tsx-config's runtime file, else kiosk.conf
 	v=; [ -r "$R/blank-timeout" ] && read -r v _ < "$R/blank-timeout"
-	case $v in ''|*[!0-9]*) v=$([ -r "$KCONF" ] && sed -n 's/^BLANK_TIMEOUT=\([0-9][0-9]*\).*/\1/p' "$KCONF" | tail -1);; esac
+	case $v in ''|*[!0-9]*) v=$(BLANK_TIMEOUT=; tsx_conf_load kiosk.conf "$KCONF" 2>/dev/null; printf '%s' "$BLANK_TIMEOUT");; esac
+	case $v in *[!0-9]*) v=;; esac
 	echo "${v:-300}"
 }
 

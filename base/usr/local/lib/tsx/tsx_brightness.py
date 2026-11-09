@@ -43,6 +43,9 @@ import sys
 import time
 from collections import deque
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import tsx_conf  # noqa: E402  (the layers of kiosk.conf: defaults, board, user)
+
 MERGE_DIST = 0.12     # share of the x range: a new point replaces points this close
 SPREAD = 3.0          # base points within SPREAD * MERGE_DIST move by a part of the change
 MAX_POINTS = 12       # user points kept
@@ -494,12 +497,10 @@ def als_daemon():
     release_s = float(env("TSX_LEARN_RELEASE_S", "3.0"))
 
     def kiosk(key):
-        """A number from the board file, else from kiosk.conf, else None."""
-        for path in (board_conf, kiosk_conf):
-            val = shell_value(path, key)
-            if val and val.isdigit():
-                return int(val)
-        return None
+        """A number from the layers of kiosk.conf (the defaults, the board file,
+        the user file: a later one wins), else None."""
+        val = tsx_conf.get("kiosk.conf", key, kiosk_conf, board_conf)
+        return int(val) if val.isdigit() else None
 
     state = state_fields(os.path.join(run, "brightness.state"))
     dev = device_max(bl_dir)
@@ -528,7 +529,7 @@ def als_daemon():
     learner = Learner(curve, env("TSX_LEARN_FILE", "/data/tsx/brightness-learn.json"), run,
                       float(env("TSX_LEARN_HOLD_S", str(HOLD_S))))
     out = os.path.join(run, "als-curve")
-    learn_on = shell_value(kiosk_conf, "BRIGHTNESS_LEARN") != "off"
+    learn_on = tsx_conf.get("kiosk.conf", "BRIGHTNESS_LEARN", kiosk_conf, board_conf) != "off"
     if learn_on:
         learner.load()
 

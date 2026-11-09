@@ -136,6 +136,10 @@ NL='
 # board family. Without it, the prefix is tsx-$TSX_FAMILY.
 . "${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}"
 TSX_PKG_PREFIX=${TSX_PKG_PREFIX:-tsx-$TSX_FAMILY}
+# The settings loader of tsx-base (layers: package defaults, user file, override).
+_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}   # tsx-base. A checkout has it in base/.
+[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../../base/usr/local/lib/tsx/conf.sh
+. "$_cs"
 
 CONF=${TSX_AUTOUPDATE_CONF:-/etc/tsx/autoupdate.conf}
 RUN=${TSX_RUN_DIR:-/run/tsx}
@@ -179,8 +183,7 @@ nowhhmm() { date '+%H:%M'; }
 # ENABLED=0 is manual, REBOOT=never is AUTO_RESTART=off.
 load_conf() {
 	MODE= AUTO_RESTART= ENABLED= REBOOT= WINDOW=03:00-05:00 HEALTH_TIMEOUT=180
-	[ -r "$CONF" ] && . "$CONF"
-	[ -r "$OVERRIDE" ] && . "$OVERRIDE"
+	tsx_conf_load autoupdate.conf "$CONF" "" "$OVERRIDE"
 	case $MODE in
 	auto|manual) ;;
 	'') case $ENABLED in 0) MODE=manual;; *) MODE=auto;; esac;;
@@ -1042,10 +1045,9 @@ cmd_healthcheck() {
 	if [ "$has_kiosk" = 1 ] && command -v rc-service >/dev/null 2>&1; then
 		rc-service kiosk status >/dev/null 2>&1 || { ok=0; msg="kiosk service not running"; }
 	fi
-	url=; [ -r "$KIOSK_CONF" ] && . "$KIOSK_CONF" 2>/dev/null
 	# The KIOSK_URL override of panel.conf (`tsx-config apply`) wins, with the
 	# same precedence as in kiosk-session -- see the header of tsx-config
-	[ -r "$RUN/kiosk.conf" ] && . "$RUN/kiosk.conf" 2>/dev/null
+	url=; tsx_conf_load kiosk.conf "$KIOSK_CONF" "" "$RUN/kiosk.conf" 2>/dev/null
 	url=${KIOSK_URL:-$url}
 	[ "$has_kiosk" = 1 ] || url=
 	if [ -n "$url" ] && command -v curl >/dev/null 2>&1; then

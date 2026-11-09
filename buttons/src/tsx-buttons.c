@@ -15,7 +15,9 @@
  * after it. It holds the settings of the user, and it can add or replace keys
  * and bind actions. docs/buttons.md describes both files.
  *
- *  - Config order: the board layer, then buttons.conf, then rundir/buttons.conf
+ *  - Config order: the defaults file of the package (buttons.conf in
+ *    /usr/local/share/tsx/defaults), the board layer, then buttons.conf (the
+ *    user file), then rundir/buttons.conf
  *    (tsx-config apply writes it from panel.conf, for example LED_BLANK from
  *    KEY_LED_BLANK). A later file replaces a setting of an earlier file. A
  *    `button` line with a known name replaces the earlier key of that name.
@@ -97,6 +99,8 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "../../base/src/tsx-conf.h"
 
 #define MAXDEV 16
 #define MAXBTN 16
@@ -258,22 +262,31 @@ static void kiosk_conf_load_file(struct cfg *c, const char *path, int *ns, int *
 	fclose(f);
 }
 
+struct kiosk_ctx { struct cfg *c; int *ns, *ne; };
+
+static void kiosk_conf_layer(const char *path, int layer, void *arg)
+{
+	struct kiosk_ctx *k = arg;
+	(void)layer;
+	kiosk_conf_load_file(k->c, path, k->ns, k->ne);
+}
+
 /* The few kiosk.conf settings that this daemon shares with the kiosk and
- * tsx-idled. Load c->kiosk_conf (default /etc/kiosk.conf) first. Then load
- * the board layer panel-board.conf, as tsx-idled does. If rundir/kiosk.conf
- * exists, layer it on top. `tsx-config apply` writes it from the KIOSK_URL
- * and TZ_NAME overrides of panel.conf. The precedence is the same as in
- * kiosk-session and in backend.py of the voice satellite
- * (_configured_kiosk_url). */
+ * tsx-idled. The layers, a later one wins: the defaults file of the package,
+ * the board layer panel-board.conf, c->kiosk_conf (the user file, default
+ * /etc/kiosk.conf), then rundir/kiosk.conf if it exists. `tsx-config apply`
+ * writes the last one from the KIOSK_URL and TZ_NAME overrides of panel.conf.
+ * The precedence is the same as in kiosk-session, tsx-idled and in backend.py
+ * of the voice satellite (_configured_kiosk_url). */
 static void kiosk_conf_load(struct cfg *c, int *ns, int *ne)
 {
 	char override[PATH_MAX];
+	struct kiosk_ctx k = { c, ns, ne };
 	strcpy(c->kiosk_url, "https://ha.example.org");
 	*ns = 22; *ne = 7;
-	kiosk_conf_load_file(c, c->kiosk_conf, ns, ne);
-	if (strcmp(panel_board, c->kiosk_conf)) kiosk_conf_load_file(c, panel_board, ns, ne);
 	snprintf(override, sizeof override, "%s/kiosk.conf", rundir);
-	if (strcmp(override, c->kiosk_conf)) kiosk_conf_load_file(c, override, ns, ne);
+	tsx_conf_each("kiosk.conf", panel_board, c->kiosk_conf, strcmp(override, c->kiosk_conf) ? override : NULL,
+		      kiosk_conf_layer, &k);
 }
 
 static int find_button(const char *name)
@@ -361,27 +374,26 @@ static void cfg_line(struct cfg *c, char *line, const char *path, int lineno, in
 
 static int clamp_led(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 
+static void buttons_layer(const char *path, int layer, void *arg)
+{
+	FILE *f = fopen(path, "r"); char line[1024]; int lineno = 0;
+	if (!f) return;
+	/* the panel.conf override (tsx-config apply) has settings only */
+	while (fgets(line, sizeof line, f)) cfg_line(arg, line, path, ++lineno, layer == TSX_LAYER_RUN);
+	fclose(f);
+	if (layer == TSX_LAYER_RUN) logm("settings of %s applied", path);
+}
+
+/* The layers, a later one wins: the defaults file of the package, the board
+ * layer (the keys and the LED names of the hardware), cfgfile (the user file:
+ * its `on` lines add to the keys, its settings replace the ones before) and
+ * the panel.conf override (tsx-config apply). */
 static void cfg_load(void)
 {
-	struct cfg c; FILE *f; char line[1024], override[PATH_MAX]; int lineno = 0, ns, ne;
+	struct cfg c; char override[PATH_MAX]; int ns, ne;
 	cfg_defaults(&c);
-	/* the board layer first: the keys and the LED names of the hardware */
-	if ((f = fopen(boardfile, "r"))) {
-		while (fgets(line, sizeof line, f)) cfg_line(&c, line, boardfile, ++lineno, 0);
-		fclose(f);
-		lineno = 0;
-	}
-	if (!(f = fopen(cfgfile, "r"))) logm("no %s, using the board layer and the defaults", cfgfile);
-	while (f && fgets(line, sizeof line, f)) cfg_line(&c, line, cfgfile, ++lineno, 0);
-	if (f) fclose(f);
-	/* the panel.conf override (tsx-config apply): its settings win */
 	snprintf(override, sizeof override, "%s/buttons.conf", rundir);
-	if (strcmp(override, cfgfile) && (f = fopen(override, "r"))) {
-		lineno = 0;
-		while (fgets(line, sizeof line, f)) cfg_line(&c, line, override, ++lineno, 1);
-		fclose(f);
-		logm("settings of %s applied", override);
-	}
+	tsx_conf_each("buttons.conf", boardfile, cfgfile, strcmp(override, cfgfile) ? override : NULL, buttons_layer, &c);
 	kiosk_conf_load(&c, &ns, &ne);
 	if (c.night_start < 0) c.night_start = ns;
 	if (c.night_end < 0) c.night_end = ne;

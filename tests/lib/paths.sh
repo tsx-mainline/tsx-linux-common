@@ -12,3 +12,17 @@ P() {
 	printf '%s\n' "$TSX_ROOT/missing/$1"
 	return 1
 }
+
+# defaults_dir: a folder with a link to each defaults file of the packages
+# (usr/local/share/tsx/defaults/NAME). Tests give it to the programs as
+# TSX_DEFAULTS_DIR, in place of /usr/local/share/tsx/defaults on the panel.
+defaults_dir() {
+	_dd=${TMPDIR:-/tmp}/tsx-test-defaults.$(id -u)
+	mkdir -p "$_dd"
+	for _p in $TSX_PKGS; do
+		for _f in "$TSX_ROOT/$_p"/usr/local/share/tsx/defaults/*; do
+			[ -e "$_f" ] && ln -sf "$_f" "$_dd/$(basename "$_f")"
+		done
+	done
+	printf '%s\n' "$_dd"
+}

@@ -106,15 +106,17 @@ state() { printf 'level 6\nbase 9\noffset -3\noverride 0\n%b' "$1" > $R/brightne
 # the top level, so the highest level of the published curve is the top level.
 printf 'ALS_CURVE="0:2 5:4 20:6 80:8 300:11 1000:20 3000:40"\n' > $T/als.conf
 
-# the top level: BACKLIGHT_MAX of panel-board.conf, then kiosk.conf (both cut at
-# the device limit), then the state of tsx-idled, then the device, then 31
+# the top level: BACKLIGHT_MAX of kiosk.conf (the user file), else of panel-board.conf
+# (both cut at the device limit), then the state of tsx-idled, then the device, then 31
 echo 31 > $T/bl/dev/max_brightness
 state 'max 12\nmin 2\n'
 c=$(curve_of); eq "$(echo "$c" | top_of)" 15 "the top level is BACKLIGHT_MAX of panel-board.conf (the state says 12)"
 eq "$(echo "$c" | first_of)" "0:2" "the lowest level is BACKLIGHT_MIN of panel-board.conf"
 sed -i '/^BACKLIGHT_MAX/d' $T/panel-board.conf; printf 'BACKLIGHT_MAX=14\n' >> $T/kiosk.conf
-c=$(curve_of); eq "$(echo "$c" | top_of)" 14 "no board value: BACKLIGHT_MAX of kiosk.conf"
+c=$(curve_of); eq "$(echo "$c" | top_of)" 14 "no board value: BACKLIGHT_MAX of kiosk.conf (the user file)"
 printf 'BACKLIGHT_MAX=40\n' >> $T/panel-board.conf
+c=$(curve_of); eq "$(echo "$c" | top_of)" 14 "BACKLIGHT_MAX of the user file wins over the board file"
+sed -i 's/^BACKLIGHT_MAX=.*/BACKLIGHT_MAX=40/' $T/kiosk.conf
 c=$(curve_of); eq "$(echo "$c" | top_of)" 31 "BACKLIGHT_MAX above the device limit: the device limit"
 echo 13 > $T/bl/dev/max_brightness
 c=$(curve_of); eq "$(echo "$c" | top_of)" 13 "a lower device limit: the device limit"

@@ -91,7 +91,7 @@ settings in the same way (tsx-ha: no microphone and no Bluetooth module).
 A panel can run with no browser kiosk. A native panel app then owns the
 screen, and the package tsx-kiosk is not installed. The setup.conf key
 TSX_SETUP_KIOSK (auto, on or off) sets the mode. With "auto" (the default),
-the mode is "on" when /etc/kiosk.conf exists. With the mode "off":
+the mode is "on" when the defaults file of kiosk.conf exists. With the mode "off":
 
   * The page has no page URL card, and a save does not need KIOSK_URL. The
     page also hides the fields that only a service of tsx-kiosk reads:
@@ -163,6 +163,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # the real file of this script (the same layout in the repository).
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib", "tsx"))
 import setup_ha_login  # noqa: E402
+# tsx_conf (tsx-base): the layers of the settings files. On the panel it is in
+# /usr/local/lib/tsx. A checkout has it in base/.
+for _lib in (os.environ.get("TSX_BASE_LIB_DIR", "/usr/local/lib/tsx"),
+             os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", "..",
+                          "base", "usr", "local", "lib", "tsx")):
+    if _lib not in sys.path:
+        sys.path.append(_lib)
+import tsx_conf  # noqa: E402
 # tsx_presence (tsx-base): the one rule that maps PRESENCE of hw.conf to a
 # sensor kind (no, tof or pir).
 # On the panel it is in /usr/local/lib/tsx. A checkout has it in base/.
@@ -210,7 +218,7 @@ def load_conf(path):
     return cfg
 
 
-_conf = load_conf(CONF_PATH)
+_conf = tsx_conf.load("setup.conf", CONF_PATH)
 try:
     PORT = int(_conf.get("TSX_SETUP_PORT") or "8080")
 except ValueError:
@@ -241,11 +249,17 @@ if KIOSK_MODE not in ("auto", "on", "off"):
 BASE_KIOSK_ONLY_KEYS = ("KIOSK_URL", "KIOSK_DARK", "BLANK_TIMEOUT")
 
 
+def kiosk_conf_get(key):
+    """KEY from the layers of kiosk.conf (the defaults and /etc/kiosk.conf), or None."""
+    return tsx_conf.get("kiosk.conf", key, KIOSK_CONF_PATH, default=None)
+
+
 def kiosk_enabled():
     """True when the panel runs the browser kiosk: TSX_SETUP_KIOSK=on, or
-    "auto" and /etc/kiosk.conf (the file of tsx-kiosk) exists."""
+    "auto" and the defaults file of kiosk.conf (the package tsx-kiosk installs
+    it) exists. The user file /etc/kiosk.conf can be missing or can stay behind."""
     if KIOSK_MODE == "auto":
-        return os.path.exists(KIOSK_CONF_PATH)
+        return tsx_conf.has_defaults("kiosk.conf")
     return KIOSK_MODE == "on"
 
 
@@ -436,11 +450,11 @@ _configured_cache_lock = threading.Lock()
 def has_url(shown):
     """True if the kiosk has a URL: KIOSK_URL of panel.conf (shown is the
     output of tcfg_show), else the image default that the kiosk falls back
-    to (kiosk-session: /etc/kiosk.conf, then the panel.conf override). An
+    to (kiosk-session: the defaults, /etc/kiosk.conf, then the panel.conf override). An
     install with --kiosk-url and no panel.conf sets the URL only there."""
     v = shown.get("KIOSK_URL")
     if not (v and v.strip()):
-        v = load_conf(KIOSK_CONF_PATH).get("KIOSK_URL")
+        v = kiosk_conf_get("KIOSK_URL")
     return bool(v and v.strip())
 
 
@@ -450,7 +464,7 @@ def ha_url_from(shown):
     panel.conf, else of /etc/kiosk.conf). None when the panel has neither.
     Only the origin counts ("https://ha.example.org:8123")."""
     for v in (shown.get("HA_URL"), shown.get("KIOSK_URL"),
-              load_conf(KIOSK_CONF_PATH).get("KIOSK_URL") if kiosk_enabled() else None):
+              kiosk_conf_get("KIOSK_URL") if kiosk_enabled() else None):
         url = setup_ha_login.normalize_ha_url(v) if v and v.strip() else None
         if url:
             return url
@@ -1497,7 +1511,7 @@ class Handler(BaseHTTPRequestHandler):
                 fields[k] = v
         if kiosk and "KIOSK_DARK" not in fields:
             # not in panel.conf: the page shows the value of /etc/kiosk.conf
-            kd = load_conf(KIOSK_CONF_PATH).get("KIOSK_DARK")
+            kd = kiosk_conf_get("KIOSK_DARK")
             if kd in ("on", "off"):
                 fields["KIOSK_DARK"] = kd
         if not fields.get("ORIENTATION"):

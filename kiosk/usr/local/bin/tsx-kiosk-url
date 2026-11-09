@@ -31,8 +31,11 @@
 # uptime clock together.
 set -u
 cur=${1:-}
+_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}   # tsx-base. A checkout has it in base/.
+[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../../base/usr/local/lib/tsx/conf.sh
+. "$_cs"
 conf=${TSX_SETUP_CONF:-/etc/tsx/setup.conf}
-[ -r "$conf" ] && . "$conf"
+tsx_conf_load setup.conf "$conf"
 : "${TSX_SETUP_PORT:=8080}" "${TSX_SETUP_WINDOW:=900}"
 flag=${TSX_RUN_DIR:-/run/tsx}/setup-open
 open=0

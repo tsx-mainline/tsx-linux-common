@@ -61,6 +61,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
+from . import conf as layered_conf
 from . import hw, throttle
 
 _LOGGER = logging.getLogger("tsx_panel.backend")
@@ -493,14 +494,10 @@ class PanelBackend:
         except (ValueError, IndexError):
             value = None
         if value is None:
-            value = 0
             try:
-                for line in self.buttons_conf.read_text(encoding="utf-8", errors="replace").splitlines():
-                    line = line.strip()
-                    if line.startswith("LED_BLANK="):
-                        value = int(line.split("=", 1)[1].split("#", 1)[0].strip().strip("'\""))
-            except (OSError, ValueError):
-                pass
+                value = int(layered_conf.get("buttons.conf", "LED_BLANK", self.buttons_conf, self.buttons_board_conf) or 0)
+            except ValueError:
+                value = 0
         pending = self._key_led_blank_pending
         if pending and pending[0] != value and time.monotonic() - pending[1] < 10:
             return pending[0]
@@ -522,14 +519,7 @@ class PanelBackend:
         max_brightness of the first backlight device. 31 is the last resort."""
         val = _field(self.run_dir / "brightness.state", "max")
         if not val:
-            for conf in (self.kiosk_conf, self.panel_board_conf):
-                try:
-                    for line in conf.read_text(encoding="utf-8", errors="replace").splitlines():
-                        line = line.strip()
-                        if line.startswith("BACKLIGHT_MAX="):
-                            val = line.split("=", 1)[1].split("#", 1)[0].strip()
-                except OSError:
-                    pass
+            val = layered_conf.get("kiosk.conf", "BACKLIGHT_MAX", self.kiosk_conf, self.panel_board_conf)
         if not val:
             try:
                 for dev in sorted(self.backlight_dir.iterdir()):
@@ -850,14 +840,7 @@ class PanelBackend:
 
     # ---- blank timeout (tsx-idled) ------------------------------------------
     def _kiosk_conf_int(self, key: str, default: int) -> int:
-        val = None
-        try:
-            for line in self.kiosk_conf.read_text(encoding="utf-8", errors="replace").splitlines():
-                line = line.strip()
-                if line.startswith(key + "="):
-                    val = line.split("=", 1)[1].split("#", 1)[0].strip().strip("'\"")
-        except OSError:
-            pass
+        val = layered_conf.get("kiosk.conf", key, self.kiosk_conf)
         try:
             return int(val) if val else default
         except ValueError:
@@ -969,19 +952,9 @@ class PanelBackend:
     def _configured_kiosk_url(self) -> str:
         """KIOSK_URL as the kiosk session reads it: tsx-config's override
         (run_dir/kiosk.conf, world-readable, written by `tsx-config apply`)
-        wins over /etc/kiosk.conf. panel.conf itself is root-only, so the
+        wins over /etc/kiosk.conf, which wins over the package defaults. panel.conf itself is root-only, so the
         voice satellite's plugin (kiosk user) could not read it."""
-        url = ""
-        for path in (self.kiosk_conf, self.run_dir / "kiosk.conf"):
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for line in text.splitlines():
-                line = line.strip()
-                if line.startswith("KIOSK_URL="):
-                    url = line.split("=", 1)[1].strip().strip("'\"")
-        return url
+        return layered_conf.get("kiosk.conf", "KIOSK_URL", self.kiosk_conf, None, self.run_dir / "kiosk.conf")
 
     def get_kiosk_url(self) -> str:
         """The CONFIGURED start URL, not the page the browser shows right

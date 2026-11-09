@@ -15,6 +15,7 @@ set -uo pipefail
 export TSX_VOLUME_CMD="tsx-audio volume"
 . "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
+export TSX_CONF_SH="$HERE/../base/usr/local/lib/tsx/conf.sh"   # the init script runs from a cut-out file
 SCRIPT="$HERE/../base/usr/local/sbin/tsx-panelctl"
 INIT="$HERE/../sendspin/etc/init.d/tsx-sendspin"
 FAKE="$HERE/fake-sendspin.py"

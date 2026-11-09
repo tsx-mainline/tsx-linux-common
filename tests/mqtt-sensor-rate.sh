@@ -9,6 +9,8 @@ set -eu
 . "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$(dirname "$0")/lib/paths.sh"
+export TSX_DEFAULTS_DIR=$(defaults_dir)   # the defaults of the packages, as on the panel
+export TSX_CONF_SH=$(P usr/local/lib/tsx/conf.sh)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/run" "$T/bl/x"
 cat > "$T/bin/tsx-panelctl" <<'EOF'
@@ -28,7 +30,7 @@ now() { echo "$1" > "$T/now"; }
 step() { sleep 0.35; }   # the dry run takes a line when it is there. The pause keeps the state files and the ticks in order
 run() { # run OUT: the input comes from stdin
 	PATH=$T/bin:$PATH TSX_MQTT_DRY=1 TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled \
-		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl \
 		TSX_PROC_UPTIME=$T/uptime TSX_MQTT_NOW_FILE=$T/now TSX_ALS_CONF=$T/none \
 		sh "$(P usr/local/sbin/tsx-mqtt)" > "$1" 2>&1
 }

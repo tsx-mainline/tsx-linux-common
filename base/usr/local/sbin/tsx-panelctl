@@ -140,7 +140,8 @@
 # Dark mode: the browser kiosk shows pages in the dark color scheme (panel.conf
 # KIOSK_DARK, see tsx-config). "get dark-mode" prints on or off: the value
 # of $R/kiosk.conf (tsx-config apply), else KIOSK_DARK of /etc/kiosk.conf, else
-# off. It fails on a panel with no kiosk (no /etc/kiosk.conf) and while the
+# the default (off). It fails on a panel with no kiosk (no defaults file of
+# kiosk.conf, which the package tsx-kiosk installs) and while the
 # panel app owns the screen. The command "dark-mode on|off" saves KIOSK_DARK
 # in panel.conf (tsx-config set and apply). It restarts the kiosk when the
 # value changes, because the browser reads the flags at its start.
@@ -268,7 +269,10 @@ BUTTONS_BOARD_CONF=${TSX_BUTTONS_BOARD_CONF:-/etc/tsx/buttons-board.conf}
 ALS_CONF=${TSX_ALS_CONF:-/etc/tsx/als.conf}
 ASOUND=${TSX_ASOUND_DIR:-/proc/asound}
 BL_DIR=${TSX_BACKLIGHT_DIR:-/sys/class/backlight}
-KIOSK_CONF=${TSX_KIOSK_CONF:-/etc/kiosk.conf}
+KIOSK_CONF=${TSX_KIOSK_CONF:-/etc/kiosk.conf}   # the user file. The defaults file is next to the other package files
+_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}
+[ -r "$_cs" ] || _cs=$(dirname "$0")/../lib/tsx/conf.sh
+. "$_cs"
 PA_STATE=${TSX_PANEL_APP_STATE:-$R/panel-app.state}
 PA_RUN=${TSX_PANEL_APP_RUN:-$R/panel-app}
 PROC=${TSX_PROC_DIR:-/proc}
@@ -406,17 +410,16 @@ layout_install() {
 	log "layout-install $1: rc $li_rc"
 }
 
-# kiosk_conf_get KEY [FILE]: the last value of KEY in kiosk.conf (or FILE),
-# without quotes
+# kiosk_conf_get KEY: the last value of KEY in the layers of kiosk.conf (the
+# package defaults, the user file, the override of tsx-config apply), without quotes
 kiosk_conf_get() {
-	sed -n "s/^$1=//p" "${2:-$KIOSK_CONF}" 2>/dev/null | tail -n 1 | sed "s/[[:space:]]*#.*//; s/^[\"']//; s/[\"']\$//"
+	tsx_conf_get kiosk.conf "$1" "$KIOSK_CONF" "" "$R/kiosk.conf"
 }
 
 # kiosk_dark_get: on or off. The override of tsx-config apply wins over
 # /etc/kiosk.conf. Any other word counts as off, as in kiosk-session.
 kiosk_dark_get() {
-	kd=$(kiosk_conf_get KIOSK_DARK "$R/kiosk.conf")
-	[ -n "$kd" ] || kd=$(kiosk_conf_get KIOSK_DARK)
+	kd=$(kiosk_conf_get KIOSK_DARK)
 	if [ "$kd" = on ]; then echo on; else echo off; fi
 }
 
@@ -598,7 +601,7 @@ has_hw() {
 	panel-app) panel_app_up;;
 	lights) panel_app_up && [ -n "$(field "$PA_RUN/screen.state" lights)" ];;
 	# the kiosk browser: the file of tsx-kiosk exists, and the panel app has not taken the screen
-	dark-mode) [ -r "$KIOSK_CONF" ] && ! panel_app_up;;
+	dark-mode) [ -r "$(tsx_conf_defaults kiosk.conf)" ] && ! panel_app_up;;   # the defaults file: tsx-kiosk is installed
 	*) echo "tsx-panelctl: unknown hardware '$1'" >&2; return 2;;
 	esac
 }

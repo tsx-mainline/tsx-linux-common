@@ -16,8 +16,10 @@ retry="TERM/5/KILL/5"
 depend() { need net; after tsx-idled tsx-buttons tsx-ledbar; }
 start() {
 	# not configured: nothing to run, but do not fail the runlevel
-	BROKER=; [ -r /etc/tsx/mqtt.conf ] && . /etc/tsx/mqtt.conf
-	[ -r /run/tsx/mqtt.conf ] && . /run/tsx/mqtt.conf   # panel.conf MQTT_* (tsx-config apply)
+	_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}   # tsx-base. A checkout has it in base/.
+	[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../base/usr/local/lib/tsx/conf.sh
+	. "$_cs"
+	BROKER=; tsx_conf_load mqtt.conf /etc/tsx/mqtt.conf "" /run/tsx/mqtt.conf   # the last one: panel.conf MQTT_* (tsx-config apply)
 	if [ -z "$BROKER" ]; then
 		einfo "tsx-mqtt: BROKER not set in /etc/tsx/mqtt.conf, not started"
 		return 0

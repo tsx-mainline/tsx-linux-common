@@ -85,9 +85,11 @@
  *  "override V" (0 = none), "max M", "blank_timeout T") and last-input
  *  (epoch seconds of the last real input event, at most once per second).
  *
- * Config: shell-style KEY=VALUE files, read in the order of the -c options
- * (default /etc/kiosk.conf). A later file wins. A file that is missing after the
- * first one is no error: the board file /etc/tsx/panel-board.conf is optional.
+ * Config: shell-style KEY=VALUE files. The order, a later file wins: the
+ * defaults file of the package (kiosk.conf in /usr/local/share/tsx/defaults),
+ * the board file /etc/tsx/panel-board.conf, the first -c option (the user
+ * file, default /etc/kiosk.conf), then more -c options. A missing file is no
+ * error. The user file holds only the keys that the user changed.
  * ALS_WATCH=1 makes a change of als-level apply at once (for a light sensor
  * service that writes the file only when the level changes).
  * Env overrides for testing: TSX_INPUT_DIR, TSX_BACKLIGHT_DIR, TSX_STATE_FILE,
@@ -114,6 +116,7 @@
 #include <unistd.h>
 
 #include "tsx-level.h"
+#include "../../base/src/tsx-conf.h"
 
 #define MAXDEV 32
 
@@ -142,6 +145,7 @@ struct cfg {
 static struct cfg C;
 #define MAXCFG 4
 static const char *cfgfiles[MAXCFG] = { "/etc/kiosk.conf" };
+static const char *boardfile = "/etc/tsx/panel-board.conf";   /* TSX_PANEL_BOARD_CONF replaces it */
 static int ncfg = 1;
 static const char *indir = "/dev/input";
 static const char *statefile = "/run/tsx-idled.state";
@@ -201,11 +205,11 @@ static void cfg_defaults(struct cfg *c)
 	c->disp_timeout_ms = 3000;
 }
 
-static void cfg_parse(struct cfg *c, const char *cfgfile, int first)
+static void cfg_parse(struct cfg *c, const char *cfgfile)
 {
 	FILE *f = fopen(cfgfile, "r");
 	char line[512];
-	if (!f) { if (first) logm("no %s, using defaults", cfgfile); return; }
+	if (!f) return;   /* a layer can be missing: the user file holds only the keys that the user changed */
 	while (fgets(line, sizeof line, f)) {
 		char *p = line, *eq, *v, *e;
 		while (isspace((unsigned char)*p)) p++;
@@ -244,10 +248,19 @@ static void cfg_parse(struct cfg *c, const char *cfgfile, int first)
 	fclose(f);
 }
 
+static void cfg_layer(const char *path, int layer, void *arg)
+{
+	(void)layer;
+	cfg_parse(arg, path);
+}
+
+/* The layers, a later one wins: the defaults file of the package, the board
+ * file, the first -c file (the user file), then more -c files. */
 static void cfg_load(struct cfg *c)
 {
 	cfg_defaults(c);
-	for (int i = 0; i < ncfg; i++) cfg_parse(c, cfgfiles[i], i == 0);
+	tsx_conf_each("kiosk.conf", boardfile, cfgfiles[0], NULL, cfg_layer, c);
+	for (int i = 1; i < ncfg; i++) cfg_parse(c, cfgfiles[i]);
 }
 
 static int read_int(const char *dir, const char *name)
@@ -754,6 +767,7 @@ int main(int argc, char **argv)
 		else if (opt == 'v') verbose = 1;
 		else { fprintf(stderr, "usage: %s [-c config]... [-v]\n", argv[0]); return 2; }
 	}
+	if (getenv("TSX_PANEL_BOARD_CONF")) boardfile = getenv("TSX_PANEL_BOARD_CONF");
 	if (getenv("TSX_INPUT_DIR")) indir = getenv("TSX_INPUT_DIR");
 	if (getenv("TSX_STATE_FILE")) statefile = getenv("TSX_STATE_FILE");
 	if (getenv("TSX_RUN_DIR")) ovrdir = getenv("TSX_RUN_DIR");

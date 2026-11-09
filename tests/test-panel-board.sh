@@ -1,6 +1,7 @@
 #!/bin/bash
-# Host test: the board layer of kiosk.conf in kiosk-session and in the kiosk
-# service. The order is /etc/kiosk.conf, /etc/tsx/panel-board.conf, then
+# Host test: the layers of kiosk.conf in kiosk-session and in the kiosk
+# service. The order, a later layer wins: the package defaults, the board file
+# /etc/tsx/panel-board.conf, the user file /etc/kiosk.conf, then
 # /run/tsx/kiosk.conf (panel.conf). It runs the head of the real scripts with
 # the file paths moved into a temporary directory. It needs no panel and no
 # compiler.
@@ -15,7 +16,7 @@ bad() { F=$((F + 1)); echo "  FAIL: $*"; }
 eq() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (got '$1', want '$2')"; fi; }
 KS=$(P usr/local/bin/kiosk-session)
 KSVC=$(P etc/init.d/kiosk)
-KCONF=$(P etc/kiosk.conf)
+export TSX_DEFAULTS_DIR=$(defaults_dir) TSX_CONF_SH=$(P usr/local/lib/tsx/conf.sh)
 mkdir -p "$T/etc/tsx" "$T/run"
 
 # The head of kiosk-session, up to the three config files and the defaults.
@@ -27,11 +28,10 @@ sed -n '1,/^ROLE=/p' "$KS" | grep -v 'tsx-kiosk-url' \
 grep -q "$T/etc/tsx/panel-board.conf" "$T/head.sh" && ok "kiosk-session reads panel-board.conf" || bad "kiosk-session does not read panel-board.conf"
 
 show() { # prints the values of the layers
-	env -i PATH="$PATH" sh -c ". '$T/head.sh'; echo \"gpu=\$KIOSK_GPU max=\${BACKLIGHT_MAX:-} day=\${BRIGHTNESS_DAY:-} gov=\${CPUFREQ_AWAKE:-} ovl=\${OVERLAY_GESTURE:-}\"" 2>&1; }
+	env -i PATH="$PATH" TSX_DEFAULTS_DIR="$TSX_DEFAULTS_DIR" TSX_CONF_SH="$TSX_CONF_SH" sh -c ". '$T/head.sh'; echo \"gpu=\$KIOSK_GPU max=\${BACKLIGHT_MAX:-} day=\${BRIGHTNESS_DAY:-} gov=\${CPUFREQ_AWAKE:-} ovl=\${OVERLAY_GESTURE:-}\"" 2>&1; }
 
-cp "$KCONF" "$T/etc/kiosk.conf"
-rm -f "$T/etc/tsx/panel-board.conf" "$T/run/kiosk.conf"
-eq "$(show)" "gpu=auto max= day= gov=off ovl=fivefinger" "no board file: the neutral values of kiosk.conf"
+rm -f "$T/etc/kiosk.conf" "$T/etc/tsx/panel-board.conf" "$T/run/kiosk.conf"
+eq "$(show)" "gpu=auto max= day= gov=off ovl=fivefinger" "no user file and no board file: the neutral values of the defaults"
 
 # The made-up board of tests/boards/fake. The family tests check the values of
 # a real board file.
@@ -44,19 +44,23 @@ eq "$(show)" "gpu=off max=15 day=5 gov=ondemand ovl=fivefinger" "panel.conf (/ru
 rm -f "$T/run/kiosk.conf"
 
 printf 'KIOSK_GPU=on\n' > "$T/etc/tsx/panel-board.conf"
-eq "$(show)" "gpu=on max= day= gov=off ovl=fivefinger" "the board file wins over kiosk.conf"
+eq "$(show)" "gpu=on max= day= gov=off ovl=fivefinger" "the board file wins over the defaults"
+printf 'KIOSK_GPU=off\n' > "$T/etc/kiosk.conf"
+eq "$(show)" "gpu=off max= day= gov=off ovl=fivefinger" "the user file /etc/kiosk.conf wins over the board file"
+printf 'KIOSK_GPU=compositor\n' > "$T/run/kiosk.conf"
+eq "$(show)" "gpu=compositor max= day= gov=off ovl=fivefinger" "/run/tsx/kiosk.conf wins over the user file"
+rm -f "$T/run/kiosk.conf" "$T/etc/kiosk.conf"
 printf 'OVERLAY_GESTURE=off\n' > "$T/etc/tsx/panel-board.conf"
 eq "$(show)" "gpu=auto max= day= gov=off ovl=off" "a board file can turn the five-finger tap off"
 
 # The kiosk service reads the same layers in the same order.
-l1=$(grep -n '^[[:space:]]*\. /etc/kiosk.conf' "$KSVC" | head -n 1 | cut -d: -f1)
-l2=$(grep -n 'panel-board.conf' "$KSVC" | head -n 1 | cut -d: -f1)
-l3=$(grep -n '/run/tsx/kiosk.conf' "$KSVC" | head -n 1 | cut -d: -f1)
-[ -n "$l1" ] && [ -n "$l2" ] && [ -n "$l3" ] && [ "$l1" -lt "$l2" ] && [ "$l2" -lt "$l3" ] \
-	&& ok "the kiosk service reads kiosk.conf, panel-board.conf, then panel.conf" || bad "kiosk service order: $l1 $l2 $l3"
-# tsx-idled reads the board file as the second config file.
-grep -q 'command_args="-c /etc/kiosk.conf -c /etc/tsx/panel-board.conf"' "$(P etc/init.d/tsx-idled)" \
-	&& ok "tsx-idled gets kiosk.conf and panel-board.conf" || bad "tsx-idled init: no board file"
+# The call is tsx_conf_load NAME USER BOARD RUN, so the order is the one above.
+want='tsx_conf_load kiosk.conf /etc/kiosk.conf /etc/tsx/panel-board.conf /run/tsx/kiosk.conf'
+grep -q "$want" "$KSVC" && ok "the kiosk service reads the layers in the same order" || bad "kiosk service layers"
+grep -q "$want" "$KS" && ok "kiosk-session reads the layers in the same order" || bad "kiosk-session layers"
+# tsx-idled adds the defaults and the board file itself (kiosk/src/tsx-idled.c).
+grep -q 'command_args="-c /etc/kiosk.conf"' "$(P etc/init.d/tsx-idled)" \
+	&& ok "tsx-idled gets the user file kiosk.conf" || bad "tsx-idled init: other options"
 
 echo "== $N ok, $F failed =="
 [ "$F" = 0 ]

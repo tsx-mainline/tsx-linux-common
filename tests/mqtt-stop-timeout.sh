@@ -10,6 +10,8 @@ set -eu
 . "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$(dirname "$0")/lib/paths.sh"
+export TSX_DEFAULTS_DIR=$(defaults_dir)   # the defaults of the packages, as on the panel
+export TSX_CONF_SH=$(P usr/local/lib/tsx/conf.sh)
 T=$(mktemp -d); trap 'rc=$?; kill "${DAEMON:-}" 2>/dev/null || true; rm -rf "$T"; exit $rc' EXIT
 mkdir -p "$T/bin" "$T/run" "$T/bl/x" "$T/none"
 : > "$T/children.pids"
@@ -34,7 +36,7 @@ printf 'BROKER=192.0.2.1\nNODE_ID=tsx-stoptest\n' > "$T/mqtt.conf"
 # Long PUBTO on purpose: this proves the stop trap itself kills the stuck
 # publisher (process-group kill) rather than just waiting out a short bound.
 PATH="$T/bin:$PATH" TSX_MQTT_CONF="$T/mqtt.conf" TSX_RUN_DIR="$T/run" TSX_IDLED_STATE="$T/idled" \
-	TSX_BUTTONS_CONF="$(P etc/tsx/buttons.conf)" TSX_KIOSK_CONF="$(P etc/kiosk.conf)" TSX_BACKLIGHT_DIR="$T/bl" \
+	TSX_BUTTONS_CONF="$T/none" TSX_KIOSK_CONF="$T/none" TSX_BACKLIGHT_DIR="$T/bl" \
 	TSX_ALS_CONF="$T/none/als.conf" TSX_ASOUND_DIR="$T/none" TSX_MQTT_PUB_TIMEOUT=60 \
 	sh "$(P usr/local/sbin/tsx-mqtt)" > "$T/daemon.log" 2>&1 &
 DAEMON=$!

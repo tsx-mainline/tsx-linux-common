@@ -75,6 +75,7 @@ printf 'level 17\nmax 23\nmin 1\n' > "$F/run/tsx/brightness.state"
 cat > "$F/run/tsx/update-ha-state.json" <<'EOF'
 {"installed_version":"abc123","latest_version":"abc123+1pending","title":"TSX test-panel packages","release_summary":"pkg1 (1.0 -> 1.1)","in_progress":false,"restart_required":true,"mode":"manual","auto_restart":false}
 EOF
+mkdir -p "$F/defaults"; : > "$F/defaults/kiosk.conf"   # the package tsx-kiosk is there
 cat > "$F/etc/kiosk.conf" <<'EOF'
 BACKLIGHT_MAX=23
 KIOSK_URL="https://ha.example.org/default"
@@ -146,7 +147,7 @@ chmod +x "$F/bin/reboot" "$F/bin/amixer" "$F/bin/tsx-panelctl"
 env PATH="$F/bin:$PATH" TSX_RUN_DIR="$F/run/tsx" TSX_REBOOT_BIN="$F/bin/reboot" TSX_IDLED_STATE="$F/run/tsx-idled.state" \
 	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf" TSX_BUTTONS_BOARD_CONF="$F/etc/tsx/buttons-board.conf.missing" \
 	TSX_ALS_CONF="$F/etc/tsx/als.conf.missing" TSX_ASOUND_DIR="$F/proc/asound" \
-	TSX_KIOSK_CONF="$F/etc/kiosk.conf" TSX_RC_SERVICE="$F/bin/rc-service" \
+	TSX_KIOSK_CONF="$F/etc/kiosk.conf" TSX_DEFAULTS_DIR="$F/defaults" TSX_RC_SERVICE="$F/bin/rc-service" \
 	sh "$HERE/../base/usr/local/sbin/tsx-panelctl" > "$T/panelctl.log" 2>&1 &
 PIDS="$PIDS $!"
 for _ in $(seq 1 30); do grep -q "listening on" "$T/panelctl.log" 2>/dev/null && break; sleep 0.1; done
@@ -181,7 +182,7 @@ start_server() {
 	PYTHONPATH="$SHIM:$LVA_SRC" \
 	TSX_RUN_DIR="$F/run/tsx" TSX_IDLED_STATE="$F/run/tsx-idled.state" \
 	TSX_BUTTONS_CONF="$F/etc/tsx/buttons.conf" TSX_BUTTONS_BOARD_CONF="$F/etc/tsx/buttons-board.conf.missing" \
-	TSX_KIOSK_CONF="$F/etc/kiosk.conf" \
+	TSX_KIOSK_CONF="$F/etc/kiosk.conf" TSX_DEFAULTS_DIR="$F/defaults" \
 	TSX_ALS_CONF="$F/etc/tsx/als.conf.missing" TSX_ASOUND_DIR="$F/proc/asound" \
 	TSX_THERMAL_ZONE="$F/sys/thermal/temp" TSX_DEVTOOLS="127.0.0.1:$DT_HTTP" \
 	TSX_BOOT_VERBOSE_FLAG="$F/etc/tsx/boot-verbose" \

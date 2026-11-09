@@ -17,6 +17,8 @@ set -u
 . "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$(dirname "$0")/lib/paths.sh"
+export TSX_DEFAULTS_DIR=$(defaults_dir)   # the defaults of the packages, as on the panel
+export TSX_CONF_SH=$(P usr/local/lib/tsx/conf.sh)
 T=$(mktemp -d)
 DPID=
 cleanup() { [ -n "$DPID" ] && kill "$DPID" 2>/dev/null; wait 2>/dev/null; rm -rf "$T"; }
@@ -53,7 +55,7 @@ start() {
 	[ "${1:-NOFILE}" = NOFILE ] || printf '%b' "$1" > "$T/run/ledbar.usb"
 	[ -z "${2:-}" ] || printf '%b' "$2" > "$T/run/hw.conf"
 	PATH=$T/bin:$PATH TSX_MQTT_CONF=$T/mqtt.conf TSX_RUN_DIR=$T/run TSX_IDLED_STATE=$T/idled \
-		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$(P etc/kiosk.conf) TSX_BACKLIGHT_DIR=$T/bl \
+		TSX_BUTTONS_CONF=$T/none TSX_BUTTONS_BOARD_CONF=$T/none TSX_KIOSK_CONF=$T/none TSX_BACKLIGHT_DIR=$T/bl \
 		TSX_ALS_CONF=$T/none/als.conf TSX_ASOUND_DIR=$T/none TSX_MQTT_PUB_TIMEOUT=5 \
 		sh "$(P usr/local/sbin/tsx-mqtt)" > "$T/log" 2>&1 &
 	DPID=$!

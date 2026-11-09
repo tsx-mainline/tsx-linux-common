@@ -79,6 +79,9 @@
 # plug-in). The wait is read -t on a FIFO that the service holds open, so it
 # starts no process (a sleep started 60 processes a minute).
 CONF=${TSX_LEDBAR_CONF:-/etc/tsx/ledbar.conf}
+_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}   # tsx-base. A checkout has it in base/.
+[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../../base/usr/local/lib/tsx/conf.sh
+. "$_cs"
 USB=${TSX_USB_SYSFS:-/sys/bus/usb/devices}
 LED=${TSX_LEDBAR_SYSFS:-/sys/class/leds/tsx:rgb:bar}
 DRIVER=${TSX_LEDBAR_DRIVER:-/sys/bus/usb/drivers/leds-crestron-stm32}
@@ -111,15 +114,21 @@ nap() {
 	sleep "$1"
 }
 
+# conf_val KEY: the value of KEY in ledbar.conf, the package defaults and then
+# the user file
+conf_val() {
+	tsx_conf_get ledbar.conf "$1" "$CONF"
+}
+
 # conf_num KEY: the number of KEY in ledbar.conf, empty when not set
 conf_num() {
-	sed -n "s/^$1=[\"]*\([0-9]*\).*/\1/p" "$CONF" 2>/dev/null | tail -n 1
+	conf_val "$1" | sed -n 's/^\([0-9]*\).*/\1/p'
 }
 
 # conf_word KEY: the value of KEY in ledbar.conf (letters, digits and "-"
 # only), empty when not set
 conf_word() {
-	sed -n "s/^$1=[\"']*\([A-Za-z0-9-]*\).*/\1/p" "$CONF" 2>/dev/null | tail -n 1
+	conf_val "$1" | sed -n 's/^\([A-Za-z0-9-]*\).*/\1/p'
 }
 
 # panel_model: the model of this panel, empty when not known. tsx-hostname

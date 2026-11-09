@@ -37,8 +37,10 @@ start_pre() {
 		ewarn "no $TSX_SOUND_CARD sound card (audio not brought up yet)"
 	SENDSPIN_NAME= SENDSPIN_ID= SENDSPIN_OUTPUT=alsa:media SENDSPIN_FORMATS= SENDSPIN_BUFFER_MS=300
 	SENDSPIN_STATIC_DELAY=0 SENDSPIN_SERVER= SENDSPIN_ARGS=
-	[ -r /etc/tsx/sendspin.conf ] && . /etc/tsx/sendspin.conf
-	[ -r /run/tsx/sendspin.conf ] && . /run/tsx/sendspin.conf   # panel.conf PANEL_NAME (tsx-config apply)
+	_cs=${TSX_CONF_SH:-/usr/local/lib/tsx/conf.sh}   # tsx-base. A checkout has it in base/.
+	[ -r "$_cs" ] || _cs=$(dirname "$0")/../../../base/usr/local/lib/tsx/conf.sh
+	. "$_cs"
+	tsx_conf_load sendspin.conf /etc/tsx/sendspin.conf "" /run/tsx/sendspin.conf   # the last one: panel.conf PANEL_NAME (tsx-config apply)
 	checkpath -d -m 0755 -o "$command_user" "$SENDSPIN_RUN"
 	checkpath -d -m 0755 -o "$command_user" /var/lib/sendspin
 	# Up to 0.3.4 the player ran as the user kiosk. Its state file (the client
