@@ -1,7 +1,7 @@
 #!/bin/sh
 # tsx-conf-migrate: move a settings file to the split layout.
 #
-#   tsx-conf-migrate [--backup-dir DIR] NAME...
+#   tsx-conf-migrate [--backup-dir DIR] [--old-dir DIR] NAME...
 #   tsx-conf-migrate --init NAME...
 #
 # NAME is the basename of a settings file, for example kiosk.conf. Each
@@ -16,7 +16,13 @@
 # /var/lib/tsx/conf-migrate). For each NAME, this tool takes the file from DIR
 # (else the file in /etc) and writes the user file with only the lines that
 # differ from the defaults:
-#   - A key with the value of the defaults is left out.
+#   - A key with the value of the new defaults is left out.
+#   - A key that still has the value of the OLD default is left out too. The
+#     old defaults are the full files of the earlier releases in OLD_DIR
+#     (default $TSX_DEFAULTS_DIR/pre-split/NAME/*.conf, made by
+#     ci/gen-pre-split.sh). The tool picks the old file that is closest to the
+#     old copy of the user, and writes one line to stderr with its name. Without
+#     old files, or when the copy is already short, only the new defaults count.
 #   - A line that is not KEY=value (for example a `button` or `on` line of
 #     buttons.conf) stays, in the same order, unless the defaults have the line.
 #   - A comment that the user added stays when it is directly above a line that
@@ -36,6 +42,7 @@ set -u
 DEFAULTS=${TSX_DEFAULTS_DIR:-/usr/local/share/tsx/defaults}
 ETC=${TSX_ETC_DIR:-/etc}
 BACKUP=/var/lib/tsx/conf-migrate
+OLD_DIR=
 INIT=0
 rc=0
 
@@ -89,6 +96,13 @@ trim() {
 		else if (strip(l) != "") dline[strip(l)] = 1
 		next
 	}
+	FILENAME == ofile {
+		l = $0
+		if (l ~ /^[ \t]*#/) { dcomment[strip(l)] = 1 }
+		else if (isassign(l)) { k = substr(l, 1, index(l, "=") - 1); oval[k] = norm(substr(l, index(l, "=") + 1)) }
+		else if (strip(l) != "") oline[strip(l)] = 1
+		next
+	}
 	FILENAME == hfile { dcomment[strip($0)] = 1; next }
 	{ line[++n] = $0 }
 	END {
@@ -114,14 +128,46 @@ trim() {
 				k = substr(l, 1, index(l, "=") - 1); v = norm(substr(l, index(l, "=") + 1))
 				if (dyn[k]) keep = 1
 				else if (last[k] != i) keep = 0
-				else if (!(k in dval) || dval[k] != v) keep = 1
-			} else if (!(s in dline)) keep = 1
+				else if ((!(k in dval) || dval[k] != v) && (!(k in oval) || oval[k] != v)) keep = 1
+			} else if (!(s in dline) && !(s in oline)) keep = 1
 			if (keep) { for (j = 1; j <= np; j++) print pc[j]; print l; np = 0 }
 			else if (np > 0) { drop = 1; np = 0 }
 		}
 		if (np > 0) drop = 1
 		if (drop) print "dropped" > flag
-	}' dfile="$1" hfile="$2" "$1" "$2" "$3"
+	}' dfile="$1" hfile="$2" ofile="$4" "$1" "$4" "$2" "$3"
+}
+
+# score OLDFILE SRC: how far OLDFILE is from SRC: the keys with another value,
+# plus the lines that are not KEY=value and are in only one of the files
+score() {
+	awk '
+	function norm(v,   q, e) {
+		sub(/^[ \t]+/, "", v); q = substr(v, 1, 1)
+		if (q == "\"" || q == sq) { e = index(substr(v, 2), q); if (e > 0) return substr(v, 2, e - 1) }
+		sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v); return v
+	}
+	function strip(l) { sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l); return l }
+	FILENAME == ofile { w = 1 } FILENAME != ofile { w = 2 }
+	/^[ \t]*#/ || /^[ \t]*$/ { next }
+	/^[A-Za-z_][A-Za-z0-9_]*=/ { k = substr($0, 1, index($0, "=") - 1); val[w, k] = norm(substr($0, index($0, "=") + 1)); keys[k] = 1; next }
+	{ ln[w, strip($0)] = 1; lines[strip($0)] = 1 }
+	END {
+		for (k in keys) if (((1, k) in val) != ((2, k) in val) || val[1, k] != val[2, k]) n++
+		for (l in lines) if (((1, l) in ln) != ((2, l) in ln)) n++
+		print n + 0
+	}' sq="'" ofile="$1" "$1" "$2"
+}
+
+# closest NAME SRC: print "score path" of the old file that is closest to SRC
+closest() {
+	_c_best= _c_bs=
+	for _c_f in "$OLD_DIR/$1"/*.conf; do
+		[ -r "$_c_f" ] || continue
+		_c_s=$(score "$_c_f" "$2")
+		if [ -z "$_c_bs" ] || [ "$_c_s" -lt "$_c_bs" ]; then _c_bs=$_c_s _c_best=$_c_f; fi
+	done
+	[ -z "$_c_best" ] || echo "$_c_bs $_c_best"
 }
 
 migrate() {
@@ -149,7 +195,16 @@ migrate() {
 	HDR=$(mktemp) || return 1
 	header "$_m_user" "$_m_name" > "$HDR"
 	: > "$FLAG"
-	_m_body=$(trim "$_m_def" "$HDR" "$_m_src"; echo x) || true
+	_m_old=/dev/null
+	# a copy that is already short (our header) has no old defaults to compare with
+	if ! head -n 1 "$_m_src" | grep -q ': your changes to the settings in '; then
+		_m_best=$(closest "$_m_name" "$_m_src")
+		if [ -n "$_m_best" ]; then
+			_m_old=${_m_best#* }
+			say "$_m_name: the old file $(basename "$_m_old") is the closest (${_m_best%% *} differences)"
+		fi
+	fi
+	_m_body=$(trim "$_m_def" "$HDR" "$_m_src" "$_m_old"; echo x) || true
 	_m_body=${_m_body%x}
 	_m_flags=$(cat "$FLAG"); rm -f "$FLAG" "$HDR"
 	case $_m_flags in
@@ -172,13 +227,15 @@ names=
 while [ $# -gt 0 ]; do
 	case $1 in
 	--backup-dir) [ $# -ge 2 ] || { say "--backup-dir needs a folder"; exit 2; }; BACKUP=$2; shift 2;;
+	--old-dir) [ $# -ge 2 ] || { say "--old-dir needs a folder"; exit 2; }; OLD_DIR=$2; shift 2;;
 	--init) INIT=1; shift;;
-	-h|--help) sed -n '2,36p' "$0"; exit 0;;
+	-h|--help) sed -n '2,44p' "$0"; exit 0;;
 	-*) say "unknown option $1"; exit 2;;
 	*/*|'') say "NAME is a basename, for example kiosk.conf: $1"; exit 2;;
 	*) names="$names $1"; shift;;
 	esac
 done
+[ -n "$OLD_DIR" ] || OLD_DIR=$DEFAULTS/pre-split
 [ -n "$names" ] || { say "usage: tsx-conf-migrate [--backup-dir DIR] NAME... | --init NAME..."; exit 2; }
 for n in $names; do migrate "$n" || rc=1; done
 exit $rc

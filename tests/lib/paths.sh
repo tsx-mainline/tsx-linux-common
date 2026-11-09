@@ -21,7 +21,7 @@ defaults_dir() {
 	mkdir -p "$_dd"
 	for _p in $TSX_PKGS; do
 		for _f in "$TSX_ROOT/$_p"/usr/local/share/tsx/defaults/*; do
-			[ -e "$_f" ] && ln -sf "$_f" "$_dd/$(basename "$_f")"
+			[ -e "$_f" ] && ln -sfn "$_f" "$_dd/$(basename "$_f")"
 		done
 	done
 	printf '%s\n' "$_dd"

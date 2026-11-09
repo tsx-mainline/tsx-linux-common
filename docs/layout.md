@@ -196,7 +196,7 @@ tsx_conf_get kiosk.conf KIOSK_URL /etc/kiosk.conf /etc/tsx/panel-board.conf /run
 
 The readers share one loader for each language: `conf.sh` (shell), `tsx_conf.py` (Python) and `tsx-conf.h` (C, in `base/src`). They use the folder `TSX_DEFAULTS_DIR` when it is set. The variables that name a user file, for example `TSX_KIOSK_CONF`, `TSX_BUTTONS_CONF` and `tsx-idled -c`, still name the user file.
 
-An upgrade from a package that installed the full file in `/etc` needs one step. `tsx-conf-migrate [--backup-dir DIR] NAME...` reads the old full file and writes the user file with only the lines that differ from the defaults. It removes a leftover `.apk-new` file. If it drops a comment that you added, it saves the old file as `NAME.pre-split`. A second run gives the same file. `tsx-conf-migrate --init NAME...` writes a short user file only when none exists.
+An upgrade from a package that installed the full file in `/etc` needs one step. `tsx-conf-migrate [--backup-dir DIR] NAME...` reads the old full file and writes the user file with only the lines that differ from the defaults. It removes a leftover `.apk-new` file. If it drops a comment that you added, it saves the old file as `NAME.pre-split`. A key that still has the value of an old default is not kept, so the user file does not pin a default that a later release changes. The old defaults are the full files of the earlier releases in `/usr/local/share/tsx/defaults/pre-split/`. The tool picks the old file that is closest to the old copy, and `--old-dir DIR` names another folder. A second run gives the same file. `tsx-conf-migrate --init NAME...` writes a short user file only when none exists.
 
 ### Bluetooth chip file
 

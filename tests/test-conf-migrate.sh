@@ -105,6 +105,45 @@ mig --backup-dir "$BAK" kiosk.conf
 eq "$(body "$T/etc/kiosk.conf" | tr '\n' '|')" "KIOSK_SCALE=1.4|" "the copy of the old package wins over the file in /etc"
 rm -f "$T/etc/kiosk.conf.pre-split"
 
+echo "== three-way compare with the old defaults (pre-split folder) =="
+OLD=$T/old; mkdir -p "$OLD/kiosk.conf" "$OLD/buttons.conf"
+# the 0.3.12-style old default, and an older one
+cp "$T/defaults/kiosk.conf" "$OLD/kiosk.conf/aaaa.conf"
+sed -i 's|^BLANK_TIMEOUT=300|BLANK_TIMEOUT=200|; s|^RAMP_AUTO_MS=1000|RAMP_AUTO_MS=800|; s|^KIOSK_SCALE=1.0|KIOSK_SCALE=0.9|' "$OLD/kiosk.conf/aaaa.conf"
+cp "$OLD/kiosk.conf/aaaa.conf" "$OLD/kiosk.conf/bbbb.conf"
+sed -i 's|^NIGHT_START=22|NIGHT_START=21|; s|^KIOSK_OSK_HEIGHT=300|KIOSK_OSK_HEIGHT=250|; s|^OSK_TAP_MS=500|OSK_TAP_MS=400|; s|^POWER_KEY=blank|POWER_KEY=ignore|' "$OLD/kiosk.conf/bbbb.conf"
+# the new defaults changed three keys since the old release (BLANK_TIMEOUT 200 -> 300 and so on)
+cp "$OLD/kiosk.conf/aaaa.conf" "$T/etc/kiosk.conf"
+sed -i 's|^KIOSK_URL=""|KIOSK_URL="https://ha.example.org/y"|' "$T/etc/kiosk.conf"
+mig --old-dir "$OLD" kiosk.conf
+eq "$(body "$T/etc/kiosk.conf" | tr '\n' '|')" 'KIOSK_URL="https://ha.example.org/y"|' "only KIOSK_URL stays, the keys with a newer default are not pinned"
+grep -q 'aaaa.conf is the closest' "$T/err" && ok "the log line names the old file that matched" || bad "no log line: $(cat "$T/err")"
+cp "$T/etc/kiosk.conf" "$T/t1.conf"; mig --old-dir "$OLD" kiosk.conf
+cmp -s "$T/t1.conf" "$T/etc/kiosk.conf" && ok "a rerun with the old folder gives the same file" || bad "the rerun changed the file"
+# the same copy, no old files: every key that differs from the new defaults stays
+cp "$OLD/kiosk.conf/aaaa.conf" "$T/etc/kiosk.conf"; sed -i 's|^KIOSK_URL=""|KIOSK_URL="https://ha.example.org/y"|' "$T/etc/kiosk.conf"
+mig --old-dir "$T/none-old" kiosk.conf
+eq "$(body "$T/etc/kiosk.conf" | wc -l)" "4" "without old files the current behavior stays (URL and the 3 older keys)"
+# a user change that equals the new default is dropped
+cp "$OLD/kiosk.conf/aaaa.conf" "$T/etc/kiosk.conf"; sed -i 's|^BLANK_TIMEOUT=200|BLANK_TIMEOUT=300|; s|^KIOSK_SCALE=0.9|KIOSK_SCALE=1.7|' "$T/etc/kiosk.conf"
+mig --old-dir "$OLD" kiosk.conf
+eq "$(body "$T/etc/kiosk.conf" | tr '\n' '|')" "KIOSK_SCALE=1.7|" "a change that equals the new default is dropped, another change stays"
+# a key that the old default did not have
+cp "$OLD/kiosk.conf/aaaa.conf" "$T/etc/kiosk.conf"; printf 'BACKLIGHT_MAX=20\nKIOSK_SCALE=1.0\n' >> "$T/etc/kiosk.conf"
+mig --old-dir "$OLD" kiosk.conf
+eq "$(body "$T/etc/kiosk.conf" | tr '\n' '|')" "BACKLIGHT_MAX=20|" "a key that is new for the old default stays when it differs from the new default"
+# the closest of two old files
+cp "$OLD/kiosk.conf/bbbb.conf" "$T/etc/kiosk.conf"; sed -i 's|^KIOSK_URL=""|KIOSK_URL="https://ha.example.org/z"|' "$T/etc/kiosk.conf"
+mig --old-dir "$OLD" kiosk.conf
+grep -q 'bbbb.conf is the closest' "$T/err" && ok "the closer of two old files is picked" || bad "wrong old file: $(cat "$T/err")"
+eq "$(body "$T/etc/kiosk.conf" | tr '\n' '|')" 'KIOSK_URL="https://ha.example.org/z"|' "the result with the second old file: only the URL"
+# buttons.conf: button and on lines
+cp "$T/defaults/buttons.conf" "$OLD/buttons.conf/cccc.conf"; sed -i 's|^LED_DAY=128|LED_DAY=100|' "$OLD/buttons.conf/cccc.conf"
+printf 'button old KEY_F1\non old short blank toggle\n' >> "$OLD/buttons.conf/cccc.conf"
+cp "$OLD/buttons.conf/cccc.conf" "$T/etc/tsx/buttons.conf"; printf 'button mine KEY_F2\non mine short exec true\n' >> "$T/etc/tsx/buttons.conf"
+mig --old-dir "$OLD" buttons.conf
+eq "$(body "$T/etc/tsx/buttons.conf" | tr '\n' '|')" "button mine KEY_F2|on mine short exec true|" "lines that the old defaults have are dropped, the user lines stay, LED_DAY is not pinned"
+
 echo "== two names in one call, and a name with no file =="
 rm -f "$T/etc/kiosk.conf" "$T/etc/tsx/buttons.conf"
 mig kiosk.conf buttons.conf
