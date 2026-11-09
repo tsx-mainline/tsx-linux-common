@@ -2,6 +2,8 @@
 
 The automatic brightness maps the ambient light to a backlight level. The panel learns from manual changes. When the user holds a new level for a while, the panel keeps that level for that light.
 
+The daemon reads `kiosk.conf` in layers: the defaults, `panel-board.conf`, then `/etc/kiosk.conf`. A later layer wins. See [Settings files](layout.md#settings-files).
+
 The code is `base/usr/local/lib/tsx/tsx_brightness.py`.
 
 ## Tasks
@@ -17,7 +19,7 @@ Both remove `/data/tsx/brightness-learn.json` and set the flag `/run/tsx/brightn
 
 ### Turn the learning off
 
-1. Set `BRIGHTNESS_LEARN=off` in `kiosk.conf`.
+1. Add `BRIGHTNESS_LEARN=off` to `/etc/kiosk.conf`. This user file holds only your changes.
 2. Restart the daemon.
 
 The curve then stays fixed.

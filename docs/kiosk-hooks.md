@@ -28,7 +28,7 @@ The hook runs in the shell of `kiosk-session` with `set -u`. A hook that uses an
 
 | Name | Meaning |
 |---|---|
-| `KIOSK_GPU` | The GPU mode from `kiosk.conf`, `panel-board.conf` or `panel.conf`. |
+| `KIOSK_GPU` | The GPU mode from the layers of `kiosk.conf` (the defaults, `panel-board.conf`, `/etc/kiosk.conf`) or from `panel.conf`. |
 | `disp`, `dispdrv` | The display device (for example `/dev/dri/card2`) and its driver name. Both are empty when no display exists. |
 | `render`, `renderdrv` | The render node (for example `/dev/dri/renderD128`) and its driver name. Both are empty when no render node exists. |
 | The board values | The names of `board.sh`, for example `TSX_RENDER_DRM`. |
@@ -43,7 +43,7 @@ A hook changes only these four names. The script sets the first three from its o
 | `KIOSK_GL_COMPOSITOR` | 1 when the script picked GLES for the compositor, else 0 | 1 = GLES in the compositor. 0 = pixman. Another value counts as 0. |
 | `KIOSK_GL_BROWSER` | 1 when the script picked the GPU for the browser, else 0 | 1 = GPU compositing in the browser. 0 = software rendering. Another value counts as 0. |
 | `KIOSK_BROWSER_GL_FLAGS` | `TSX_BROWSER_GL_FLAGS` of the board | The Chromium flags for a browser that uses the GPU. A hook replaces the whole list. |
-| `KIOSK_DISABLE_FEATURES` | The comma list of `kiosk.conf` | The Chromium features to turn off. A hook adds to the list and keeps the old entries. |
+| `KIOSK_DISABLE_FEATURES` | The comma list of the layers of `kiosk.conf` | The Chromium features to turn off. A hook adds to the list and keeps the old entries. |
 
 `kiosk-session` always adds `--ignore-gpu-blocklist` before the flags of a browser that uses the GPU. A hook does not add it.
 

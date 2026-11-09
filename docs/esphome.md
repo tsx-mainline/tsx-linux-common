@@ -112,7 +112,7 @@ The switch "Dark mode" (object id `dark_mode`, icon `mdi:theme-light-dark`, MQTT
 
 - A change sends `dark-mode on` or `dark-mode off` to `tsx-panelctl`. It saves `KIOSK_DARK` in `panel.conf` with `tsx-config set` and `tsx-config apply`.
 - The browser reads the flags at its start. So `tsx-panelctl` restarts the kiosk service when the value changes. The page loads again, dark or light.
-- `tsx-panelctl get dark-mode` reads the value from `/run/tsx/kiosk.conf`, else from `/etc/kiosk.conf`. The shim asks again only when one of the two files changed.
+- `tsx-panelctl get dark-mode` reads the value from `/run/tsx/kiosk.conf`, else from `/etc/kiosk.conf`, else from the defaults file of `kiosk.conf`. The shim asks again only when one of the two files in `/run/tsx` and `/etc` changed.
 - A value that Home Assistant sets shows at once. The shim and `tsx-mqtt` hold it for 10 seconds, as for the update settings.
 - `tsx-mqtt` announces the switch only where `tsx-panelctl has dark-mode` is true. It clears an older discovery topic on other panels.
 

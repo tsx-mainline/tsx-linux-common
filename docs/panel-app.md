@@ -19,7 +19,7 @@ One program serves all panels of a family. The program holds no value of one pan
 | `panel-app/esphome/patches/host-mac.patch` | A patch for the `host` component of ESPHome: the MAC comes from the environment. The board build applies it to the generated project. |
 | `panel-app/etc/init.d/tsx-panel-app` | The OpenRC service. |
 | `panel-app/usr/local/sbin/tsx-panel-app-run` | The start script of the service: the identity, the environment of the board, then the program. |
-| `panel-app/etc/tsx/panel-app.conf` | The settings of the service. |
+| `panel-app/usr/local/share/tsx/defaults/panel-app.conf` | The default settings of the service. |
 | `panel-app/esphome/panel-app.yaml` | The generic part of the ESPHome configuration: the API, the Home Assistant time, the icon font, LVGL and `tsx_cards`. A board includes it as a package. |
 | `panel-app/esphome/icon-glyphs.yaml` | The glyph list of the icon font. `mkicons.py` writes it. |
 | `panel-app/esphome/mkicons.py` | Writes `icons.h` and `icon-glyphs.yaml` from `icons.txt`. `--check` tells if they are out of date. |
@@ -631,12 +631,13 @@ Without a valid key file, the program uses a random key. Then no client can conn
 
 ## Service
 
-The service `tsx-panel-app` runs `tsx-panel-app-run`, which starts the program. The script reads three files. A later file wins:
+The service `tsx-panel-app` runs `tsx-panel-app-run`, which starts the program. The script reads these files. A later file wins, and the defaults come first:
 
 | File | Package | Contents |
 |---|---|---|
-| `/etc/tsx/panel-app.conf` | the panel app | The defaults: the program, the folder of the ESPHome preferences (`/var/lib/tsx/panel-app`), the network interface of the MAC (`eth0`). |
+| `/usr/local/share/tsx/defaults/panel-app.conf` | the panel app | The defaults: the program, the folder of the ESPHome preferences (`/var/lib/tsx/panel-app`), the network interface of the MAC (`eth0`). |
 | `/etc/tsx/panel-app-board.conf` | the board | `PANEL_APP_ENV` (the environment of the program, for example the SDL video driver), `PANEL_APP_DIRS` (folders that the script makes with mode 700), `PANEL_APP_DEVICES` (device files that the script waits for, at most `PANEL_APP_WAIT` seconds). |
+| `/etc/tsx/panel-app.conf` | the user | Only your changes, for example `PANEL_APP_USER=root`. It wins over the board file. The file can be missing. |
 | `/var/lib/tsx/panel-app.conf` | none (the panel) | `NAME`, `FRIENDLY_NAME` and `MAC` of this panel. |
 
 At the first start, the script finds the identity and writes it to `/var/lib/tsx/panel-app.conf`:

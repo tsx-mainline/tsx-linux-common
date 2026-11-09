@@ -13,7 +13,7 @@ The services of a panel run with the least privilege that they need. A service t
 
 The install scripts of the packages make the users. An image build makes the same users. Each user has no password, no home folder and the shell `/sbin/nologin`.
 
-The panel app runs as `tsx-panel-app` only when that user exists and the program supports it. `PANEL_APP_USER=root` in `/etc/tsx/panel-app.conf` makes it run as root again. See [Panel app](panel-app.md) "Service".
+The panel app runs as `tsx-panel-app` only when that user exists and the program supports it. `PANEL_APP_USER=root` in `/etc/tsx/panel-app.conf` (the user file) makes it run as root again. See [Panel app](panel-app.md) "Service".
 
 ## Groups
 

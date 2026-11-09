@@ -7,7 +7,8 @@ The package tsx-sendspin plays music from Music Assistant on the speaker of the 
 | File | Contents |
 |---|---|
 | `/etc/init.d/tsx-sendspin` | The service. It runs `sendspin-cli` as the user `tsx-sendspin` in the group `audio`. |
-| `/etc/tsx/sendspin.conf` | The settings: the name, the client id, the ALSA output, the formats, the buffer, the delay and the server. Each key has a comment in the file. |
+| `/usr/local/share/tsx/defaults/sendspin.conf` | The default settings: the name, the client id, the ALSA output, the formats, the buffer, the delay and the server. Each key has a comment in the file. A package upgrade replaces it. |
+| `/etc/tsx/sendspin.conf` | Your changes only. The file can be missing. |
 | `/etc/logrotate.d/tsx-sendspin` | The rotation of `/var/log/tsx-sendspin.log`. |
 | `/usr/local/lib/tsx/config.d/sendspin.sh` | The plugin of `tsx-config` for the key `SENDSPIN`. |
 

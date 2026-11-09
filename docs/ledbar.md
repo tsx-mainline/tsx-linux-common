@@ -11,7 +11,8 @@ The bar is one USB device (`14be:001b`) with an STM32 controller. The stock firm
 | `/usr/local/bin/tsx-ledbar` | The tool. It sets colors, effects and LEDs, and sends lines to the bar console. |
 | `/usr/local/sbin/tsx-ledbard` | The service program. It checks the bar, recovers it from bootloader mode and sends the settings. |
 | `/etc/init.d/tsx-ledbar` | The OpenRC service that runs `tsx-ledbard`. |
-| `/etc/tsx/ledbar.conf` | The settings. Run `rc-service tsx-ledbar restart` after a change. |
+| `/usr/local/share/tsx/defaults/ledbar.conf` | The default settings, with a comment for each key. A package upgrade replaces it. |
+| `/etc/tsx/ledbar.conf` | Your changes only. The file can be missing. Run `rc-service tsx-ledbar restart` after a change. |
 | `/run/tsx/ledbar.state` | The wanted color, the pattern and the effect. |
 | `/run/tsx/ledbar.fw` | The firmware lines of the bar, for users without root. |
 | `/run/tsx/ledbar.usb` | One word that tells whether a bar is attached: `app` or `bootloader`. |
@@ -45,7 +46,7 @@ A new color (`set`, `on`, `off`, `boot`) ends the running effect and the LED pat
 
 ## Settings
 
-`/etc/tsx/ledbar.conf` holds these keys:
+`/etc/tsx/ledbar.conf` holds only the keys that you change. The defaults file `/usr/local/share/tsx/defaults/ledbar.conf` has all keys. See [Settings files](layout.md#settings-files). The keys are:
 
 | Key | Meaning | Default |
 |---|---|---|

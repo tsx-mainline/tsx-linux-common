@@ -20,10 +20,11 @@ Home Assistant controls the key LEDs. The light *Key LEDs* sets their level. The
 | File | Owner | Content |
 |---|---|---|
 | `/etc/tsx/buttons-board.conf` | The board package | The keys (`button` lines), the LED names and the settings that depend on the hardware. |
-| `/etc/tsx/buttons.conf` | The user | Settings, more keys and actions (`on` lines). The file that the package installs is a template with no keys. |
+| `/usr/local/share/tsx/defaults/buttons.conf` | The package | The default settings, with a comment for each key. It has no keys. An upgrade replaces it. |
+| `/etc/tsx/buttons.conf` | The user | Only the changes: settings, more keys and actions (`on` lines). The file can be missing. |
 | `/run/tsx/buttons.conf` | `tsx-config apply` | Settings only. It holds `LED_BLANK` when `panel.conf` has `KEY_LED_BLANK`. |
 
-A `button` line with the name of an earlier key replaces that key. The actions of the name stay.
+The order is the defaults, the board layer, `buttons.conf` and `/run/tsx/buttons.conf`. A later setting wins. A `button` line with the name of an earlier key replaces that key. The actions of the name stay. An `on` line of `buttons.conf` adds to the actions of the board layer. See [Settings files](layout.md#settings-files).
 
 A panel has keys when a `button` line is in the board layer or in `buttons.conf`. Without a board layer and without a `button` line, the panel has no keys and no key entities in Home Assistant.
 
@@ -253,7 +254,7 @@ The light and the number exist only when `tsx-panelctl has keyleds` succeeds.
 
 ## Reload or open a page from a shell
 
-`tsx-kiosk-page` sends one command to the browser. It needs `KIOSK_DEVTOOLS=1` in `kiosk.conf`. It needs no root, and it works on a panel with no keys. The overlay button *Reload page* runs `tsx-kiosk-page reload` (through `tsx-panelctl`).
+`tsx-kiosk-page` sends one command to the browser. It needs `KIOSK_DEVTOOLS=1`, which is the default of `kiosk.conf`. It needs no root, and it works on a panel with no keys. The overlay button *Reload page* runs `tsx-kiosk-page reload` (through `tsx-panelctl`).
 
 | Command | Effect |
 |---|---|

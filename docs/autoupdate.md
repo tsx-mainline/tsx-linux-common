@@ -29,9 +29,9 @@ Four places write the two settings:
 - The Home Assistant entities "Update mode" (a select) and "Automatic restart" (a switch). See [ESPHome device](esphome.md) and [Panel app](panel-app.md).
 - The Panel section of the [setup page](setup.md).
 - The keys `UPDATE_MODE` (`auto` or `manual`) and `UPDATE_AUTO_RESTART` (`on` or `off`) of `panel.conf` (`tsx-config set`).
-- `/etc/tsx/autoupdate.conf`.
+- `/etc/tsx/autoupdate.conf`. This user file holds only your changes. The defaults are in `/usr/local/share/tsx/defaults/autoupdate.conf`.
 
-`tsx-config apply` writes the keys of `panel.conf` to `/run/tsx/autoupdate.conf`. `tsx-autoupdate` reads `/etc/tsx/autoupdate.conf` and then that file, so the values of `panel.conf` win. A key that is not set in `panel.conf` leaves the value of `/etc/tsx/autoupdate.conf`. `tsx-autoupdate` reads the files at each run, so no service restart is needed.
+`tsx-config apply` writes the keys of `panel.conf` to `/run/tsx/autoupdate.conf`. `tsx-autoupdate` reads the defaults, then `/etc/tsx/autoupdate.conf` and then that file, so the values of `panel.conf` win. A key that is not set in `panel.conf` leaves the value of `/etc/tsx/autoupdate.conf`. `tsx-autoupdate` reads the files at each run, so no service restart is needed.
 
 | Key | Default | Meaning |
 |---|---|---|

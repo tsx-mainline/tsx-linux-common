@@ -104,7 +104,7 @@ If the model was the active wake word, the satellite goes back to `WAKE_WORD`. I
 | Folder | `/data/wakewords`. It is on the data partition, so it stays after a package upgrade and after a reinstall that keeps `/data`. |
 | Owner | `root`, mode 0755. The `tsx-voice` service makes the folder when it starts. |
 | Files | Root writes the files. The satellite runs as the user `kiosk` and must be able to read them. `scp` gives mode 0644, which is correct. |
-| Setting | `CUSTOM_WAKE_WORDS` in `/etc/tsx/voice.conf`. The default is `/data/wakewords`. An empty value turns custom models off. After a change, run `rc-service tsx-voice restart`. |
+| Setting | `CUSTOM_WAKE_WORDS` in `/etc/tsx/voice.conf` (the user file). The default is `/data/wakewords`. An empty value turns custom models off. After a change, run `rc-service tsx-voice restart`. |
 
 A custom model with the name of a built-in model replaces the built-in model. The name `stop` is not available: it is the stop word model.
 

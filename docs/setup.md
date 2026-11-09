@@ -30,7 +30,7 @@ The panel uses the first of these values:
 
 1. `HA_URL` of `panel.conf`, for example `https://ha.example.org:8123`. Only the scheme, the host and the port count.
 2. The origin of `KIOSK_URL` of `panel.conf`.
-3. The origin of `KIOSK_URL` of `/etc/kiosk.conf` (the image default of a kiosk panel).
+3. The origin of `KIOSK_URL` of `/etc/kiosk.conf`, else of the defaults file of `kiosk.conf` (the image default of a kiosk panel).
 
 A kiosk panel that shows Home Assistant needs no `HA_URL`. A panel with the native panel app has no `KIOSK_URL`. Set `HA_URL` on it once: on the setup page with the pairing code, or over ssh with `tsx-config set HA_URL URL` and `tsx-config apply`. An install that writes `panel.conf` can set it too. After that, the panel needs no code again.
 
@@ -138,7 +138,7 @@ The on-screen keyboard also follows the setting. `squeekboard` starts with `GTK_
 | Setup page | The select *Dark mode of the browser* in the *Display* card. It shows only on a panel with a kiosk browser. |
 | Home Assistant | The switch *Dark mode*. See [esphome.md](esphome.md) "Dark mode". |
 | Command line | `tsx-config set KIOSK_DARK on`, then `tsx-config apply` and `rc-service kiosk restart` |
-| Image default | `KIOSK_DARK=` in `/etc/kiosk.conf`. A value in `panel.conf` wins. |
+| Image default | `KIOSK_DARK=` in `/etc/kiosk.conf`, else in the defaults file of `kiosk.conf`. A value in `panel.conf` wins. |
 
 A save of the setup page that changes the setting restarts the kiosk, also from a remote session. `tsx-panelctl send dark-mode on|off` does the same. `tsx-config apply` alone does not restart the browser. The flags come before `KIOSK_EXTRA_FLAGS`, so a later switch there wins. A panel with the panel app has no browser. The page hides the setting there, and the key has no effect.
 
@@ -180,7 +180,7 @@ The *Install* button of the update entity in Home Assistant works in both modes.
 
 ## Settings
 
-| Key of `/etc/tsx/setup.conf` | Default | Meaning |
+| Key of `/etc/tsx/setup.conf` (the user file) | Default | Meaning |
 |---|---|---|
 | `TSX_SETUP_PORT` | 8080 | The port |
 | `TSX_SETUP_LAN` | `on` | `off`: no LAN access |

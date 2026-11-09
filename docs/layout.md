@@ -6,14 +6,14 @@ The repo has one directory for each package. A package directory holds the files
 
 | Directory | Package | Contents |
 |---|---|---|
-| base | tsx-base | `tsx-config`, `tsx-hostname`, `tsx-setup`, `tsx-data`, `tsx-panelctl`, `tsx-board`, `tsx-rootpw`, the clock files (chrony, udhcpc hooks, `tsx-savetime`), the console banner, sysctl, sshd, profile, `serial.sh`, and `tsx_brightness.py` ([adaptive brightness](adaptive-brightness.md)) |
-| kiosk | tsx-kiosk | `kiosk-session` (with the `kiosk.d` hook loader), `tsx-orientation`, `tsx-osk`, `tsx-kiosk-url`, `tsx-kiosk-page`, `tsx-kiosk-reveal`, `tsx-display-power`, `tsx-blank`, `kiosk.conf`, the Chromium policy, `tsx-idled` and `tsx-overlay` (C, with the header `tsx-level.h`) |
-| setup | tsx-setup | `tsx-setupd`, `tsx-setup-helper`, their init scripts, `setup.conf`. See [Setup page without a kiosk](#setup-page-without-a-kiosk) |
+| base | tsx-base | `tsx-config`, `tsx-hostname`, `tsx-setup`, `tsx-data`, `tsx-panelctl`, `tsx-board`, `tsx-rootpw`, the clock files (chrony, udhcpc hooks, `tsx-savetime`), the console banner, sysctl, sshd, profile, `serial.sh`, the settings loaders `conf.sh` and `tsx_conf.py`, `tsx-conf-migrate`, and `tsx_brightness.py` ([adaptive brightness](adaptive-brightness.md)) |
+| kiosk | tsx-kiosk | `kiosk-session` (with the `kiosk.d` hook loader), `tsx-orientation`, `tsx-osk`, `tsx-kiosk-url`, `tsx-kiosk-page`, `tsx-kiosk-reveal`, `tsx-display-power`, `tsx-blank`, `kiosk.conf` (the defaults), the Chromium policy, `tsx-idled` and `tsx-overlay` (C, with the header `tsx-level.h`) |
+| setup | tsx-setup | `tsx-setupd`, `tsx-setup-helper`, their init scripts, `setup.conf` (the defaults). See [Setup page without a kiosk](#setup-page-without-a-kiosk) |
 | ha | tsx-ha | `tsx-mqtt`, `tsx-bt`, the voice scripts, the ESPHome shim (`tsx_panel`, `tsx_lva`), the setup page plugin, `install-lva.sh`. It depends on tsx-sendspin |
-| sendspin | tsx-sendspin | The service `tsx-sendspin`, `sendspin.conf`, its logrotate file and the `tsx-config` plugin `sendspin.sh` (the key `SENDSPIN`). See [Sendspin](sendspin.md) |
-| buttons | tsx-buttons | `tsx-buttons` (C), `tsx-keypad`, `buttons.conf` (a template with no keys). See [Front keys](buttons.md) |
-| autoupdate | tsx-autoupdate | `tsx-autoupdate`, its init script, its conf, its logrotate file |
-| ledbar | tsx-ledbar | `tsx-ledbar` (C), `tsx-ledbard`, its init script and `ledbar.conf`. See [LED bar](ledbar.md) |
+| sendspin | tsx-sendspin | The service `tsx-sendspin`, `sendspin.conf` (the defaults), its logrotate file and the `tsx-config` plugin `sendspin.sh` (the key `SENDSPIN`). See [Sendspin](sendspin.md) |
+| buttons | tsx-buttons | `tsx-buttons` (C), `tsx-keypad`, `buttons.conf` (the defaults, with no keys). See [Front keys](buttons.md) |
+| autoupdate | tsx-autoupdate | `tsx-autoupdate`, its init script, the defaults of `autoupdate.conf`, its logrotate file |
+| ledbar | tsx-ledbar | `tsx-ledbar` (C), `tsx-ledbard`, its init script and `ledbar.conf` (the defaults). See [LED bar](ledbar.md) |
 | rescue | tsx-rescue-ui | `tsx-rescue-status`, `tsx-confont`, `tsx-rescue-login`, `tsx-rescue-backlight`, `tsx-data-backup`, `tsx-data-restore` |
 | splash | tsx-splash | `tsx-splash` (C), the splash images and tools |
 | panel-app | tsx-panel-app | The panel app: the ESPHome components `tsx_cards` and `tsx_runtime`, the generic ESPHome YAML and its patches, the service `tsx-panel-app` with `tsx-panel-app-run`, `tsx-layout-check`, `tsx-ha-entities`, the layout files and the layout editor (a plugin of the setup page with its page). The program itself comes from the package of the board family. See [Panel app](panel-app.md) |
@@ -39,8 +39,8 @@ The repo has one directory for each package. A package directory holds the files
 | tsx-esphome | tsx-ha | Standalone Home Assistant ESPHome device for the panel |
 | tsx-voice | tsx-ha | Assist voice satellite (ESPHome API) |
 | tsx-bt | tsx-ha | Bluetooth controller, BLE scanner and BLE links for the Home Assistant Bluetooth proxy |
-| tsx-sendspin | tsx-sendspin | Synchronized-audio player (user `tsx-sendspin`), configured in `/etc/tsx/sendspin.conf` |
-| tsx-buttons | tsx-buttons | Front keys and key LEDs. The keys come from `/etc/tsx/buttons-board.conf`, the actions from `/etc/tsx/buttons.conf` |
+| tsx-sendspin | tsx-sendspin | Synchronized-audio player (user `tsx-sendspin`), configured in `/etc/tsx/sendspin.conf` (the changes) over the defaults |
+| tsx-buttons | tsx-buttons | Front keys and key LEDs. The keys come from `/etc/tsx/buttons-board.conf`, the actions from `/etc/tsx/buttons.conf` (the user file) |
 | tsx-autoupdate | tsx-autoupdate | Schedules automatic Alpine package updates |
 | tsx-ledbar | tsx-ledbar | Checks the LED bar, recovers it from bootloader mode and sends its color, effect and LED map |
 | tsx-panel-app | tsx-panel-app | The panel app: Home Assistant cards on the screen with no browser (user `tsx-panel-app`). The board gives `/etc/tsx/panel-app-board.conf` |
@@ -122,8 +122,8 @@ Every name in this table is optional. The neutral default applies when a board d
 | `TSX_POST_UPDATE_STEP`, `tsx_board_post_update_meaning` | `tsx-autoupdate` | The name of the step of `tsx_board_post_update`, and a function that prints the meaning of its status N. Home Assistant shows both when the step fails. Optional |
 | `tsx_board_update_status` | `tsx-autoupdate status` | Function that prints a line when the boot state of the board does not match the installed packages, else nothing. Optional |
 | `tsx_board_ledbar_map` | `tsx-ledbard` | Function that prints the name of the LED map for the LED bar of a panel model, or nothing for the firmware default map. Argument 1 is the model from `/run/tsx/model`. `LEDMAP` of `ledbar.conf` wins. See [LED bar](ledbar.md) "LED map" |
-| `/etc/tsx/panel-board.conf` | `kiosk-session`, `kiosk`, `tsx-idled`, `tsx-cpufreqd` | The board layer of `kiosk.conf`: GPU mode, backlight range and floor (`BACKLIGHT_MAX`, `BACKLIGHT_MIN`), CPU governor, overlay tap, `ALS_WATCH`. `kiosk.conf` holds neutral defaults. The family ships this file in the base profile |
-| `/etc/tsx/buttons-board.conf` | `tsx-buttons`, `tsx-panelctl`, `tsx-mqtt`, `tsx_panel` | The board layer of the front keys: the `button` lines, the LED names (`LED_PWM`, `LED_KEY_PREFIX`, `LED_KEY_N`), `LED_MODE` (`onoff` for independent on/off key LEDs) and `SLIDE_STEP`. `tsx-buttons` reads it before `buttons.conf`. A board with no keys ships no file. See [Front keys](buttons.md) |
+| `/etc/tsx/panel-board.conf` | `kiosk-session`, `kiosk`, `tsx-idled`, `tsx-cpufreqd` | The board layer of `kiosk.conf`: GPU mode, backlight range and floor (`BACKLIGHT_MAX`, `BACKLIGHT_MIN`), CPU governor, overlay tap, `ALS_WATCH`. The defaults file of `kiosk.conf` holds neutral values. The board layer wins over it, and the user file `/etc/kiosk.conf` wins over the board layer. The family ships this file in the base profile |
+| `/etc/tsx/buttons-board.conf` | `tsx-buttons`, `tsx-panelctl`, `tsx-mqtt`, `tsx_panel` | The board layer of the front keys: the `button` lines, the LED names (`LED_PWM`, `LED_KEY_PREFIX`, `LED_KEY_N`), `LED_MODE` (`onoff` for independent on/off key LEDs) and `SLIDE_STEP`. `tsx-buttons` reads it after the defaults and before `buttons.conf`. A board with no keys ships no file. See [Front keys](buttons.md) |
 | `/etc/tsx/motd.board` | `profile.d/tsx.sh` | Lines for the login banner |
 | `/etc/tsx/panel-app-board.conf` | `tsx-panel-app-run` | The environment, the folders and the device files of the panel app. See [Panel app](panel-app.md) "Service" |
 | `rc_after` in `/etc/conf.d/tsx-config` | `tsx-config` | Services to wait for |
@@ -168,6 +168,35 @@ Every name in this table is optional. The neutral default applies when a board d
 Root can log in on the serial console only when `/etc/securetty` names it. The login program reads only this file. The board package ships it: the list of the Alpine `busybox` package plus the serial console of the board. The board package declares `replaces="busybox"` for it. No package of `tsx-linux-common` ships or changes `/etc/securetty`, and no boot script edits it.
 
 The same rule holds for each file of a package. When a script changes such a file, `apk` writes a `.apk-new` file at each upgrade of the package. So `/etc/motd` has no owner among the TSX packages: `tsx-banner` writes it at boot.
+
+The settings files follow the same rule. No package owns a user file in `/etc`, so `apk` never writes a `.apk-new` file for it. See [Settings files](#settings-files).
+
+### Settings files
+
+A settings file has two parts. The package installs the defaults, with all comments, in `/usr/local/share/tsx/defaults/NAME`. A package upgrade always replaces this file. The user file holds only the keys that the user changed. No package owns it, so an upgrade does not touch it. The user file can be missing.
+
+| Setting | Defaults file | User file | Layers after the defaults |
+|---|---|---|---|
+| `kiosk.conf` | `defaults/kiosk.conf` | `/etc/kiosk.conf` | `/etc/tsx/panel-board.conf`, the user file, `/run/tsx/kiosk.conf` |
+| `buttons.conf` | `defaults/buttons.conf` | `/etc/tsx/buttons.conf` | `/etc/tsx/buttons-board.conf`, the user file, `/run/tsx/buttons.conf` |
+| `panel-app.conf` | `defaults/panel-app.conf` | `/etc/tsx/panel-app.conf` | `/etc/tsx/panel-app-board.conf`, the user file |
+| `mqtt.conf`, `voice.conf`, `sendspin.conf` | `defaults/NAME` | `/etc/tsx/NAME` | the user file, `/run/tsx/NAME` |
+| `esphome.conf` | `defaults/esphome.conf` | `/etc/tsx/esphome.conf` | the user file, `/run/tsx/voice.conf` |
+| `autoupdate.conf` | `defaults/autoupdate.conf` | `/etc/tsx/autoupdate.conf` | the user file, `/run/tsx/autoupdate.conf` |
+| `setup.conf`, `ledbar.conf` | `defaults/NAME` | `/etc/tsx/NAME` | the user file |
+
+In the table, `defaults/` is `/usr/local/share/tsx/defaults/`. A later layer wins. For example, a key in `/etc/kiosk.conf` wins over the same key in `panel-board.conf`.
+
+To change a setting, add the key to the user file and keep only the keys that you change. To see the value that a program uses, read the layers in order. The `NAME` argument of `tsx_conf_get` is the file name:
+
+```
+. /usr/local/lib/tsx/conf.sh
+tsx_conf_get kiosk.conf KIOSK_URL /etc/kiosk.conf /etc/tsx/panel-board.conf /run/tsx/kiosk.conf
+```
+
+The readers share one loader for each language: `conf.sh` (shell), `tsx_conf.py` (Python) and `tsx-conf.h` (C, in `base/src`). They use the folder `TSX_DEFAULTS_DIR` when it is set. The variables that name a user file, for example `TSX_KIOSK_CONF`, `TSX_BUTTONS_CONF` and `tsx-idled -c`, still name the user file.
+
+An upgrade from a package that installed the full file in `/etc` needs one step. `tsx-conf-migrate [--backup-dir DIR] NAME...` reads the old full file and writes the user file with only the lines that differ from the defaults. It removes a leftover `.apk-new` file. If it drops a comment that you added, it saves the old file as `NAME.pre-split`. A second run gives the same file. `tsx-conf-migrate --init NAME...` writes a short user file only when none exists.
 
 ### Bluetooth chip file
 
@@ -263,7 +292,7 @@ A host run from a checkout, for example the installer, has no `/usr/local/lib/ts
 
 ## Setup page without a kiosk
 
-A panel can run with no browser kiosk. The package tsx-kiosk is not installed, and a native panel app owns the screen. The key `TSX_SETUP_KIOSK` of `/etc/tsx/setup.conf` sets the mode of `tsx-setupd`. Its values are `auto`, `on` and `off`. With `auto` (the default), the mode is on when `/etc/kiosk.conf` exists. The environment variable `TSX_SETUP_KIOSK` replaces the key. Tests use it.
+A panel can run with no browser kiosk. The package tsx-kiosk is not installed, and a native panel app owns the screen. The key `TSX_SETUP_KIOSK` of `/etc/tsx/setup.conf` sets the mode of `tsx-setupd`. Its values are `auto`, `on` and `off`. With `auto` (the default), the mode is on when the defaults file of `kiosk.conf` exists. The package tsx-kiosk installs it. A user file `/etc/kiosk.conf` that stays behind does not turn the mode on. The environment variable `TSX_SETUP_KIOSK` replaces the key. Tests use it.
 
 With the mode off, the setup page changes in these ways:
 
