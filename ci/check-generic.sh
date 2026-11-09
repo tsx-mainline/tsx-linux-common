@@ -96,7 +96,9 @@ done < <(git ls-files -- . ':(exclude)docs' ':(exclude)ci/check-generic.sh' ':(e
 # A comment can name a page of docs/. The page must exist in this repo, and a
 # quoted heading (docs/NAME.md "Heading") must be a heading of the page. A
 # page that only the board repositories have is not a target. Name the board
-# docs in words instead.
+# docs in words instead. The old settings files in pre-split/ are copies of
+# earlier releases. tsx-conf-migrate compares with them, so their text stays as
+# it was, and their docs references are not checked.
 while IFS= read -r hit; do
 	path=${hit%%:*} rest=${hit#*:}
 	lineno=${rest%%:*} ref=${rest#*:}
@@ -113,7 +115,7 @@ while IFS= read -r hit; do
 			hits=$((hits + 1))
 		fi;;
 	esac
-done < <(git grep -noIE 'docs/[A-Za-z0-9_.-]+\.md( ?"[^"]*")?' -- . ':(exclude)docs' ':(exclude)ci/check-generic.sh' ':(exclude)ci/check-generic.allow')
+done < <(git grep -noIE 'docs/[A-Za-z0-9_.-]+\.md( ?"[^"]*")?' -- . ':(exclude)docs' ':(exclude)ci/check-generic.sh' ':(exclude)ci/check-generic.allow' ':(exclude)base/usr/local/share/tsx/defaults/pre-split')
 
 for i in "${!a_path[@]}"; do
 	if [ "${a_used[$i]}" = 0 ]; then

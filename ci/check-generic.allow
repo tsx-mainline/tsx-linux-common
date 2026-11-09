@@ -7,3 +7,4 @@ tests/test-board-fake.sh :: uboot|u-boot|xx60|tss|tsw|meson|lima|ttyaml :: The t
 ha/usr/local/sbin/tsx-bt,tests/test-bt.sh :: psr|psrkind :: Names of the state file field and of the chip file variable. The chip files of the boards set PSRKIND.
 tests/boards/fake/esphome.d/fakeent.py,tests/test-shim-plugins.sh :: camera :: The fake plugin uses the camera message classes of the API library as an entity type that common does not know.
 tests/test-generic-gate.sh :: .* :: The test plants these words on purpose to prove that the gate fails.
+base/usr/local/share/tsx/defaults/pre-split/* :: .* :: Unchanged copies of the settings files of earlier releases. tsx-conf-migrate compares a user file with them, so the text must stay as it was.
