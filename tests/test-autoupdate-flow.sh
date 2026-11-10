@@ -13,6 +13,8 @@ set -u
 # The made-up board for the scripts that read a board file.
 . "$(dirname "$0")/lib/board.sh"
 HERE=$(cd "$(dirname "$0")" && pwd); BIN=$HERE/../autoupdate/usr/local/sbin/tsx-autoupdate
+. "$HERE/lib/paths.sh"
+export TSX_DEFAULTS_DIR=$(defaults_dir)   # the defaults of the packages, as on the panel
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin"
 fail=0
@@ -518,6 +520,10 @@ REBOOT=auto
 cfg 'ENABLED=0
 REBOOT=never
 '; chk "$(get mode)/$(get auto-restart)" manual/off "20f: old keys: ENABLED=0 is manual, REBOOT=never is off"
+cfg 'ENABLED=0
+'; chk "$(get mode)/$(get auto-restart)" manual/on "20f: old key ENABLED=0 alone, over the package defaults"
+cfg 'REBOOT=never
+'; chk "$(get mode)/$(get auto-restart)" auto/off "20f: old key REBOOT=never alone, over the package defaults"
 cfg 'ENABLED=0
 REBOOT=never
 MODE=auto
