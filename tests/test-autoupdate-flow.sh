@@ -70,7 +70,7 @@ mkdir -p "$T/initd"; : > "$T/initd/kiosk"   # the kiosk service exists (the kios
 
 run() {  # run SUBCOMMAND  (env NOWDATE/NOWHHMM/APK_UPGRADE_RC/etc already exported)
 	PATH="$T/bin:$PATH" \
-	TSX_AUTOUPDATE_CONF="$T/autoupdate.conf" TSX_BOOT_ID_FILE="$T/bootid" TSX_RUN_DIR="$T/run" TSX_STATE_DIR="$T/state" \
+	TSX_AUTOUPDATE_CONF="$T/autoupdate.conf" TSX_BOOT_ID_FILE="$T/bootid" TSX_RUN_DIR="$T/run" TSX_STATE_DIR="${STATE_OVR:-$T/state}" \
 	TSX_LOG="$T/tsx-autoupdate.log" TSX_IDLED_STATE="$T/idled" TSX_KIOSK_CONF="$T/kiosk.conf" \
 	TSX_BUILD_ID_FILE="$T/buildid" TSX_INITD="$T/initd" TSX_BACKLIGHT_CLASS="$T/bl" TSX_HEALTH_POLL=1 \
 	TSX_RUNLEVELS="$T/runlevels" sh "$BIN" "$@"
@@ -930,9 +930,193 @@ chk "$(sed -n 's/^in_progress //p' "$T/state/fields")" "1" "20l-16: no hook: the
 [ -e "$T/run/restart-block" ] && { echo "FAIL: 20l-16: no hook: a restart-block file"; fail=1; }
 reset_state 61
 
+# 20m: STOP holds of an owner outside tsx-autoupdate (stop-hold set/clear/list). The hold stops every install and
+# restart, stays across status writes and boots, blocks the Restart button with its own text, and only
+# "stop-hold clear OWNER" ends it. The board-step hold (20l) is unchanged.
+export TSX_FAKE_PRE_UPDATE=$HOOK TSX_FAKE_PRE_UPDATE_PEEK=$T/apk.calls TSX_FAKE_POST_UPDATE=$PU TSX_FAKE_POST_UPDATE_FIELDS=$T/state/fields
+PCTL=$HERE/../base/usr/local/sbin/tsx-panelctl
+# pctl_reboot: the console command "tsx-panelctl reboot" against this test's run and state folders. Prints rc/reboots/text.
+pctl_reboot() {
+	: > "$T/calls"
+	_po=$(env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_AUTOUPDATE_STATE_DIR="$T/state" TSX_REBOOT_BIN="$T/bin/reboot" busybox sh "$PCTL" reboot 2>&1); _pr=$?
+	printf '%s/%s/%s' "$_pr" "$(grep -c '^CALL reboot' "$T/calls")" "$_po"
+}
+REASON='the check after step 2 found a change (boot_b sha 1234 != 5678)'
+blk() { tr '\n' '|' < "$T/run/restart-block" 2>/dev/null; }
+# 20m-1: set: exit 0, the file, the restart block, Home Assistant, update.state, the status
+reset_state 70; rm -f "$PU" "$HOOK"; conf manual on; : > "$T/tsx-autoupdate.log"
+NOWDATE=2026-03-01 NOWHHMM=12:00 run check >/dev/null
+out=$(NOWDATE=2026-03-01 NOWHHMM=12:01 run stop-hold set step2 "$REASON" 2>&1); rc=$?
+chk "$rc" 0 "20m-1: stop-hold set exits 0 ($out)"
+chk "$(cat "$T/state/holds/step2" 2>/dev/null | tr '\n' '|')" "owner step2|set 2026-03-01T12:01:00|reason $REASON|" "20m-1: the hold file"
+chk "$(blk)" "hold stop step2|reason $REASON|" "20m-1: the restart block"
+chk "$(ha '[.title, .restart_required, .latest_version] | join("|")')" "STOP: check the panel|false|0.3.5 (stopped)" "20m-1: Home Assistant title, no restart, latest"
+ha .release_summary | head -1 | grep -qxF "STOP (step2): $REASON" || { echo "FAIL: 20m-1: notes $(ha .release_summary | head -1)"; fail=1; }
+ha .release_summary | grep -qF 'Only a person ends the STOP: tsx-autoupdate stop-hold clear step2.' || { echo "FAIL: 20m-1: the notes do not say how it ends"; fail=1; }
+chk "$(sed -n 's/^title //p' "$T/run/update.state")/$(sed -n 's/^restart-required //p' "$T/run/update.state")" "STOP: check the panel/no" "20m-1: update.state"
+chk "$(run status | head -1)" "STOP hold:      step2, set 2026-03-01T12:01:00: $REASON" "20m-1: the first line of the status"
+chk "$(run stop-hold list)" "stop-hold step2 set 2026-03-01T12:01:00 reason $REASON" "20m-1: list"
+grep -qF "stop-hold: set by step2: $REASON" "$T/tsx-autoupdate.log" || { echo "FAIL: 20m-1: no log line of the set"; fail=1; }
+case $(pctl_reboot) in "1/0/"*"a STOP holds the panel (step2: the check after step 2 found a change"*"Keep the panel powered"*) :;;
+	*) echo "FAIL: 20m-1: tsx-panelctl reboot: $(pctl_reboot)"; fail=1;; esac
+pctl_reboot | grep -q 'board step' && { echo "FAIL: 20m-1: tsx-panelctl names the board step"; fail=1; }
+
+# 20m-2: check, refresh, boot, healthcheck and the tick never remove the hold or the block
+for c in check refresh boot healthcheck; do
+	NOWDATE=2026-03-01 NOWHHMM=12:02 run $c >/dev/null 2>&1
+	chk "$([ -e "$T/state/holds/step2" ] && echo held)/$(blk)" "held/hold stop step2|reason $REASON|" "20m-2: after $c"
+done
+conf auto on; NOWDATE=2026-03-02 NOWHHMM=04:00 run >/dev/null 2>&1; conf manual on
+chk "$([ -e "$T/state/holds/step2" ] && echo held)/$(blk)" "held/hold stop step2|reason $REASON|" "20m-2: after the tick"
+# a block that a status write of an older run removed comes back with the next status write
+rm -f "$T/run/restart-block"; NOWDATE=2026-03-01 NOWHHMM=12:03 run refresh >/dev/null
+chk "$(blk)" "hold stop step2|reason $REASON|" "20m-2: refresh writes the block again"
+# the Restart button also without the block (the holds folder alone; a boot before tsx-autoupdate boot ran)
+rm -f "$T/run/restart-block"
+case $(pctl_reboot) in "1/0/"*"a STOP holds the panel (step2:"*) :;; *) echo "FAIL: 20m-2: no block file: $(pctl_reboot)"; fail=1;; esac
+# the FIFO (the Restart button of Home Assistant and of the panel) refuses with the STOP text
+: > "$T/calls"
+env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run" TSX_AUTOUPDATE_STATE_DIR="$T/state" TSX_REBOOT_BIN="$T/bin/reboot" TSX_PANELCTL_ONESHOT=1 \
+	busybox sh "$PCTL" > "$T/oneshot-m.log" 2>&1 & OP=$!
+for _ in $(seq 1 20); do grep -q "listening on" "$T/oneshot-m.log" 2>/dev/null && break; sleep 0.1; done
+echo reboot > "$T/run/panelctl"; wait $OP 2>/dev/null
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20m-2: the FIFO reboot ran during the STOP"; fail=1; }
+grep -q 'reboot refused: a STOP holds the panel (step2: ' "$T/oneshot-m.log" || { echo "FAIL: 20m-2: FIFO log: $(cat "$T/oneshot-m.log")"; fail=1; }
+
+# 20m-3: the hold survives a boot (a new boot id and an empty /run)
+rm -rf "$T/run"; echo boot-71 > "$T/bootid"
+NOWDATE=2026-03-01 NOWHHMM=12:10 run boot >/dev/null
+chk "$([ -e "$T/state/holds/step2" ] && echo held)/$(blk)/$(ha .title)" "held/hold stop step2|reason $REASON|/STOP: check the panel" "20m-3: after a boot"
+
+# 20m-4: no install, no board step, no restart: Install, the tick in the window, "restart required" with Install and with the tick
+printf "$SIM_BOARD" > "$T/sim.txt"; reset_calls; rm -f "$PU" "$HOOK"
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-03-01 NOWHHMM=12:20 run now >/dev/null 2>&1
+conf auto on; TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-03-02 NOWHHMM=04:00 run >/dev/null 2>&1
+grep -qE '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" && { echo "FAIL: 20m-4: apk upgrade during the STOP"; fail=1; }
+[ ! -s "$PU" ] && [ ! -s "$HOOK" ] || { echo "FAIL: 20m-4: a board hook ran during the STOP"; fail=1; }
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20m-4: a restart during the STOP"; fail=1; }
+grep -q 'install: STOPPED, STOP hold of step2' "$T/tsx-autoupdate.log" || { echo "FAIL: 20m-4: no log line of the stopped install"; fail=1; }
+grep -q 'STOP hold of step2 (.*): not installing, not restarting' "$T/tsx-autoupdate.log" || { echo "FAIL: 20m-4: no log line of the tick"; fail=1; }
+chk "$(jf "$T/run/update.json" .pending_count)/$(ha .title)" "2/STOP: check the panel" "20m-4: pending stays, STOP title"
+ha .release_summary | grep -q '^Pending, not installed while the STOP holds:$' || { echo "FAIL: 20m-4: the notes do not list the pending packages"; fail=1; }
+: > "$T/sim.txt"; NOWDATE=2026-03-01 NOWHHMM=12:21 run check >/dev/null
+sed -i -e 's/^restart_required.*/restart_required 1/' "$T/state/fields"; reset_calls
+NOWDATE=2026-03-01 NOWHHMM=12:22 run now >/dev/null 2>&1
+NOWDATE=2026-03-02 NOWHHMM=04:15 run >/dev/null 2>&1
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20m-4: restart required: a restart during the STOP"; fail=1; }
+chk "$(ha .restart_required)" false "20m-4: Home Assistant asks for no restart"
+conf manual on
+
+# 20m-5: post-update by hand is refused (exit 1, the step does not run), and does not end the STOP
+rm -f "$PU"
+out=$(TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-03-01 NOWHHMM=12:30 run post-update 2>&1); rc=$?
+chk "$rc/$([ -s "$PU" ] && echo ran)/$([ -e "$T/state/holds/step2" ] && echo held)" "1//held" "20m-5: post-update refused, no step, the STOP stays"
+case $out in *"a STOP hold of step2 is set"*"stop-hold clear step2"*) :;; *) echo "FAIL: 20m-5: post-update text '$out'"; fail=1;; esac
+
+# 20m-6: usage errors set nothing; a clear of another owner keeps the hold
+for a in "set" "set step2" "set Step2 x" "set -x x" "set a/b x" "set aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa x" "clear" "frob"; do
+	run stop-hold $a >/dev/null 2>&1; rc=$?
+	chk "$rc" 2 "20m-6: stop-hold $a: usage"
+done
+NOWDATE=2026-03-01 NOWHHMM=12:31 run stop-hold set other "  " >/dev/null 2>&1; rc=$?
+chk "$rc/$(ls "$T/state/holds" | tr '\n' ' ')" "2/step2 " "20m-6: an empty reason: usage, nothing set"
+# the reason becomes one line (a control character is a space), at most 200 characters
+STATE_OVR="$T/st-cc" NOWDATE=2026-03-01 NOWHHMM=12:31 run stop-hold set cc "$(printf 'one\ntwo\tthree')" >/dev/null 2>&1
+chk "$(sed -n 's/^reason //p' "$T/st-cc/holds/cc")" "one two three" "20m-6: control characters in the reason"
+STATE_OVR="$T/st-cc" NOWDATE=2026-03-01 NOWHHMM=12:31 run stop-hold set cc "$(printf '%0300d' 0)" >/dev/null 2>&1
+chk "$(sed -n 's/^reason //p' "$T/st-cc/holds/cc" | wc -c)" 201 "20m-6: the reason is cut to 200 characters"
+rm -rf "$T/st-cc"; NOWDATE=2026-03-01 NOWHHMM=12:31 run refresh >/dev/null
+# a folder that cannot be written: exit 1, nothing set (as root the write would work: not tested then)
+if [ "$(id -u)" != 0 ]; then
+	mkdir -p "$T/ro"; chmod 555 "$T/ro"
+	out=$(STATE_OVR="$T/ro/st" NOWDATE=2026-03-01 NOWHHMM=12:31 run stop-hold set x "a reason" 2>&1); rc=$?
+	chk "$rc/$([ -e "$T/ro/st/holds/x" ] && echo set)" "1/" "20m-6: a folder that cannot be made: exit 1"
+	case $out in *"the STOP hold is NOT set"*) :;; *) echo "FAIL: 20m-6: text '$out'"; fail=1;; esac
+	mkdir -p "$T/ro2/holds"; chmod 555 "$T/ro2/holds"
+	out=$(STATE_OVR="$T/ro2" NOWDATE=2026-03-01 NOWHHMM=12:31 run stop-hold set x "a reason" 2>&1); rc=$?
+	chk "$rc/$(ls -A "$T/ro2/holds" | tr '\n' ' ')" "1/" "20m-6: a hold folder that cannot be written: exit 1, no file left"
+	case $out in *"cannot write"*"the STOP hold is NOT set"*) :;; *) echo "FAIL: 20m-6: text '$out'"; fail=1;; esac
+	chmod 755 "$T/ro" "$T/ro2/holds"
+fi
+run stop-hold clear nobody >/dev/null 2>&1; rc=$?
+chk "$rc/$([ -e "$T/state/holds/step2" ] && echo held)" "1/held" "20m-6: clear of an owner with no hold: exit 1, the STOP stays"
+
+# 20m-7: two owners: a clear of one keeps the other
+NOWDATE=2026-03-01 NOWHHMM=12:32 run stop-hold set aaa "first by name" >/dev/null; rc=$?
+chk "$rc/$(head -n 1 "$T/run/restart-block")" "0/hold stop aaa" "20m-7: the first hold by name in the block"
+run status | grep -q '^                STOP holds: aaa step2' || { echo "FAIL: 20m-7: the status does not list both"; fail=1; }
+NOWDATE=2026-03-01 NOWHHMM=12:33 run stop-hold clear aaa >/dev/null; rc=$?
+chk "$rc/$(blk)" "0/hold stop step2|reason $REASON|" "20m-7: clear aaa: the step2 STOP stays"
+
+# 20m-8: a STOP set while an install runs: the install ends, the restart does not run
+NOWDATE=2026-03-01 NOWHHMM=12:34 run stop-hold clear step2 >/dev/null
+reset_calls; rm -f "$PU"; printf "$SIM_BOARD" > "$T/sim.txt"
+TSX_FAKE_POST_UPDATE_RC=0 TSX_FAKE_POST_UPDATE_SLEEP=2 NOWDATE=2026-03-01 NOWHHMM=12:40 run now >/dev/null 2>&1 & RP=$!
+sleep 1
+NOWDATE=2026-03-01 NOWHHMM=12:40 run stop-hold set step2 "$REASON" >/dev/null 2>&1; rc=$?
+wait $RP
+chk "$rc/$(cat "$PU" 2>/dev/null | tr '\n' ' ')/$(grep -c '^CALL reboot' "$T/calls")" "0/1 1 /0" "20m-8: the install ran its step, no restart after the STOP"
+grep -q 'restart refused: STOP hold of step2' "$T/tsx-autoupdate.log" || { echo "FAIL: 20m-8: no log line of the refused restart"; fail=1; }
+chk "$(blk)" "hold stop step2|reason $REASON|" "20m-8: the block after the install"
+
+# 20m-9: only the clear ends it; after it the normal paths come back (Install restarts the open restart)
+out=$(NOWDATE=2026-03-01 NOWHHMM=12:50 run stop-hold clear step2 2>&1); rc=$?
+chk "$rc/$([ -e "$T/state/holds/step2" ] && echo held)/$([ -e "$T/run/restart-block" ] && echo block)" "0//" "20m-9: clear: no hold, no block"
+case $out in *"the STOP hold of step2 is cleared (it was: $REASON)."*) :;; *) echo "FAIL: 20m-9: clear text '$out'"; fail=1;; esac
+grep -qF "stop-hold: the STOP hold of step2 cleared by hand (it was: $REASON)" "$T/tsx-autoupdate.log" || { echo "FAIL: 20m-9: no log line of the clear"; fail=1; }
+chk "$(ha .title)/$(ha .restart_required)" "Restart required to finish the update/true" "20m-9: Home Assistant after the clear"
+run stop-hold list >/dev/null 2>&1; chk "$?" 1 "20m-9: list: none"
+reset_calls; NOWDATE=2026-03-01 NOWHHMM=12:51 run now >/dev/null 2>&1
+grep -q '^CALL reboot' "$T/calls" || { echo "FAIL: 20m-9: Install did not restart after the clear"; fail=1; }
+chk "$(pctl_reboot | cut -d/ -f1-2)" "0/1" "20m-9: tsx-panelctl reboot works again"
+
+# 20m-10: a board-step hold and a STOP: the STOP wins in the block; its clear gives the board-step hold back,
+# unchanged; post-update 0 then ends that hold as before
+reset_state 72; rm -f "$PU"; printf "$SIM_BOARD" > "$T/sim.txt"; conf manual on
+TSX_FAKE_POST_UPDATE_RC=23 NOWDATE=2026-03-03 NOWHHMM=12:00 run now >/dev/null
+: > "$T/sim.txt"
+NOWDATE=2026-03-03 NOWHHMM=12:01 run stop-hold set step2 "$REASON" >/dev/null
+chk "$(pu_state)/$(head -n 1 "$T/run/restart-block")" "hold 23/hold stop step2" "20m-10: both: the STOP in the block, post_update unchanged"
+ha .release_summary | grep -qF 'The board step after an install is not done either (hold 23).' || { echo "FAIL: 20m-10: the notes do not name the board-step hold"; fail=1; }
+NOWDATE=2026-03-03 NOWHHMM=12:02 run stop-hold clear step2 >/dev/null
+chk "$(pu_state)/$(blk)/$(ha .title)" "hold 23/hold 23|/Update stopped: check the panel" "20m-10: after the clear: the board-step hold as before"
+TSX_FAKE_POST_UPDATE_RC=0 NOWDATE=2026-03-03 NOWHHMM=12:03 run post-update >/dev/null 2>&1
+chk "$(pu_state)/$([ -e "$T/run/restart-block" ] && echo block)" "/" "20m-10: post-update 0 ends the board-step hold"
+
+# 20m-11: a damaged hold (no reason, a bad name) still stops
+reset_state 73; conf manual on; mkdir -p "$T/state/holds"; : > "$T/state/holds/BAD_NAME"
+NOWDATE=2026-03-03 NOWHHMM=12:10 run refresh >/dev/null
+chk "$(head -n 1 "$T/run/restart-block")" "hold stop unknown" "20m-11: a bad name: owner unknown"
+printf "$SIM_BOARD" > "$T/sim.txt"; reset_calls
+NOWDATE=2026-03-03 NOWHHMM=12:11 run now >/dev/null 2>&1
+grep -qE '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" && { echo "FAIL: 20m-11: a damaged hold did not stop the install"; fail=1; }
+case $(pctl_reboot) in "1/0/"*"a STOP holds the panel (BAD_NAME: no reason in the file)"*) :;; *) echo "FAIL: 20m-11: tsx-panelctl: $(pctl_reboot)"; fail=1;; esac
+run stop-hold clear BAD_NAME >/dev/null; chk "$?/$(ls "$T/state/holds")" "0/" "20m-11: clear by the file name"
+
+# 20m-12: a status write that runs at the same time as the set never leaves the panel without the block
+reset_state 74; conf manual on; NOWDATE=2026-03-03 NOWHHMM=12:20 run check >/dev/null
+( for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do NOWDATE=2026-03-03 NOWHHMM=12:21 run refresh >/dev/null 2>&1; done ) & RP=$!
+NOWDATE=2026-03-03 NOWHHMM=12:21 run stop-hold set step2 "$REASON" >/dev/null 2>&1; rc=$?
+chk "$rc/$(head -n 1 "$T/run/restart-block")" "0/hold stop step2" "20m-12: set during refresh runs: exit 0 and the block"
+wait $RP
+chk "$(head -n 1 "$T/run/restart-block")" "hold stop step2" "20m-12: the block after the refresh runs"
+unset TSX_FAKE_PRE_UPDATE TSX_FAKE_PRE_UPDATE_PEEK TSX_FAKE_POST_UPDATE TSX_FAKE_POST_UPDATE_FIELDS
+
+# 20m-13: a board without the board step: a STOP writes the block and stops everything; the clear removes the block
+NOWDATE=2026-03-03 NOWHHMM=12:22 run refresh >/dev/null
+chk "$(head -n 1 "$T/run/restart-block")" "hold stop step2" "20m-13: no hook: the STOP block"
+printf "$SIM_BOARD" > "$T/sim.txt"; reset_calls
+NOWDATE=2026-03-03 NOWHHMM=12:23 run now >/dev/null 2>&1
+grep -qE '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" && { echo "FAIL: 20m-13: no hook: installed during the STOP"; fail=1; }
+NOWDATE=2026-03-03 NOWHHMM=12:24 run stop-hold clear step2 >/dev/null
+[ -e "$T/run/restart-block" ] && { echo "FAIL: 20m-13: no hook: the block stays after the clear"; fail=1; }
+reset_calls; NOWDATE=2026-03-03 NOWHHMM=12:25 run now >/dev/null 2>&1
+grep -qE '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" || { echo "FAIL: 20m-13: no hook: no install after the clear"; fail=1; }
+reset_state 75
+
 # ---- 14: no Chromium call at all ------------------------------------------------
 grep -qi chromium "$T/apk.calls" "$T/calls" "$T/tsx-autoupdate.log" && { echo "FAIL: 14: a Chromium call or log line"; fail=1; }
 grep -q '^APK-FD8.*autoupdate.lock' "$T/fd8.log" 2>/dev/null && { echo "FAIL: 14: apk upgrade got the descriptor of the lock"; fail=1; }
 
-[ $fail = 0 ] && echo "PASS tsx-autoupdate flow (check/install/window/idle/status/healthcheck/repositories/kernel/new packages/panel app/board hooks)"
+[ $fail = 0 ] && echo "PASS tsx-autoupdate flow (check/install/window/idle/status/healthcheck/repositories/kernel/new packages/panel app/board hooks/STOP holds)"
 exit $fail

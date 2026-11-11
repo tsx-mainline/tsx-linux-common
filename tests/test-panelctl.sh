@@ -18,6 +18,8 @@ command -v busybox >/dev/null 2>&1 || { echo "SKIPPED test-panelctl: no busybox 
 T=$(mktemp -d); PID=
 trap '[ -n "$PID" ] && kill "$PID" 2>/dev/null; [ -n "${KEEP:-}" ] && echo "kept $T" || rm -rf "$T"' EXIT
 mkdir -p "$T/run" "$T/bin"
+# The STOP holds of tsx-autoupdate: a folder of this test, never the host's /var/lib/tsx/autoupdate.
+export TSX_AUTOUPDATE_STATE_DIR="$T/au"
 # the backlight's top level as tsx-idled reports it (tsx-panelctl's range)
 printf 'level 17\nmax 31\n' > "$T/run/brightness.state"
 N=0 F=0
@@ -736,6 +738,43 @@ env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run5" TSX_REBOOT_BIN="$T/bin/reboot" bus
 grep -qxF reboot "$T/cmds.log" && ok "console reboot with no block restarts" || bad "console reboot with no block"
 oneshot "reboot --force"
 grep -qxF reboot "$T/cmds.log" && bad "the FIFO accepted reboot --force" || ok "the FIFO rejects reboot --force (only the console has it)"
+
+echo "== a STOP hold of tsx-autoupdate (stop-hold set OWNER REASON): the restart waits, with the STOP text =="
+# the restart block that tsx-autoupdate writes during a STOP (no holds folder: the block alone blocks)
+printf 'hold stop step2\nreason the check after step 2 found a change\n' > "$T/run5/restart-block"
+oneshot reboot
+grep -qxF reboot "$T/cmds.log" && bad "hold stop: the FIFO reboot ran" || ok "hold stop: the FIFO reboot does not run"
+grep -q 'reboot refused: a STOP holds the panel (step2: the check after step 2 found a change). Keep the panel powered and ask for help' "$T/oneshot5.log" && ok "hold stop: the log names the STOP, the owner and the reason" || bad "hold stop: log: $(cat "$T/oneshot5.log")"
+grep -q 'board step' "$T/oneshot5.log" && bad "hold stop: the log names the board step" || ok "hold stop: not the text of a board-step hold"
+: > "$T/cmds.log"
+out=$(env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run5" TSX_REBOOT_BIN="$T/bin/reboot" busybox sh "$SCRIPT" reboot 2>&1); rc=$?
+[ $rc = 1 ] && ! grep -qxF reboot "$T/cmds.log" && ok "hold stop: console reboot exit 1, no reboot" || bad "hold stop: console reboot rc $rc"
+case $out in *"not restarting: a STOP holds the panel (step2: the check after step 2 found a change)"*"--force"*) ok "hold stop: the console text";; *) bad "hold stop: console text: $out";; esac
+# the holds folder alone (a boot before tsx-autoupdate wrote the block of this boot)
+rm -f "$T/run5/restart-block"; mkdir -p "$T/au/holds"
+printf 'owner step2\nset 2026-03-01T12:00:00\nreason boot_b changed\n' > "$T/au/holds/step2"
+oneshot reboot
+grep -qxF reboot "$T/cmds.log" && bad "holds folder: the FIFO reboot ran" || ok "holds folder alone: the FIFO reboot does not run"
+grep -q 'reboot refused: a STOP holds the panel (step2: boot_b changed)' "$T/oneshot5.log" && ok "holds folder: the log names the owner and the reason" || bad "holds folder: log: $(cat "$T/oneshot5.log")"
+# the hold file wins over a board-step block; a file with no reason still blocks
+echo "hold 21" > "$T/run5/restart-block"; : > "$T/au/holds/step2"
+oneshot reboot
+grep -qxF reboot "$T/cmds.log" && bad "an empty hold file: the reboot ran" || ok "an empty hold file blocks too"
+grep -q 'a STOP holds the panel (step2: no reason in the file)' "$T/oneshot5.log" && ok "the STOP text wins over the board-step block" || bad "STOP over hold 21: $(cat "$T/oneshot5.log")"
+# --force on the console stays the override of a person
+env PATH="$T/bin:$PATH" TSX_RUN_DIR="$T/run5" TSX_REBOOT_BIN="$T/bin/reboot" busybox sh "$SCRIPT" reboot --force >/dev/null 2>&1
+grep -qxF reboot "$T/cmds.log" && ok "console reboot --force restarts during a STOP" || bad "reboot --force during a STOP"
+# a dot file (the temporary file of a write) is not a hold; without a hold the board-step block counts as before
+rm -f "$T/au/holds/step2"; : > "$T/au/holds/.step2.123"
+oneshot reboot
+grep -q 'reboot refused: the board step after an update failed (exit status 21)' "$T/oneshot5.log" && ok "no hold file: the board-step text as before" || bad "no hold file: $(cat "$T/oneshot5.log")"
+rm -f "$T/run5/restart-block"
+oneshot reboot
+grep -qxF reboot "$T/cmds.log" && ok "a temporary file only: reboot runs" || bad "a dot file blocked the reboot"
+rm -rf "$T/au/holds"; : > "$T/au/holds"
+oneshot reboot
+grep -qxF reboot "$T/cmds.log" && bad "holds is a file: the reboot ran" || ok "holds is not a folder: blocked"
+rm -f "$T/au/holds"
 
 echo "== $N ok, $F failed =="
 [ $F = 0 ] && echo PASS test-panelctl || echo FAIL test-panelctl

@@ -60,6 +60,11 @@
 #                              an automatic update rebooted the panel)
 #   tsx-autoupdate post-update run the board step after an install again, by
 #                              hand (see "Board hooks"). It never restarts
+#   tsx-autoupdate stop-hold set OWNER REASON...
+#   tsx-autoupdate stop-hold clear OWNER
+#   tsx-autoupdate stop-hold list
+#                              a STOP hold of a program outside tsx-autoupdate
+#                              (see "STOP holds")
 #
 # Board hooks: board.sh can define two optional functions.
 #   tsx_board_pre_update   runs before apk upgrade. A non-zero status stops
@@ -85,6 +90,25 @@
 #   restart of tsx-panelctl reboot (the Restart button). Optional board
 #   names for the text: TSX_POST_UPDATE_STEP, tsx_board_post_update_meaning N,
 #   and tsx_board_update_status for the status.
+#
+# STOP holds: a program outside tsx-autoupdate (the OWNER, for example the
+# step 2 of uc-pxx, owner "step2") can stop every install and restart until a
+# person checks the panel: tsx-autoupdate stop-hold set OWNER REASON. The hold
+# is the file $STATE/holds/OWNER ("owner", "set" and "reason" lines), so it
+# stays across boots, as the field post_update does. While a file is in
+# $STATE/holds:
+#   - nothing installs (now, the tick), the board step does not run (also not
+#     post-update by hand: it exits 1), and nothing restarts the panel;
+#   - $RUN/restart-block is "hold stop OWNER" with a line "reason TEXT", on
+#     every board, at every status write (check, refresh, boot and the others
+#     never remove it). tsx-panelctl also reads $STATE/holds itself;
+#   - the status, Home Assistant and update.state say STOP and the reason.
+# No command of tsx-autoupdate ends a STOP hold by itself: not a status, not
+# a boot, not post-update. Only tsx-autoupdate stop-hold clear OWNER (a person
+# on the console) ends it. set and clear take no lock (the owner may hold
+# $RUN/autoupdate.lock). set exits 0 only when the file is on the disk (sync)
+# and the restart block says the STOP. A STOP hold does not change the field
+# post_update: a board-step hold stays as it was, and ends as before.
 #
 # One run at a time: now, the tick and post-update take a non-blocking flock
 # on $RUN/autoupdate.lock. A second run logs the skip and ends.
@@ -146,6 +170,7 @@ RUN=${TSX_RUN_DIR:-/run/tsx}
 OVERRIDE=${TSX_AUTOUPDATE_OVERRIDE:-$RUN/autoupdate.conf}
 BOOT_ID_FILE=${TSX_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
 STATE=${TSX_STATE_DIR:-/var/lib/tsx/autoupdate}
+HOLDS=$STATE/holds   # the STOP holds, one file for each owner (see "STOP holds")
 LOG=${TSX_LOG:-/var/log/tsx-autoupdate.log}
 IDLED_STATE=${TSX_IDLED_STATE:-/run/tsx-idled.state}
 KIOSK_CONF=${TSX_KIOSK_CONF:-/etc/kiosk.conf}
@@ -307,6 +332,45 @@ esc_nl_to() {
 # md_list "a (x -> y); b (x -> y)": a Markdown list, one package on each line.
 md_list() { printf '%s\n' "$1" | tr ';' '\n' | sed 's/^ *//; s/ *$//; /^$/d; s/^/- /'; }
 
+# ---- STOP holds (see "STOP holds" at the top) -----------------------------
+
+# valid_owner NAME: 1 to 32 of a-z, 0-9 and -, not starting with -.
+valid_owner() {
+	case $1 in ''|-*|*[!a-z0-9-]*) return 1;; esac
+	[ ${#1} -le 32 ]
+}
+
+# stop_hold_read: is a STOP hold set? SH_N gets the number of holds, SH_ALL
+# their owners, and SH_OWNER, SH_SET and SH_REASON the values of the first
+# one (in the order of the file names). Every entry of $HOLDS counts, also one
+# with a bad name or no readable reason, so a damaged file still stops (only
+# the temporary file of a write, .NAME, does not). Built-ins only.
+stop_hold_read() {
+	SH_N=0 SH_ALL= SH_OWNER= SH_SET= SH_REASON=
+	if [ -e "$HOLDS" ] && [ ! -d "$HOLDS" ]; then
+		SH_N=1 SH_ALL=unknown SH_OWNER=unknown SH_REASON="$HOLDS is not a folder"
+		return 0
+	fi
+	for _sh_f in "$HOLDS"/*; do
+		[ -e "$_sh_f" ] || [ -L "$_sh_f" ] || continue
+		_sh_o=${_sh_f##*/}
+		valid_owner "$_sh_o" || _sh_o=unknown
+		SH_N=$((SH_N + 1)); SH_ALL="${SH_ALL:+$SH_ALL }$_sh_o"
+		[ "$SH_N" = 1 ] || continue
+		SH_OWNER=$_sh_o
+		fget SH_SET "$_sh_f" set; fget SH_REASON "$_sh_f" reason
+		[ -n "$SH_REASON" ] || SH_REASON="(no reason in $_sh_f)"
+	done
+	[ "$SH_N" -gt 0 ]
+}
+
+# one_line_to VAR TEXT: VAR gets TEXT on one line (each control character a
+# space), at most 200 characters.
+one_line_to() {
+	_ol_v=$(printf '%s' "$2" | tr '\000-\037\177' ' ' | cut -c1-200)
+	eval "$1=\$_ol_v"
+}
+
 # compute_view: what Home Assistant shows. It sets V_INSTALLED (the running
 # release), V_LATEST, V_TITLE, V_SUMMARY (Markdown: HA shows it as the release
 # notes) and V_RESTART (1 = a restart is required).
@@ -396,6 +460,20 @@ compute_view() {
 			V_LATEST="$inst (not finished)"
 		fi
 	fi
+	# A STOP hold (see "STOP holds") wins over every text above: nothing
+	# installs and nothing may ask for a restart.
+	if stop_hold_read; then
+		V_RESTART=0
+		V_TITLE="STOP: check the panel"
+		paras="STOP ($SH_OWNER): $SH_REASON${nl}${nl}Keep the panel powered. Do not restart it and do not switch it off. Nothing installs and nothing restarts the panel while the STOP holds.${nl}${nl}A person must check the panel first: tsx-autoupdate status. Only a person ends the STOP: tsx-autoupdate stop-hold clear $SH_OWNER."
+		[ "$SH_N" -gt 1 ] && paras="$paras${nl}${nl}STOP holds: $SH_ALL."
+		[ -n "$pu" ] && paras="$paras${nl}${nl}The board step after an install is not done either ($pu)."
+		if [ "$pcount" -gt 0 ] 2>/dev/null; then
+			paras="$paras${nl}${nl}Pending, not installed while the STOP holds:${nl}${nl}$(md_list "$plist")"
+		else
+			V_LATEST="$inst (stopped)"
+		fi
+	fi
 	fget rw "$f" repo_warning
 	[ -n "$rw" ] && paras="${paras:+$paras$nl$nl}WARNING: $rw"
 	[ -n "$paras" ] || paras="up to date"
@@ -410,12 +488,38 @@ write_ha_json() { compute_view; write_ha_json_body; }
 write_status() { compute_view; write_update_json_body; write_ha_json_body; write_restart_block; }
 
 # write_restart_block: $RUN/restart-block tells tsx-panelctl that a restart
-# from Home Assistant or the panel must wait. "busy" while an install with the
-# board step runs (tsx-panelctl also checks that a run holds the lock), "hold
-# N" while a failed board step waits for a person. Only a board with
-# tsx_board_post_update writes the file: on the other boards there is none.
+# from Home Assistant or the panel must wait. "hold stop OWNER" (and a line
+# "reason TEXT") while a STOP hold is set, on every board. "busy" while an
+# install with the board step runs (tsx-panelctl also checks that a run holds
+# the lock), "hold N" while a failed board step waits for a person. Without a
+# STOP hold, only a board with tsx_board_post_update writes the file: on the
+# other boards there is none.
+#
+# The look at the holds and the write of the file are one step under the
+# blocking flock $RUN/restart-block.lock (fd 7, not $RUN/autoupdate.lock). So a
+# status write that read "no STOP hold" cannot remove the file after
+# stop-hold set wrote it. A panel without flock writes without the lock.
 write_restart_block() {
-	have_post_hook || return 0
+	mkdir_once "$RUN"
+	if command -v flock >/dev/null 2>&1; then
+		{ flock -x 7; write_restart_block_now; } 7>>"$RUN/restart-block.lock"
+	else
+		write_restart_block_now
+	fi
+	return 0
+}
+write_restart_block_now() {
+	if stop_hold_read; then
+		printf 'hold stop %s\nreason %s\n' "$SH_OWNER" "$SH_REASON" > "$RUN/restart-block.$$" && mv "$RUN/restart-block.$$" "$RUN/restart-block"
+		return 0
+	fi
+	if ! have_post_hook; then
+		# Only a STOP hold writes the file on this board: remove the one that a
+		# cleared STOP hold left.
+		rb_l=; [ -r "$RUN/restart-block" ] && read -r rb_l < "$RUN/restart-block"
+		case $rb_l in "hold stop "*) rm -f "$RUN/restart-block";; esac
+		return 0
+	fi
 	fget rb_pu "$STATE/fields" post_update; fget rb_ip "$STATE/fields" in_progress
 	case $rb_pu in
 	hold*) printf '%s\n' "$rb_pu" > "$RUN/restart-block.$$" && mv "$RUN/restart-block.$$" "$RUN/restart-block";;
@@ -691,8 +795,13 @@ do_check() {
 
 # do_restart: restart the panel. The marker tells the health check after the
 # boot that an update restarted the panel, and if the panel app had Home
-# Assistant.
+# Assistant. A STOP hold refuses the restart (also one that was set while the
+# install ran).
 do_restart() {
+	if stop_hold_read; then
+		log "restart refused: STOP hold of $SH_OWNER ($SH_REASON). A person must check the panel, then run tsx-autoupdate stop-hold clear $SH_OWNER"
+		return 1
+	fi
 	mkdir_once "$STATE"
 	fget app_ha "$APP_STATE" ha
 	printf 'panel_app_ha %s\n' "$app_ha" > "$STATE/reboot-marker"
@@ -794,6 +903,11 @@ do_install() {
 	f=$STATE/fields
 	fget pcount "$f" pending_count; [ -n "$pcount" ] || pcount=0
 	fget need_rb "$f" reboot_pending  # the writers below reuse rb
+	# A STOP hold stops every install and restart (see "STOP holds").
+	if stop_hold_read; then
+		log "install: STOPPED, STOP hold of $SH_OWNER ($SH_REASON). Nothing installs and nothing restarts until a person runs tsx-autoupdate stop-hold clear $SH_OWNER"
+		return 0
+	fi
 	# A failed board step that needs a person stops every install and restart.
 	fget di_pu "$f" post_update
 	case $di_pu in
@@ -879,6 +993,10 @@ do_install() {
 do_tick() {
 	load_conf
 	do_check
+	if stop_hold_read; then
+		log "STOP hold of $SH_OWNER ($SH_REASON): not installing, not restarting"
+		return 0
+	fi
 	if [ "$MODE" != auto ]; then
 		log "manual mode: not installing (install from Home Assistant, or run tsx-autoupdate now)"
 		return 0
@@ -914,6 +1032,12 @@ cmd_post_update_run() { mkdir_once "$RUN"; mkdir_once "$STATE"; ensure_boot; cmd
 # a hold, or after a plain apk upgrade). It never restarts the panel.
 cmd_post_update() {
 	f=$STATE/fields
+	# A STOP hold: the step does not run (it may write the boot state).
+	if stop_hold_read; then
+		log "post-update: refused, STOP hold of $SH_OWNER ($SH_REASON)"
+		echo "tsx-autoupdate: a STOP hold of $SH_OWNER is set ($SH_REASON). The board step does not run. Keep the panel powered and do not restart it. A person checks the panel first, then runs tsx-autoupdate stop-hold clear $SH_OWNER." >&2
+		return 1
+	fi
 	if ! have_post_hook; then
 		set_fields "$f" post_update=; write_status
 		echo "tsx-autoupdate: this board has no step after an install (no tsx_board_post_update)"
@@ -948,6 +1072,11 @@ cmd_post_update() {
 
 cmd_status() {
 	f=$STATE/fields
+	if stop_hold_read; then
+		echo "STOP hold:      $SH_OWNER, set ${SH_SET:-at an unknown time}: $SH_REASON"
+		echo "                Keep the panel powered, do not restart it. Nothing installs. Only a person ends it: tsx-autoupdate stop-hold clear $SH_OWNER"
+		[ "$SH_N" -gt 1 ] && echo "                STOP holds: $SH_ALL (tsx-autoupdate stop-hold list)"
+	fi
 	if [ ! -r "$f" ]; then echo "tsx-autoupdate: no status yet (has it run since boot?)"; return 1; fi
 	compute_view
 	echo "mode:           $MODE (automatic restart $AUTO_RESTART)"
@@ -990,6 +1119,78 @@ cmd_status() {
 		echo "LED bar image:  newer image waiting (${lo:-?} -> ${ln:-?}). Run tsx-ledbar-fw-install to load it."
 	fi
 	return 0
+}
+
+# cmd_stop_hold set OWNER REASON... | clear OWNER | list (see "STOP holds").
+# set: 0 = the hold file is on the disk and the restart block says the STOP;
+# 1 = not done (the message says what is in place); 2 = usage. clear: 0 = the
+# hold of OWNER is gone; 1 = OWNER had none. list: 0 = at least one hold, 1 =
+# none. One line for each hold: "stop-hold OWNER set TIME reason TEXT".
+cmd_stop_hold() {
+	mkdir_once "$RUN"
+	case "${1:-}" in
+	set)
+		[ $# -ge 3 ] || { echo "usage: tsx-autoupdate stop-hold set OWNER REASON..." >&2; return 2; }
+		sh_o=$2; shift 2
+		valid_owner "$sh_o" || { echo "tsx-autoupdate: stop-hold: the owner '$sh_o' is not 1 to 32 of a-z, 0-9 and - (not first)" >&2; return 2; }
+		one_line_to sh_r "$*"
+		case $sh_r in *[!\ ]*) ;; *) echo "tsx-autoupdate: stop-hold: the reason is empty" >&2; return 2;; esac
+		if ! { mkdir -p "$HOLDS" 2>/dev/null && [ -d "$HOLDS" ]; }; then
+			echo "tsx-autoupdate: stop-hold: cannot make $HOLDS: the STOP hold is NOT set" >&2; return 1
+		fi
+		sh_t="$HOLDS/.$sh_o.$$"
+		# The file reaches the disk before the rename, and the rename before
+		# the status says it (sync FILE: fsync; a sync without FILE as the
+		# fallback).
+		if ! { printf 'owner %s\nset %s\nreason %s\n' "$sh_o" "$(now_iso)" "$sh_r" > "$sh_t" && { sync "$sh_t" 2>/dev/null || sync; } && mv -f "$sh_t" "$HOLDS/$sh_o"; }; then
+			rm -f "$sh_t"
+			echo "tsx-autoupdate: stop-hold: cannot write $HOLDS/$sh_o: the STOP hold is NOT set" >&2; return 1
+		fi
+		sync "$HOLDS" 2>/dev/null || sync
+		fget sh_c "$HOLDS/$sh_o" reason
+		if [ "$sh_c" != "$sh_r" ]; then
+			echo "tsx-autoupdate: stop-hold: $HOLDS/$sh_o reads back wrong: the STOP hold may not be set" >&2; return 1
+		fi
+		log "stop-hold: set by $sh_o: $sh_r"
+		write_status
+		rb_l=; [ -r "$RUN/restart-block" ] && read -r rb_l < "$RUN/restart-block"
+		case $rb_l in
+		"hold stop "*) ;;
+		*) echo "tsx-autoupdate: stop-hold: the hold of $sh_o is set ($HOLDS/$sh_o), but $RUN/restart-block does not say it" >&2; return 1;;
+		esac
+		echo "tsx-autoupdate: STOP hold of $sh_o set: $sh_r"
+		return 0;;
+	clear)
+		[ $# = 2 ] || { echo "usage: tsx-autoupdate stop-hold clear OWNER" >&2; return 2; }
+		sh_o=$2
+		case $sh_o in ''|.*|*/*) echo "tsx-autoupdate: stop-hold: '$sh_o' is not a name of $HOLDS" >&2; return 2;; esac
+		if [ ! -e "$HOLDS/$sh_o" ] && [ ! -L "$HOLDS/$sh_o" ]; then
+			echo "tsx-autoupdate: stop-hold: $sh_o has no STOP hold" >&2
+			stop_hold_read && echo "tsx-autoupdate: STOP holds: $SH_ALL" >&2
+			return 1
+		fi
+		fget sh_c "$HOLDS/$sh_o" reason
+		rm -f "$HOLDS/$sh_o" || { echo "tsx-autoupdate: stop-hold: cannot remove $HOLDS/$sh_o" >&2; return 1; }
+		sync "$HOLDS" 2>/dev/null || sync
+		log "stop-hold: the STOP hold of $sh_o cleared by hand (it was: ${sh_c:-no reason})"
+		write_status
+		echo "tsx-autoupdate: the STOP hold of $sh_o is cleared (it was: ${sh_c:-no reason})."
+		if stop_hold_read; then echo "tsx-autoupdate: STOP holds still set: $SH_ALL"; fi
+		return 0;;
+	list)
+		[ $# = 1 ] || { echo "usage: tsx-autoupdate stop-hold list" >&2; return 2; }
+		if [ -e "$HOLDS" ] && [ ! -d "$HOLDS" ]; then echo "stop-hold unknown set - reason $HOLDS is not a folder"; return 0; fi
+		sh_n=0
+		for sh_f in "$HOLDS"/*; do
+			[ -e "$sh_f" ] || [ -L "$sh_f" ] || continue
+			sh_n=$((sh_n + 1))
+			fget sh_s "$sh_f" set; fget sh_c "$sh_f" reason
+			echo "stop-hold ${sh_f##*/} set ${sh_s:--} reason ${sh_c:-(none)}"
+		done
+		[ $sh_n -gt 0 ] || { echo "no STOP hold"; return 1; }
+		return 0;;
+	*) echo "usage: tsx-autoupdate stop-hold set OWNER REASON... | clear OWNER | list" >&2; return 2;;
+	esac
 }
 
 # app_problem NEED_HA: what is wrong with the panel app, or nothing.
@@ -1108,8 +1309,9 @@ main() {
 	status) load_conf; cmd_status;;
 	healthcheck) load_conf; cmd_healthcheck;;
 	post-update) load_conf; run_locked post-update cmd_post_update_run;;
+	stop-hold) shift; load_conf; cmd_stop_hold "$@";;
 	''|cron) run_locked tick do_tick;;
-	*) echo "usage: tsx-autoupdate [now|check|refresh|boot|get NAME|status|healthcheck|post-update]" >&2; return 2;;
+	*) echo "usage: tsx-autoupdate [now|check|refresh|boot|get NAME|status|healthcheck|post-update|stop-hold set OWNER REASON...|stop-hold clear OWNER|stop-hold list]" >&2; return 2;;
 	esac
 }
 main "$@"

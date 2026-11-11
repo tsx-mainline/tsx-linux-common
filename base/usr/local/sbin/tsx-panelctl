@@ -136,6 +136,12 @@
 # "reboot" of the FIFO (the Restart button of Home Assistant and of the panel)
 # restarts nothing and logs why. On the console, "tsx-panelctl reboot --force"
 # restarts anyway. The other boards have no such file.
+# A STOP hold (tsx-autoupdate stop-hold set OWNER REASON, docs/autoupdate.md
+# "STOP holds") blocks the same way on every board: the file
+# $TSX_AUTOUPDATE_STATE_DIR/holds/OWNER (default /var/lib/tsx/autoupdate), read
+# here directly, so it blocks also before tsx-autoupdate wrote the restart
+# block of this boot; and "hold stop OWNER" with a line "reason TEXT" in the
+# restart block. The text names the owner and the reason.
 #
 # Dark mode: the browser kiosk shows pages in the dark color scheme (panel.conf
 # KIOSK_DARK, see tsx-config). "get dark-mode" prints on or off: the value
@@ -232,6 +238,7 @@
 # TSX_LAYOUT_CHECK_BIN, TSX_PANEL_LAYOUT_FILE.
 set -u -f
 R=${TSX_RUN_DIR:-/run/tsx}
+AU_STATE=${TSX_AUTOUPDATE_STATE_DIR:-/var/lib/tsx/autoupdate}   # the STOP holds of tsx-autoupdate
 FIFO=${TSX_PANELCTL:-$R/panelctl}
 LEDBAR_FW=${TSX_LEDBAR_FW:-$R/ledbar.fw}
 LEDBAR_USB=${TSX_LEDBAR_USB:-$R/ledbar.usb}
@@ -289,9 +296,28 @@ log() { echo "$(date '+%F %T') tsx-panelctl: $*"; }
 # restart_block: print why a restart must wait now, or nothing (see "Restart
 # block" at the top).
 restart_block() {
+	# A STOP hold: any entry of the folder, the first one by name, also one
+	# with no reason (a damaged file still stops).
+	if [ -e "$AU_STATE/holds" ] && [ ! -d "$AU_STATE/holds" ]; then
+		echo "a STOP holds the panel ($AU_STATE/holds is not a folder). Keep the panel powered and ask for help (tsx-autoupdate status)"
+		return 0
+	fi
+	# the names of the folder only (set -f is on: the glob just here)
+	set +f
+	for h in "$AU_STATE/holds"/*; do
+		[ -e "$h" ] || [ -L "$h" ] || continue
+		set -f
+		r=$(sed -n 's/^reason //p' "$h" 2>/dev/null | head -n 1)
+		echo "a STOP holds the panel ($(safe "${h##*/}"): $(safe "${r:-no reason in the file}")). Keep the panel powered and ask for help (tsx-autoupdate status)"
+		return 0
+	done
+	set -f
 	[ -s "$R/restart-block" ] || return 0
 	rb=$(head -n 1 "$R/restart-block" 2>/dev/null)
 	case $rb in
+	"hold stop "*)
+		r=$(sed -n '2s/^reason //p' "$R/restart-block" 2>/dev/null)
+		echo "a STOP holds the panel ($(safe "${rb#hold stop }"): $(safe "${r:-no reason given}")). Keep the panel powered and ask for help (tsx-autoupdate status)";;
 	hold*) echo "the board step after an update failed (exit status ${rb#hold }) and waits for a person (tsx-autoupdate status)";;
 	busy)
 		# Only a running tsx-autoupdate holds the lock.

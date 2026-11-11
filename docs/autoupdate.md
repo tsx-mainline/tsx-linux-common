@@ -163,7 +163,23 @@ A board can also define `tsx_board_update_status`. It prints a line when the boo
 
 ### Restart block
 
-On a board with `tsx_board_post_update`, `tsx-autoupdate` writes `/run/tsx/restart-block` at each status write: `busy` while an install with the function runs, `hold N` during a hold. Without a reason it removes the file. The command `reboot` of `tsx-panelctl` (the Restart button of Home Assistant and of the panel) then restarts nothing and logs the reason. `busy` counts only while a run holds the lock, so a file that a killed run left behind blocks nothing. On the console, `tsx-panelctl reboot --force` restarts anyway. A board without the function has no such file, and its restart works as before.
+On a board with `tsx_board_post_update`, `tsx-autoupdate` writes `/run/tsx/restart-block` at each status write: `busy` while an install with the function runs, `hold N` during a hold. Without a reason it removes the file. The command `reboot` of `tsx-panelctl` (the Restart button of Home Assistant and of the panel) then restarts nothing and logs the reason. `busy` counts only while a run holds the lock, so a file that a killed run left behind blocks nothing. On the console, `tsx-panelctl reboot --force` restarts anyway. A board without the function has no such file, and its restart works as before (except during a STOP hold, below).
+
+### STOP holds
+
+A program outside `tsx-autoupdate` (the owner) can stop every install and restart until a person checks the panel. Example: step 2 of the mainline install on the UC-P10 (owner `step2`), when its check after the restart finds a change.
+
+- `tsx-autoupdate stop-hold set OWNER REASON...` sets the hold. `OWNER` is 1 to 32 characters of `a-z`, `0-9` and `-` (not first). `REASON` becomes one line of at most 200 characters. The hold is the file `/var/lib/tsx/autoupdate/holds/OWNER` (lines `owner`, `set` and `reason`). It is written to a temporary file, synced and renamed, so it stays across a power loss and a boot. Exit 0 only when the file reads back and `/run/tsx/restart-block` says the STOP. Exit 1: not done (the message says what is in place). Exit 2: a usage error. A second `set` of the same owner replaces the reason.
+- `tsx-autoupdate stop-hold clear OWNER` ends the hold of `OWNER`. Only a person runs it, after a check of the panel. Exit 1 when `OWNER` has no hold.
+- `tsx-autoupdate stop-hold list` prints one line `stop-hold OWNER set TIME reason TEXT` for each hold. Exit 1 when there is none.
+
+`set` and `clear` take no lock (the owner may hold `/run/tsx/autoupdate.lock`). While any file is in `/var/lib/tsx/autoupdate/holds`:
+
+- Nothing installs: `tsx-autoupdate now` (Install) and the scheduled run log the STOP and stop. The board step does not run: `tsx-autoupdate post-update` exits with 1.
+- Nothing restarts the panel: not the restart after an install (also a STOP that was set while the install ran), not Install with "restart required", not the scheduled restart. `tsx-panelctl reboot` (the Restart button) refuses on every board. It reads the folder itself, and `/run/tsx/restart-block`, which is `hold stop OWNER` with a line `reason TEXT`. The status write of every command (`check`, `refresh`, `boot` and the others) writes it again and never removes it. On the console, `tsx-panelctl reboot --force` restarts anyway.
+- Home Assistant shows the title `STOP: check the panel`, the latest version `<release> (stopped)` (or the pending packages), and notes with the owner, the reason and what to do. `tsx-autoupdate status` shows the line `STOP hold` first.
+
+No command of `tsx-autoupdate` ends a STOP hold by itself: not a status write, a boot, an install or `post-update`. A STOP hold does not change the board step state (`post_update`): a board-step hold stays and ends as before, after the STOP hold is cleared.
 
 ## Restart rule
 
@@ -210,7 +226,8 @@ The panel app writes `/run/tsx/panel-app.state` at its start, at its first frame
 | `tsx-autoupdate boot` | Record the running release. The service calls it at each boot. |
 | `tsx-autoupdate get mode\|auto-restart` | Print a setting |
 | `tsx-autoupdate post-update` | Run the board step after an install (`tsx_board_post_update`) again, by hand. It never restarts the panel, and it sets "restart required" after a good step. See [Board hooks](#board-hooks). |
-| `tsx-autoupdate status` | The mode, the versions, the pending packages, "restart required", the last install, the health result, the repository state and, when one waits, a newer LED bar image |
+| `tsx-autoupdate stop-hold set OWNER REASON...`, `stop-hold clear OWNER`, `stop-hold list` | Set, end (a person only) or list a STOP hold. See [STOP holds](#stop-holds). |
+| `tsx-autoupdate status` | The STOP hold (if one is set), the mode, the versions, the pending packages, "restart required", the last install, the health result, the repository state and, when one waits, a newer LED bar image |
 
 | File | Contents |
 |---|---|
@@ -218,6 +235,7 @@ The panel app writes `/run/tsx/panel-app.state` at its start, at its first frame
 | `/run/tsx/update-ha-state.json` | The status for the Home Assistant entity Update, and the fields `restart_required`, `mode` and `auto_restart` |
 | `/run/tsx/update.state` | The same values as `key value` lines for the panel app and `tsx-panelctl`: `installed`, `latest`, `title`, `summary` (one line, `\n` for a newline), `in-progress`, `restart-required`, `mode`, `auto-restart` |
 | `/run/tsx/autoupdate.conf` | The override that `tsx-config apply` writes from `panel.conf` |
+| `/var/lib/tsx/autoupdate/holds/OWNER` | A STOP hold of `OWNER` (see [STOP holds](#stop-holds)) |
 | `/var/log/tsx-autoupdate.log` | The log |
 
 If only the repositories of this project (`APK_URL`) are unreachable, the status shows a warning and the Alpine updates still install. An unreachable Alpine repository stops the install.
