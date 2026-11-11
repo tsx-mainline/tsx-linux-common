@@ -1025,6 +1025,8 @@ STATE_OVR="$T/st-cc" NOWDATE=2026-03-01 NOWHHMM=12:31 run stop-hold set cc "$(pr
 chk "$(sed -n 's/^reason //p' "$T/st-cc/holds/cc")" "one two three" "20m-6: control characters in the reason"
 STATE_OVR="$T/st-cc" NOWDATE=2026-03-01 NOWHHMM=12:31 run stop-hold set cc "$(printf '%0300d' 0)" >/dev/null 2>&1
 chk "$(sed -n 's/^reason //p' "$T/st-cc/holds/cc" | wc -c)" 201 "20m-6: the reason is cut to 200 characters"
+STATE_OVR="$T/st-cc" NOWDATE=2026-03-01 NOWHHMM=12:31 run stop-hold set cc "$(printf 'caf\303\251 ok')" >/dev/null 2>&1
+chk "$(sed -n 's/^reason //p' "$T/st-cc/holds/cc")" "caf?? ok" "20m-6: a byte outside printable ASCII becomes ?"
 rm -rf "$T/st-cc"; NOWDATE=2026-03-01 NOWHHMM=12:31 run refresh >/dev/null
 # a folder that cannot be written: exit 1, nothing set (as root the write would work: not tested then)
 if [ "$(id -u)" != 0 ]; then
@@ -1091,7 +1093,26 @@ printf "$SIM_BOARD" > "$T/sim.txt"; reset_calls
 NOWDATE=2026-03-03 NOWHHMM=12:11 run now >/dev/null 2>&1
 grep -qE '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" && { echo "FAIL: 20m-11: a damaged hold did not stop the install"; fail=1; }
 case $(pctl_reboot) in "1/0/"*"a STOP holds the panel (BAD_NAME: no reason in the file)"*) :;; *) echo "FAIL: 20m-11: tsx-panelctl: $(pctl_reboot)"; fail=1;; esac
+run status | grep -qF 'Only a person ends it: tsx-autoupdate stop-hold clear NAME (NAME as tsx-autoupdate stop-hold list shows it)' || { echo "FAIL: 20m-11: the status names clear unknown"; fail=1; }
+ha .release_summary | grep -q 'stop-hold clear unknown' && { echo "FAIL: 20m-11: the notes name clear unknown"; fail=1; }
 run stop-hold clear BAD_NAME >/dev/null; chk "$?/$(ls "$T/state/holds")" "0/" "20m-11: clear by the file name"
+# a FIFO in the folder: it holds, and no status write and no tsx-panelctl reboot waits on it
+mkfifo "$T/state/holds/fifo"
+# waitfor PID: at most 10 s, then FAIL and kill
+waitfor() {
+	for _ in $(seq 1 100); do kill -0 "$1" 2>/dev/null || break; sleep 0.1; done
+	if kill -0 "$1" 2>/dev/null; then echo "FAIL: 20m-11: $2 waits on a FIFO hold"; fail=1; kill "$1"; fi
+	wait "$1" 2>/dev/null
+}
+( NOWDATE=2026-03-03 NOWHHMM=12:12 run refresh >/dev/null 2>&1 ) & waitfor $! "the status write"
+chk "$(head -n 1 "$T/run/restart-block")" "hold stop fifo" "20m-11: a FIFO entry holds"
+( pctl_reboot > "$T/pctl-fifo.out" ) & waitfor $! "tsx-panelctl reboot"
+case $(cat "$T/pctl-fifo.out") in "1/0/"*"a STOP holds the panel (fifo: no reason in the file)"*) :;;
+	*) echo "FAIL: 20m-11: tsx-panelctl with a FIFO hold: $(cat "$T/pctl-fifo.out")"; fail=1;; esac
+( run stop-hold list > "$T/list-fifo.out" 2>&1 ) & waitfor $! "stop-hold list"
+grep -qx 'stop-hold fifo set - reason (none)' "$T/list-fifo.out" || { echo "FAIL: 20m-11: list with a FIFO: $(cat "$T/list-fifo.out")"; fail=1; }
+( run stop-hold clear fifo >/dev/null 2>&1 ) & waitfor $! "stop-hold clear"
+chk "$(ls "$T/state/holds")" "" "20m-11: clear of the FIFO entry"
 
 # 20m-12: a status write that runs at the same time as the set never leaves the panel without the block
 reset_state 74; conf manual on; NOWDATE=2026-03-03 NOWHHMM=12:20 run check >/dev/null

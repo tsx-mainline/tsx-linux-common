@@ -307,7 +307,8 @@ restart_block() {
 	for h in "$AU_STATE/holds"/*; do
 		[ -e "$h" ] || [ -L "$h" ] || continue
 		set -f
-		r=$(sed -n 's/^reason //p' "$h" 2>/dev/null | head -n 1)
+		# only a regular file is read (a FIFO would block the read)
+		r=; [ -f "$h" ] && r=$(sed -n 's/^reason //p' "$h" 2>/dev/null | head -n 1)
 		echo "a STOP holds the panel ($(safe "${h##*/}"): $(safe "${r:-no reason in the file}")). Keep the panel powered and ask for help (tsx-autoupdate status)"
 		return 0
 	done
