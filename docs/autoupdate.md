@@ -222,7 +222,7 @@ The panel app writes `/run/tsx/panel-app.state` at its start, at its first frame
 | `tsx-autoupdate` | One scheduled run: check, then install if the mode, the window and the screen allow it |
 | `tsx-autoupdate now` | Check and install at once, in both modes. With nothing to install and "restart required", it restarts the panel. |
 | `tsx-autoupdate check` | Check only |
-| `tsx-autoupdate refresh` | Write the status files again from the saved state and the settings. It calls no `apk`. |
+| `tsx-autoupdate refresh` | Write the status files again from the saved state and the settings. Its only `apk` call is `apk --no-network info -v` in the first run after a boot (the boot record), so it never waits on the network. `tsx-config apply` runs it and waits at most 5 s for it. A refresh that apply stops changes no install, hold or mode state. |
 | `tsx-autoupdate boot` | Record the running release. The service calls it at each boot. |
 | `tsx-autoupdate get mode\|auto-restart` | Print a setting |
 | `tsx-autoupdate post-update` | Run the board step after an install (`tsx_board_post_update`) again, by hand. It never restarts the panel, and it sets "restart required" after a good step. See [Board hooks](#board-hooks). |
