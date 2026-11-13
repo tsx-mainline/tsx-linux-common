@@ -290,6 +290,55 @@ for v in yes '' 1; do set_ UPDATE_AUTO_RESTART "$v" >/dev/null 2>&1 && bad "UPDA
 env TSX_AUTOUPDATE_BIN="$W/no-such" TSX_CONF="$CFG" TSX_RUN="$FX/run" TSX_STATE_DIR="$FX/var/lib/tsx" TSX_APPLY_PREFIX="$FX" TSX_APPLY_ALLOW_NONROOT=1 busybox sh "$SCRIPT" apply >/dev/null 2>&1 \
 	&& ok "a panel without tsx-autoupdate: apply still exits 0" || bad "apply failed without tsx-autoupdate"
 
+echo "== a refresh that hangs (unit 2, 2026-11-12: apk info -v behind a WAN block) =="
+# apply waits at most TSX_UA_REFRESH_TIMEOUT seconds for the refresh (the stub
+# hangs 60 s; the bound of 20 s leaves room for a slow runner), and a
+# stopped refresh changes no install, hold or mode state.
+cat > "$W/au-hang" <<EOF
+#!/bin/sh
+echo "tsx-autoupdate \$*" >> "$W/au.log"
+exec sleep 60
+EOF
+chmod +x "$W/au-hang"; : > "$W/au.log"
+set_ UPDATE_MODE manual >/dev/null
+t0=$(date +%s)
+out=$(env TSX_AUTOUPDATE_BIN="$W/au-hang" TSX_UA_REFRESH_TIMEOUT=2 TSX_CONF="$CFG" TSX_RUN="$FX/run" TSX_STATE_DIR="$FX/var/lib/tsx" TSX_APPLY_PREFIX="$FX" TSX_APPLY_ALLOW_NONROOT=1 busybox sh "$SCRIPT" apply 2>&1); rc=$?
+dt=$(( $(date +%s) - t0 ))
+[ $rc = 0 ] && [ $dt -lt 20 ] && ok "a hanging refresh: apply exits 0 after $dt s" || bad "a hanging refresh: rc $rc after $dt s"
+grep -qx 'tsx-autoupdate refresh' "$W/au.log" && ok "the refresh was started" || bad "no refresh: $(cat "$W/au.log")"
+grep -qx 'MODE="manual"' "$FX/run/tsx/autoupdate.conf" && ok "the mode is in the override all the same" || bad "autoupdate.conf: $(cat "$FX/run/tsx/autoupdate.conf")"
+case $out in *"WARNING: tsx-autoupdate refresh ended with status 137 (137 = stopped after 2 s)"*) ok "the stop is logged";; *) bad "no warning: $out";; esac
+# The real tsx-autoupdate with an apk that never ends: the refresh of a new
+# boot is stopped in its apk info. The fields, the STOP hold and the restart
+# block stay byte for byte.
+AU="$HERE/autoupdate/usr/local/sbin/tsx-autoupdate"
+AUD=$( . "$HERE/tests/lib/paths.sh"; defaults_dir )
+AS="$W/austate"; mkdir -p "$W/aubin" "$AS/holds"
+printf '#!/bin/sh\necho "apk $*" >> "%s/apk.log"\nexec sleep 60\n' "$W" > "$W/aubin/apk"
+cat > "$W/au-real" <<EOF
+#!/bin/sh
+PATH="$W/aubin:\$PATH" TSX_DEFAULTS_DIR="$AUD" TSX_AUTOUPDATE_CONF="$W/au.conf" TSX_BOOT_ID_FILE="$W/bootid" \\
+TSX_RUN_DIR="$FX/run/tsx" TSX_STATE_DIR="$AS" TSX_LOG="$W/au-real.log" exec sh "$AU" "\$@"
+EOF
+chmod +x "$W/aubin/apk" "$W/au-real"
+printf 'MODE=auto\nAUTO_RESTART=on\n' > "$W/au.conf"
+echo boot-new > "$W/bootid"
+printf 'boot_id boot-old\nrunning_version 0.3.5\ninstalled_release 0.3.5\nin_progress 0\nrestart_required 1\npost_update hold 21\n' > "$AS/fields"
+printf 'owner step2\nset 2026-11-12T10:00:00\nreason a test\n' > "$AS/holds/step2"
+printf 'hold stop step2\nreason a test\n' > "$FX/run/tsx/restart-block"
+s0=$(cat "$AS/fields" "$AS/holds/step2" "$FX/run/tsx/restart-block" | sha256sum)
+set_ UPDATE_MODE auto >/dev/null
+t0=$(date +%s)
+env TSX_AUTOUPDATE_BIN="$W/au-real" TSX_UA_REFRESH_TIMEOUT=2 TSX_CONF="$CFG" TSX_RUN="$FX/run" TSX_STATE_DIR="$FX/var/lib/tsx" TSX_APPLY_PREFIX="$FX" TSX_APPLY_ALLOW_NONROOT=1 busybox sh "$SCRIPT" apply >/dev/null 2>&1; rc=$?
+dt=$(( $(date +%s) - t0 ))
+[ $rc = 0 ] && [ $dt -lt 20 ] && ok "real tsx-autoupdate, apk hangs: apply exits 0 after $dt s" || bad "real tsx-autoupdate, apk hangs: rc $rc after $dt s"
+grep -q 'info -v' "$W/apk.log" 2>/dev/null && ok "the refresh was stopped in apk ($(cat "$W/apk.log"))" || bad "apk not called: $(cat "$W/apk.log" 2>/dev/null)"
+[ "$(cat "$AS/fields" "$AS/holds/step2" "$FX/run/tsx/restart-block" | sha256sum)" = "$s0" ] && ok "the stopped refresh changed no field, no hold and no restart block" \
+	|| bad "state changed: $(cat "$AS/fields"; ls "$AS/holds"; cat "$FX/run/tsx/restart-block")"
+grep -qx 'MODE="auto"' "$FX/run/tsx/autoupdate.conf" && ok "the new mode is in the override" || bad "autoupdate.conf: $(cat "$FX/run/tsx/autoupdate.conf")"
+rm -f "$FX/run/tsx/restart-block"
+TSX_CONF="$CFG" busybox sh "$SCRIPT" unset UPDATE_MODE >/dev/null; applyu
+
 echo "== BOOT_VERBOSE: /etc/tsx/boot-verbose on the root fs for the initramfs =="
 [ ! -e "$FX/etc/tsx/boot-verbose" ] && ok "unset: no boot-verbose flag" || bad "boot-verbose flag while unset"
 set_ BOOT_VERBOSE 1 >/dev/null; applyb

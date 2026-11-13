@@ -2,7 +2,9 @@
 # End-to-end host test of tsx-autoupdate. Two fakes drive the real check,
 # install, status and healthcheck code against temp dirs:
 #  - a fake apk with canned output for "update", "upgrade --simulate" and
-#    "info -v". It logs every call.
+#    "info -v". It logs every call. With APK_NET_BLOCK=N, each call without
+#    --no-network first waits N seconds, as apk 3 waits on a socket for an
+#    index fetch with no route to the repository (a WAN block).
 #  - a fake date with a fixed "now" and real day-math (-d passthrough)
 # A fake backlight class folder ($T/bl) and a fake panel app state file
 # ($T/run/panel-app.state) stand in for the screen and the panel app.
@@ -23,6 +25,8 @@ REALDATE=$(command -v date)
 cat > "$T/bin/apk" <<EOF
 #!/bin/sh
 echo "APK \$*" >> "$T/apk.calls"
+if [ "\$1" = --no-network ]; then shift
+elif [ -n "\${APK_NET_BLOCK:-}" ]; then sleep "\$APK_NET_BLOCK"; fi
 case "\$1 \${2:-}" in
 "update ") cat "$T/update.txt" 2>/dev/null; exit "\${APK_UPDATE_RC:-0}";;
 "upgrade --simulate") cat "$T/sim.txt" 2>/dev/null; exit 0;;
@@ -1134,6 +1138,38 @@ NOWDATE=2026-03-03 NOWHHMM=12:24 run stop-hold clear step2 >/dev/null
 reset_calls; NOWDATE=2026-03-03 NOWHHMM=12:25 run now >/dev/null 2>&1
 grep -qE '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" || { echo "FAIL: 20m-13: no hook: no install after the clear"; fail=1; }
 reset_state 75
+
+# 20n: refresh and boot after a new boot behind a WAN block (unit 2,
+# 2026-11-12: tsx-config apply waited minutes on the refresh, in apk info -v on
+# a socket). The apk info of the boot record uses no network, so both end at
+# once and record the right release. The STOP hold, the board-step field and
+# the mode stay as they were.
+reset_state 76; conf manual on
+NOWDATE=2026-03-04 NOWHHMM=12:00 run check >/dev/null
+NOWDATE=2026-03-04 NOWHHMM=12:00 run stop-hold set step2 "$REASON" >/dev/null
+sed -i 's/^post_update .*/post_update hold 21/' "$T/state/fields"
+fld() { sed -n "s/^$1 //p" "$T/state/fields"; }
+keep() { grep -vE '^(boot_id|running_version|installed_release|restart_required|in_progress) ' "$T/state/fields"; }
+k0=$(keep); h0=$(cat "$T/state/holds/step2")
+waitnet() {  # waitnet PID WHAT: the run must end within 5 s
+	for _ in $(seq 1 50); do kill -0 "$1" 2>/dev/null || break; sleep 0.1; done
+	if kill -0 "$1" 2>/dev/null; then echo "FAIL: 20n: $2 waits on the network"; fail=1; kill "$1"; fi
+	wait "$1" 2>/dev/null
+}
+for c in refresh boot; do
+	echo "boot-76-$c" > "$T/bootid"; reset_calls
+	( APK_NET_BLOCK=30 NOWDATE=2026-03-04 NOWHHMM=12:01 run $c >/dev/null 2>&1 ) & waitnet $! "$c after a new boot"
+	chk "$(cat "$T/apk.calls")" "APK --no-network info -v" "20n: $c: one apk info, with no network"
+	chk "$(fld boot_id)/$(fld running_version)" "boot-76-$c/0.3.5" "20n: $c: the boot record"
+	chk "$(keep)" "$k0" "20n: $c: the other fields"
+	chk "$(cat "$T/state/holds/step2" 2>/dev/null)" "$h0" "20n: $c: the STOP hold"
+	chk "$(head -n 1 "$T/run/restart-block")/$(ha .mode)" "hold stop step2/manual" "20n: $c: the block and the mode"
+done
+# the check after an apk update: its apk info -v uses no network either
+reset_calls; NOWDATE=2026-03-04 NOWHHMM=12:02 run check >/dev/null 2>&1
+chk "$(grep -c '^APK --no-network info -v$' "$T/apk.calls")/$(grep -c '^APK info' "$T/apk.calls")" "1/0" "20n: check: apk info with no network"
+NOWDATE=2026-03-04 NOWHHMM=12:03 run stop-hold clear step2 >/dev/null
+reset_state 77
 
 # ---- 14: no Chromium call at all ------------------------------------------------
 grep -qi chromium "$T/apk.calls" "$T/calls" "$T/tsx-autoupdate.log" && { echo "FAIL: 14: a Chromium call or log line"; fail=1; }

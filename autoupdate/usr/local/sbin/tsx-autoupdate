@@ -48,7 +48,9 @@
 #                              it restarts the panel
 #   tsx-autoupdate check       refresh the status only, never installs
 #   tsx-autoupdate refresh     write the status files again from the saved
-#                              state and the settings (no apk call)
+#                              state and the settings. The only apk call is
+#                              the apk info of the first run after a boot
+#                              (see apk_info_v), which uses no network
 #   tsx-autoupdate boot        record the running release (the init script
 #                              calls it at each boot)
 #   tsx-autoupdate get NAME    print a setting: mode or auto-restart
@@ -613,6 +615,14 @@ write_ha_json_body() {
 
 # ---- apk helpers -------------------------------------------------
 
+# apk_info_v: the text of `apk info -v` (the installed packages). The text
+# comes only from the database of the installed packages, so the call uses no
+# network (--no-network). Without it, apk 3 first fetches each repository
+# index that is older than the cache age. With no route to a repository (a
+# WAN block) that fetch waits minutes on a socket, and refresh, boot and
+# tsx-config apply wait with it. The install (do_install) keeps its own call.
+apk_info_v() { apk --no-network info -v 2>/dev/null; }
+
 # classify_repos APK_UPDATE_OUTPUT: find every repository that apk could not
 # fetch ("WARNING: updating and opening <repo>/<arch>/APKINDEX.tar.gz: <why>").
 # It sets REPO_WARNING (text for the status and HA, empty = all fine),
@@ -678,7 +688,7 @@ release_pkg() { release_pkg_to _rp_out "$1"; echo "$_rp_out"; }
 # installed_release_to VAR [APK_INFO_TEXT]: VAR gets the installed release.
 # Without the text, it runs apk info -v.
 installed_release_to() {
-	if [ $# -ge 2 ]; then _ir_iv=$2; else _ir_iv=$(apk info -v 2>/dev/null); fi
+	if [ $# -ge 2 ]; then _ir_iv=$2; else _ir_iv=$(apk_info_v); fi
 	release_pkg_to _ir_p "$_ir_iv"
 	pkg_version_to _ir_v "$_ir_p" "$_ir_iv"
 	eval "$1=\${_ir_v:-unknown}"
@@ -725,7 +735,7 @@ ensure_boot() {
 installed_hash_to() {
 	read_all bid "$BUILD_ID_FILE"
 	if [ $# -lt 2 ]; then
-		h=$(apk info -v 2>/dev/null | sort | sha256sum 2>/dev/null | cut -c1-12)
+		h=$(apk_info_v | sort | sha256sum 2>/dev/null | cut -c1-12)
 	elif [ -n "$2" ]; then
 		h=$(printf '%s\n' "$2" | sort | sha256sum 2>/dev/null | cut -c1-12)
 	else
@@ -783,7 +793,7 @@ do_check() {
 		needs_reboot "$names" && rb=1
 	fi
 
-	iv=$(apk info -v 2>/dev/null)
+	iv=$(apk_info_v)
 	release_pkg_to rpkg "$iv"
 	pkg_version_to irel "$rpkg" "$iv"; [ -n "$irel" ] || irel=unknown
 	prel= plist=

@@ -131,7 +131,8 @@
 #   that needs a restart. off = Home Assistant shows "Restart required". It is
 #   the Home Assistant "Automatic restart" switch. Apply writes both as MODE and
 #   AUTO_RESTART to /run/tsx/autoupdate.conf, which tsx-autoupdate reads after
-#   /etc/tsx/autoupdate.conf, and tells tsx-autoupdate to refresh its status.
+#   /etc/tsx/autoupdate.conf, and tells tsx-autoupdate to refresh its status
+#   (apply waits at most 5 s for it, see update_apply).
 # A board can add keys with the plugins of the folder config.d (see "Plugins"
 # below). get, set, validate, unset, show and apply treat these keys like the
 # keys above.
@@ -699,6 +700,14 @@ keyled_apply() {
 # /run/tsx/autoupdate.conf (mode 644, no secret). tsx-autoupdate reads the file
 # after /etc/tsx/autoupdate.conf at each run. When the file changed, it
 # refreshes the status files, so Home Assistant shows the new value at once.
+#
+# apply waits at most TSX_UA_REFRESH_TIMEOUT seconds (default 5) for the
+# refresh, then stops it (KILL). The refresh only reads the saved state and the
+# settings and writes the status files again. A stop leaves the status as it
+# was (or a status file cut short), never a changed install, hold or mode
+# state: the next run of tsx-autoupdate (the boot, the tick) writes the status
+# again. The settings file above is already written. A panel without timeout
+# waits as before.
 update_apply() {
 	ua_old=$(cat "$RUN/autoupdate.conf" 2>/dev/null) || ua_old=
 	{
@@ -710,9 +719,17 @@ update_apply() {
 	} | write_override "$RUN/autoupdate.conf" 644
 	ua_new=$(cat "$RUN/autoupdate.conf" 2>/dev/null) || ua_new=
 	[ "$ua_new" != "$ua_old" ] || return 0
-	if command -v "${TSX_AUTOUPDATE_BIN:-tsx-autoupdate}" >/dev/null 2>&1; then
-		"${TSX_AUTOUPDATE_BIN:-tsx-autoupdate}" refresh >/dev/null 2>&1 || true
+	ua_bin=${TSX_AUTOUPDATE_BIN:-tsx-autoupdate}
+	command -v "$ua_bin" >/dev/null 2>&1 || return 0
+	ua_to=${TSX_UA_REFRESH_TIMEOUT:-5} ua_rc=0
+	# (set -e: the status only in an || list)
+	if command -v timeout >/dev/null 2>&1; then
+		timeout -s KILL "$ua_to" "$ua_bin" refresh >/dev/null 2>&1 || ua_rc=$?
+	else
+		"$ua_bin" refresh >/dev/null 2>&1 || ua_rc=$?
 	fi
+	[ "$ua_rc" -eq 0 ] || log "WARNING: tsx-autoupdate refresh ended with status $ua_rc (137 = stopped after $ua_to s). Home Assistant shows the new update settings after the next run of tsx-autoupdate"
+	return 0
 }
 
 # warn_unknown_keys: one warning for each key of panel.conf that this panel
