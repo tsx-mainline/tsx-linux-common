@@ -24,8 +24,11 @@
 # The marker comes first, the stamp after it. A power cut can leave a
 # temporary file: it counts for nothing, and the next write removes it.
 #
-#   tsx_setup_done         exit 0 when the panel is configured
-#   tsx_setup_stamped      exit 0 when the stamp exists
+#   tsx_setup_done         exit 0 when the panel is configured (also when it
+#                          is not known whether the marker exists)
+#   tsx_setup_stamped      exit 0 when the stamp exists, 1 when it does not,
+#                          2 when that is not known
+#   tsx_setup_entry FILE   the same three answers for any FILE
 #   tsx_setup_write FILE LINE
 #                          write LINE to FILE as above. Exit 1 on an error
 #                          (then FILE is as it was).
@@ -40,18 +43,33 @@ case $_tss_conf in */*) _tss_dir=${_tss_conf%/*};; *) _tss_dir=.;; esac
 TSX_SETUP_DONE_FILE=${TSX_SETUP_DONE_FILE:-$_tss_dir/setup-done}
 TSX_SETUP_V2_FILE=${TSX_SETUP_V2_FILE:-$_tss_dir/setup-v2}
 
-# _tsx_setup_has FILE: the folder entry FILE exists (also a link). A folder
-# that this user cannot search counts as "exists": the answer is not known,
-# and the safe answer is "configured".
-_tsx_setup_has() {
+# tsx_setup_entry FILE: exit 0 when the folder entry FILE exists (also a
+# link), 1 when it does not exist, 2 when that is not known. "Does not exist"
+# needs a folder that lists and has no such name (or a missing folder whose
+# parent lists and has no such name). A stat error that is not "no such
+# file" (EIO, ELOOP, EACCES ...), or a folder that cannot be listed, is 2.
+tsx_setup_entry() {
 	[ -e "$1" ] || [ -L "$1" ] && return 0
-	_tsh_d=${1%/*}; [ "$_tsh_d" != "$1" ] || _tsh_d=.
-	[ -d "$_tsh_d" ] && [ ! -x "$_tsh_d" ] && return 0
+	_tse_d=${1%/*}; [ "$_tse_d" != "$1" ] || _tse_d=.
+	[ -n "$_tse_d" ] || _tse_d=/
+	if [ -d "$_tse_d" ]; then
+		_tse_l=$(ls -A "$_tse_d" 2>/dev/null) || return 2
+		# a name in the list that stat does not see: an error of the file system
+		printf '%s\n' "$_tse_l" | grep -qxF -- "${1##*/}" && return 2
+		return 1
+	fi
+	[ -e "$_tse_d" ] || [ -L "$_tse_d" ] && return 2
+	_tse_p=${_tse_d%/*}; [ "$_tse_p" != "$_tse_d" ] || _tse_p=.
+	[ -n "$_tse_p" ] || _tse_p=/
+	_tse_l=$(ls -A "$_tse_p" 2>/dev/null) || return 2
+	printf '%s\n' "$_tse_l" | grep -qxF -- "${_tse_d##*/}" && return 2
 	return 1
 }
 
-tsx_setup_done() { _tsx_setup_has "$TSX_SETUP_DONE_FILE"; }
-tsx_setup_stamped() { _tsx_setup_has "$TSX_SETUP_V2_FILE"; }
+# Not known counts as configured: the safe answer.
+tsx_setup_done() { tsx_setup_entry "$TSX_SETUP_DONE_FILE" || [ $? = 2 ]; }
+# 0 = the stamp exists, 1 = it does not, 2 = not known (a caller gives no answer)
+tsx_setup_stamped() { tsx_setup_entry "$TSX_SETUP_V2_FILE"; }
 
 tsx_setup_write() {
 	_tsw_f=$1 _tsw_line=$2

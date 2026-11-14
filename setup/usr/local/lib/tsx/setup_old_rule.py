@@ -1,5 +1,6 @@
-"""setup_old_rule: the rule of "configured" of the earlier releases, kept only
-for the move to the marker /data/tsx/setup-done (setup-state.sh of tsx-base).
+"""setup_old_rule: the rules of "configured" of the earlier releases, kept
+only for the move to the marker /data/tsx/setup-done (setup-state.sh of
+tsx-base).
 
 Up to tsx-linux-common 0.3.13_pre20261111 (commit 7aafeb2), tsx-setupd called
 a panel configured by is_configured_from() below: with a kiosk, a page URL
@@ -9,6 +10,12 @@ least one key in panel.conf. The functions below are that code, unchanged
 KIOSK_MODE, and the parse of `tsx-config show` of tcfg_show). Do not change
 them: the migration must give the answer that the old code gave.
 
+v0.3.0 to v0.3.12 (the stable channel before 0.3.13) had a rule that differs
+in rare cases (setup_old_rule_0312.py, the code of v0.3.12, unchanged). A
+panel can update from such a release straight to this one. So the answer is
+"configured" when EITHER rule says configured: both can only add the marker,
+and the stamp keeps a new /data of an installer out of the migration.
+
 tsx-setup-helper runs it once per /data, as root, while the stamp
 /data/tsx/setup-v2 is missing:
 
@@ -16,7 +23,7 @@ tsx-setup-helper runs it once per /data, as root, while the stamp
 
 stdin is the output of `tsx-config show`, stderr included (the helper gave
 tsx-setupd the same text). The answer is one line on stdout with exit 0:
-"configured" or "unconfigured" (the old rule). Anything else (an error, an
+"configured" or "unconfigured" (the old rules). Anything else (an error, an
 exception, a missing tsx_conf) is no answer, and the helper writes nothing.
 
 Env (as tsx-setupd): TSX_SETUP_CONF, TSX_KIOSK_CONF, TSX_SETUP_KIOSK,
@@ -35,6 +42,7 @@ for _lib in (os.environ.get("TSX_BASE_LIB_DIR", "/usr/local/lib/tsx"), _here,
     if _lib not in sys.path:
         sys.path.append(_lib)
 import tsx_conf  # noqa: E402
+import setup_old_rule_0312  # noqa: E402
 
 CONF_PATH = os.environ.get("TSX_SETUP_CONF", "/etc/tsx/setup.conf")
 KIOSK_CONF_PATH = os.environ.get("TSX_KIOSK_CONF", "/etc/kiosk.conf")
@@ -95,7 +103,10 @@ def main():
     # The helper sent `printf '%s' "$(tsx-config show 2>&1)"` (no final
     # newline), and tsx-setupd took the text after "ok" with lstrip().
     raw = sys.stdin.buffer.read().decode(errors="replace")
-    configured = is_configured_from(fields_of_show(raw.rstrip("\n").lstrip()))
+    shown = fields_of_show(raw.rstrip("\n").lstrip())
+    # the rule of 7aafeb2, or the rule of v0.3.0 ... v0.3.12 (the parse of
+    # tcfg_show is the same in both)
+    configured = is_configured_from(shown) or setup_old_rule_0312.is_configured_from(shown)
     sys.stdout.write("configured\n" if configured else "unconfigured\n")
     return 0
 

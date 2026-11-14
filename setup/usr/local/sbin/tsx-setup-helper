@@ -107,8 +107,11 @@
 #                          runs the migration (below). When that fails, the
 #                          reply is "err ..." and tsx-setupd acts as on a
 #                          configured panel. A failed migration runs again
-#                          60 s later at the earliest. tsx-setupd asks about
-#                          every 4 s: the command writes no log line.
+#                          60 s later at the earliest. "open" comes only when
+#                          the folder lists and has no marker; a stat error
+#                          or a folder that cannot be listed is "done", and a
+#                          stamp that cannot be read is "err". tsx-setupd asks
+#                          about every 4 s: the command writes no log line.
 #   setup-done            tsx-config setup-done: the setup is done (tsx-setupd
 #                          sends it after a successful save of the page)
 #
@@ -178,7 +181,11 @@ log() { echo "$(date '+%F %T') tsx-setup-helper: $*"; }
 # when the stamp is there at the end.
 setup_migrate() {
 	[ "$SSTATE_OK" = 1 ] || { log "setup-migrate: $SSTATE is missing (tsx-base): no answer"; return 1; }
-	tsx_setup_stamped && return 0
+	sm_st=0; tsx_setup_stamped || sm_st=$?
+	case $sm_st in
+	0) return 0;;
+	2) log "setup-migrate: cannot tell if $TSX_SETUP_V2_FILE exists: no answer"; return 1;;
+	esac
 	if [ -e "$CONF" ] || [ -L "$CONF" ]; then
 		if [ ! -f "$CONF" ] || ! cat "$CONF" > /dev/null 2>&1; then
 			log "setup-migrate: $CONF cannot be read: no answer (the panel counts as configured)"
@@ -196,10 +203,12 @@ setup_migrate() {
 	sm_ans=$(printf '%s' "$sm_out" | "$PYTHON" -I "$OLD_RULE") || sm_ans="exit $?"
 	case $sm_ans in
 	configured)
-		if ! tsx_setup_done; then
-			tsx_setup_write "$TSX_SETUP_DONE_FILE" migrated \
-				|| { log "setup-migrate: cannot write $TSX_SETUP_DONE_FILE"; return 1; }
-		fi
+		sm_d=0; tsx_setup_entry "$TSX_SETUP_DONE_FILE" || sm_d=$?
+		case $sm_d in
+		2) log "setup-migrate: cannot tell if $TSX_SETUP_DONE_FILE exists: no answer"; return 1;;
+		1) tsx_setup_write "$TSX_SETUP_DONE_FILE" migrated \
+			|| { log "setup-migrate: cannot write $TSX_SETUP_DONE_FILE"; return 1; };;
+		esac
 		log "setup-migrate: configured by the rule of the earlier releases: $TSX_SETUP_DONE_FILE";;
 	unconfigured) log "setup-migrate: not configured by the rule of the earlier releases";;
 	*) log "setup-migrate: the old rule gave no answer ($(printf '%s' "$sm_ans" | tr -d '\000-\037' | cut -c1-80))"; return 1;;
@@ -340,7 +349,9 @@ handle() {
 	setup-state)
 		[ -z "$rest" ] || { reply_err "setup-state takes no arguments"; return; }
 		[ "$SSTATE_OK" = 1 ] || { reply_err "setup-state: $SSTATE is missing"; return; }
-		if ! tsx_setup_stamped; then
+		ss_st=0; tsx_setup_stamped || ss_st=$?
+		[ "$ss_st" != 2 ] || { reply_err "setup-state: cannot tell if the stamp exists"; return; }
+		if [ "$ss_st" = 1 ]; then
 			ss_now=$(uptime_s)
 			if [ -z "$MIGRATE_FAILED_AT" ] || [ $((ss_now - MIGRATE_FAILED_AT)) -ge 60 ] \
 				|| [ $((ss_now - MIGRATE_FAILED_AT)) -lt 0 ]; then
@@ -348,6 +359,8 @@ handle() {
 			fi
 			tsx_setup_stamped || { reply_err "setup-state: the setup state of an earlier release is not moved over"; return; }
 		fi
+		# "open" only when the marker is surely not there (setup-state.sh: a
+		# stat error or a folder that cannot be listed counts as configured)
 		if tsx_setup_done; then reply_ok done; else reply_ok open; fi
 		;;
 	setup-done)

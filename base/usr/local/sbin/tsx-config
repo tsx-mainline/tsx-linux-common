@@ -1133,10 +1133,11 @@ setup() {
 setup_done() {
 	[ "${TSX_APPLY_ALLOW_NONROOT:-0}" = 1 ] || [ "$(id -u)" = 0 ] || die "setup-done must run as root"
 	[ "$SSTATE_OK" = 1 ] || die "setup-done: $SSTATE is missing (tsx-base)"
-	if tsx_setup_done; then
-		log "the setup is done already ($TSX_SETUP_DONE_FILE)"
-		return 0
-	fi
+	sd_rc=0; tsx_setup_entry "$TSX_SETUP_DONE_FILE" || sd_rc=$?
+	case $sd_rc in
+	0) log "the setup is done already ($TSX_SETUP_DONE_FILE)"; return 0;;
+	2) die "cannot tell if $TSX_SETUP_DONE_FILE exists (the folder cannot be read)";;
+	esac
 	tsx_setup_write "$TSX_SETUP_DONE_FILE" done || die "cannot write $TSX_SETUP_DONE_FILE"
 	log "the setup is done ($TSX_SETUP_DONE_FILE): the setup page has no pairing code and no LAN window now (tsx-config setup opens a window)"
 }
@@ -1147,7 +1148,7 @@ setup_done() {
 setup_state() {
 	[ "${TSX_APPLY_ALLOW_NONROOT:-0}" = 1 ] || [ "$(id -u)" = 0 ] || die "setup-state must run as root"
 	[ "$SSTATE_OK" = 1 ] || die "setup-state: $SSTATE is missing (tsx-base)"
-	tsx_setup_stamped || log "note: $TSX_SETUP_V2_FILE is missing: tsx-setup-helper moves the state of an earlier release over at its start"
+	tsx_setup_stamped || log "note: $TSX_SETUP_V2_FILE is missing (or cannot be read): tsx-setup-helper moves the state of an earlier release over at its start"
 	if tsx_setup_done; then echo configured; return 0; fi
 	echo unconfigured
 	return 1

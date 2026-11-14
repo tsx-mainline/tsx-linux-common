@@ -6,12 +6,15 @@
 #    nothing, a folder that cannot be searched counts as configured
 #  - tsx-config setup-done and setup-state (root only), and that no key of
 #    panel.conf (SSH_AUTHORIZED_KEY, KIOSK_URL, HA_URL, ...) writes the marker
-#  - the migration of tsx-setup-helper (migrate): each case of the rule of the
-#    earlier releases (with and without a kiosk) -> configured or not; with the
-#    code of 7aafeb2 as the reference when git has that commit; the stamp
-#    stops the migration; a power cut between the files; a panel.conf that
-#    cannot be read, a failed tsx-config show and a failed old rule write
-#    nothing
+#  - the migration of tsx-setup-helper (migrate): each case of the rules of the
+#    earlier releases (with and without a kiosk) -> configured or not, when the
+#    rule of 7aafeb2 OR the rule of v0.3.12 says so; with the code of 7aafeb2
+#    and of v0.3.12 as the references when git has them (the copies are
+#    compared with them, too); TSX_TEST_REQUIRE_PARITY=1 (CI) makes a missing
+#    reference a failure; the stamp stops the migration; a power cut between
+#    the files; a panel.conf that cannot be read, a failed tsx-config show and
+#    a failed old rule write nothing
+#  - a stat error or a folder that cannot be listed counts as configured
 #  - the contract of the RAM installer of uc-pxx: panel.conf with only
 #    SSH_AUTHORIZED_KEY (mode 600) and the stamp setup-v2 boots UNCONFIGURED:
 #    apply adds the key for root, the pairing code works, the LAN listener is
@@ -20,7 +23,8 @@
 #  - a fresh panel (no panel.conf, no stamp) is unconfigured; a panel.conf of
 #    an earlier release that the old rule calls configured is configured
 #  - tsx-setupd: an answer of the helper that is not "done" or "open" counts as
-#    configured
+#    configured; a save sends setup-done unless the answer is exactly "done",
+#    and an older helper does not fail the save
 #  - the init script of tsx-setup-helper runs the migration before tsx-setupd
 # The test runs the real scripts with busybox sh and python3, as this user. It
 # never uses the panel, a container or root.
@@ -94,9 +98,29 @@ if [ "$ROOT" = 0 ]; then
 	TSX_SETUP_DONE_FILE="$T/locked/setup-done" lib tsx_setup_write "$T/locked/setup-done" done 2>/dev/null && bad "a write into a read-only folder says ok" || ok "a write that cannot be done exits 1"
 	[ ! -e "$T/locked/setup-done" ] && ok "and leaves nothing" || bad "a file is left in the read-only folder"
 	chmod 700 "$T/locked"
+	# a folder that lists but cannot be searched: stat fails with EACCES, the list decides
+	mkdir -p "$T/ronly"; : > "$T/ronly/setup-done"; chmod 400 "$T/ronly"
+	TSX_SETUP_DONE_FILE="$T/ronly/setup-done" lib tsx_setup_done && ok "stat fails (EACCES) but the list has the marker: configured" || bad "EACCES with the marker in the list"
+	chmod 700 "$T/ronly"; rm -f "$T/ronly/setup-done"; chmod 400 "$T/ronly"
+	TSX_SETUP_DONE_FILE="$T/ronly/setup-done" lib tsx_setup_done && bad "the list has no marker but it says configured" || ok "stat fails (EACCES) and the list has no marker: not configured"
+	chmod 700 "$T/ronly"
+	mkdir -p "$T/stamp000"; chmod 000 "$T/stamp000"
+	TSX_SETUP_V2_FILE="$T/stamp000/setup-v2" lib tsx_setup_stamped; [ $? = 2 ] && ok "a stamp in a folder that cannot be listed: not known (2)" || bad "stamp in an unlistable folder"
+	chmod 700 "$T/stamp000"
+	mkdir -p "$T/noparent"; chmod 000 "$T/noparent"
+	TSX_SETUP_DONE_FILE="$T/noparent/tsx/setup-done" lib tsx_setup_done && ok "a missing folder whose parent cannot be listed: configured" || bad "missing folder, unlistable parent"
+	chmod 700 "$T/noparent"
+	mkdir -p "$T/clidir"; chmod 000 "$T/clidir"
+	TSX_CONF="$T/clidir/panel.conf" TSX_APPLY_ALLOW_NONROOT=1 busybox sh "$TSXCONFIG" setup-done >/dev/null 2>&1; [ $? = 2 ] \
+		&& ok "tsx-config setup-done in a folder that cannot be listed: refused, nothing written" || bad "setup-done in an unlistable folder"
+	chmod 700 "$T/clidir"
 else
 	echo "  (root: the unsearchable-folder checks are skipped)"
 fi
+mkdir -p "$T/fresh-data"
+TSX_SETUP_DONE_FILE="$T/fresh-data/tsx/setup-done" lib tsx_setup_done && bad "no folder tsx/ (a fresh /data): configured" || ok "no folder tsx/ in a /data that lists: not configured (a fresh panel)"
+TSX_SETUP_V2_FILE="$T/fresh-data/tsx/setup-v2" lib tsx_setup_stamped; [ $? = 1 ] && ok "no folder tsx/: no stamp (1)" || bad "fresh /data stamp state"
+grep -q 'ls -A' "$SSTATE" && ok "the rule lists the folder when stat does not find the marker" || bad "no listing in setup-state.sh"
 
 # ---- 2. tsx-config setup-done / setup-state ----------------------------------------
 echo "== tsx-config setup-done and setup-state =="
@@ -131,12 +155,53 @@ tc setup-done extra >/dev/null 2>&1; [ $? = 2 ] && ok "setup-done takes no argum
 
 # ---- 3. the migration of tsx-setup-helper ----------------------------------------
 echo "== the migration: the rule of the earlier releases =="
-# The code of 7aafeb2 (0.3.13_pre20261111) is the reference, when git has it.
-OLD=
-if git -C "$HERE" cat-file -e 7aafeb2^{commit} 2>/dev/null; then
-	mkdir -p "$T/old" && git -C "$HERE" archive 7aafeb2 setup base | tar -x -C "$T/old" && OLD="$T/old"
+# The references: the code of 7aafeb2 (0.3.13_pre20261111) and of v0.3.12 (the
+# rule of v0.3.0 ... v0.3.12), when git has them. CI checks out the history
+# (fetch-depth 0) and sets TSX_TEST_REQUIRE_PARITY=1: then a missing
+# reference is a failure, not a skip.
+ref() {  # ref COMMIT DIR: the tree of COMMIT in DIR, or nothing
+	git -C "$HERE" cat-file -e "$1^{commit}" 2>/dev/null || return 1
+	mkdir -p "$2" && git -C "$HERE" archive "$1" setup base | tar -x -C "$2"
+}
+OLD= OLD12=
+ref 7aafeb2 "$T/old" && OLD="$T/old"
+ref v0.3.12 "$T/old12" && OLD12="$T/old12"
+for r in "7aafeb2:$OLD" "v0.3.12:$OLD12"; do
+	[ -n "${r#*:}" ] && continue
+	if [ "${TSX_TEST_REQUIRE_PARITY:-0}" = 1 ]; then bad "git has no ${r%%:*}: the parity checks cannot run (TSX_TEST_REQUIRE_PARITY=1)"
+	else echo "  (git has no ${r%%:*} here: no compare with that tsx-setupd)"; fi
+done
+# the copies are the code of the references, unchanged
+same_code() {  # same_code REF_SETUPD COPY NAME... ("=LINE": a line of both files)
+	python3 - "$@" <<'PYEOF'
+import ast, sys
+def segs(p):
+    src = open(p).read(); t = ast.parse(src)
+    d = {n.name: ast.get_source_segment(src, n) for n in t.body if isinstance(n, ast.FunctionDef)}
+    return d, src.splitlines()
+(a, al), (b, bl) = segs(sys.argv[1]), segs(sys.argv[2])
+bad = []
+for n in sys.argv[3:]:
+    if n.startswith("="):
+        if n[1:] not in al or n[1:] not in bl:
+            bad.append(n)
+    elif n not in a or a.get(n) != b.get(n):
+        bad.append(n)
+print(" ".join(bad)); sys.exit(1 if bad else 0)
+PYEOF
+}
+if [ -n "$OLD" ]; then
+	r=$(same_code "$OLD/setup/usr/local/sbin/tsx-setupd" "$OLDRULE" kiosk_conf_get kiosk_enabled has_url is_configured_from \
+		'=CONF_PATH = os.environ.get("TSX_SETUP_CONF", "/etc/tsx/setup.conf")' '=KIOSK_CONF_PATH = os.environ.get("TSX_KIOSK_CONF", "/etc/kiosk.conf")' \
+		'=_conf = tsx_conf.load("setup.conf", CONF_PATH)' '=KIOSK_MODE = (os.environ.get("TSX_SETUP_KIOSK") or _conf.get("TSX_SETUP_KIOSK") or "auto").strip().lower()') \
+		&& ok "setup_old_rule.py has the code of 7aafeb2, unchanged" || bad "setup_old_rule.py differs from 7aafeb2: $r"
 fi
-[ -n "$OLD" ] || echo "  (git has no commit 7aafeb2 here: no compare with the old tsx-setupd)"
+if [ -n "$OLD12" ]; then
+	r=$(same_code "$OLD12/setup/usr/local/sbin/tsx-setupd" "$(P usr/local/lib/tsx/setup_old_rule_0312.py)" load_conf kiosk_enabled has_url is_configured_from \
+		'=CONF_PATH = os.environ.get("TSX_SETUP_CONF", "/etc/tsx/setup.conf")' '=KIOSK_CONF_PATH = os.environ.get("TSX_KIOSK_CONF", "/etc/kiosk.conf")' \
+		'=_conf = load_conf(CONF_PATH)' '=KIOSK_MODE = (os.environ.get("TSX_SETUP_KIOSK") or _conf.get("TSX_SETUP_KIOSK") or "auto").strip().lower()') \
+		&& ok "setup_old_rule_0312.py has the code of v0.3.12, unchanged" || bad "setup_old_rule_0312.py differs from v0.3.12: $r"
+fi
 cp -r "$TSX_BOARD_DIR/config.d" "$T/plugins"; chmod 755 "$T/plugins"; chmod 644 "$T/plugins"/*
 # mig NAME EXPECT KIOSK PANELCONF ETCKIOSK DEFAULTSKIOSK [SETUPCONF]
 #   KIOSK: on, off or auto (no TSX_SETUP_KIOSK in the environment)
@@ -162,17 +227,33 @@ mig() {
 		bad "$name: want $want, got $got (rc $rc, stamp '$(cat "$d/setup-v2" 2>/dev/null)'): $(cat "$d/migrate.log")"
 	fi
 	[ "$got" = configured ] && { [ "$(cat "$d/setup-done")" = migrated ] || bad "$name: marker text '$(cat "$d/setup-done")'"; }
-	if [ -n "$OLD" ]; then
-		# the old tsx-setupd: is_configured_from(tcfg_show()), with the reply that
-		# the old tsx-setup-helper gave for "show" (old tsx-config show 2>&1, \1 between the lines)
-		local show old
-		show=$("${envk[@]}" "${e[@]}" busybox sh "$OLD/base/usr/local/sbin/tsx-config" show 2>&1 | tr '\n' '\1')
+	# the old tsx-setupd of each reference: is_configured_from(tcfg_show()),
+	# with the reply that the old tsx-setup-helper gave for "show" (tsx-config
+	# show 2>&1, \1 between the lines): the tsx-config of 7aafeb2 for 7aafeb2,
+	# the tsx-config of this tree (the one that runs after the update) for v0.3.12
+	local want7= want12= tc_ref tsd tag show old
+	for tag in 7aafeb2 v0.3.12; do
+		case $tag in
+		7aafeb2) [ -n "$OLD" ] || continue; tc_ref="$OLD/base/usr/local/sbin/tsx-config"; tsd="$OLD/setup/usr/local/sbin/tsx-setupd";;
+		*) [ -n "$OLD12" ] || continue; tc_ref="$TSXCONFIG"; tsd="$OLD12/setup/usr/local/sbin/tsx-setupd";;
+		esac
+		show=$("${envk[@]}" "${e[@]}" busybox sh "$tc_ref" show 2>&1 | tr '\n' '\1')
 		old=$("${envk[@]}" "${e[@]}" TSX_RUN_DIR="$d/run" TSX_SETUP_PLUGIN_DIR="$T/none" TSX_SETUP_NO_ZEROCONF=1 \
 			python3 -c 'import sys, importlib.machinery as m
 d = m.SourceFileLoader("oldsetupd", sys.argv[1]).load_module()
 d.helper_call = lambda line, timeout=None: (True, sys.argv[2]) if line == "show" else (True, "x")
-print("configured" if d.is_configured_from(d.tcfg_show()) else "unconfigured")' "$OLD/setup/usr/local/sbin/tsx-setupd" "${show%$'\1'}" 2>"$d/old.err")
-		[ "$old" = "$got" ] && ok "$name: the old tsx-setupd (7aafeb2) says $old too" || bad "$name: the old tsx-setupd says '$old' ($(cat "$d/old.err")), the migration $got"
+print("configured" if d.is_configured_from(d.tcfg_show()) else "unconfigured")' "$tsd" "${show%$'\1'}" 2>"$d/old-$tag.err")
+		case "$old" in configured|unconfigured) ;; *) bad "$name: the tsx-setupd of $tag gave no answer: $(tail -2 "$d/old-$tag.err")"; continue;; esac
+		if [ "$tag" = 7aafeb2 ]; then want7=$old; else want12=$old; fi
+	done
+	if [ -n "$want7" ] && [ -n "$want12" ]; then
+		local want=unconfigured
+		{ [ "$want7" = configured ] || [ "$want12" = configured ]; } && want=configured
+		[ "$want" = "$got" ] && ok "$name: the old tsx-setupd says $want7 (7aafeb2), $want12 (v0.3.12): the migration says $got" \
+			|| bad "$name: 7aafeb2 $want7, v0.3.12 $want12, the migration $got"
+	elif [ -n "$want7$want12" ]; then
+		{ [ "$got" = configured ] || [ "$want7$want12" = unconfigured ]; } && ok "$name: the one reference here (${want7:+7aafeb2 $want7}${want12:+v0.3.12 $want12}) agrees" \
+			|| bad "$name: the reference says ${want7}${want12}, the migration $got"
 	fi
 }
 HDR='# /data/tsx/panel.conf: fake panel configuration (tsx-config).
@@ -202,7 +283,12 @@ mig k-blank-panel-url unconfigured on 'KIOSK_URL="   "' - 'KIOSK_URL=""'
 mig k-blank-panel-url-etc-url configured on 'KIOSK_URL="   "' 'KIOSK_URL=https://ha.example.org' -
 mig k-hash-value configured on - 'KIOSK_URL=#x' -
 mig k-commented-etc unconfigured on - '# KIOSK_URL="https://ha.example.org"' -
-mig k-auto-defaults-no-url unconfigured auto 'TZ_NAME="UTC"' - 'KIOSK_URL='
+mig k-auto-defaults-fresh unconfigured auto - - 'KIOSK_URL='
+# the two cases where only the rule of v0.3.12 says configured (a panel that
+# updates from the stable channel straight to this release)
+mig v0312-tsx-kiosk-no-etc-kiosk-keys configured auto 'TZ_NAME="UTC"' - 'KIOSK_URL='
+mig v0312-left-behind-etc-kiosk-url configured auto - 'KIOSK_URL="https://ha.example.org"' -
+mig v0312-left-behind-etc-kiosk-no-url unconfigured auto - 'KIOSK_URL=""' -
 mig k-auto-defaults-url configured auto - - 'KIOSK_URL="https://ha.example.org"'
 mig k-setup-conf-on unconfigured auto 'TZ_NAME="UTC"' - - 'TSX_SETUP_KIOSK=on'
 mig k-setup-conf-bad-is-auto configured auto 'TZ_NAME="UTC"' - - 'TSX_SETUP_KIOSK=maybe'
@@ -280,6 +366,30 @@ print(v)' "$SETUPD" "$1" "$2" 2>/dev/null
 [ "$(answer 0 'unknown command')" = True ] && ok "an older helper (unknown command): configured" || bad "older helper"
 [ "$(answer 0 'setup-state: the setup state of an earlier release is not moved over')" = True ] && ok "a failed migration: configured" || bad "failed migration"
 [ "$(answer 1 'open please')" = True ] && ok "another text: configured" || bad "other text"
+# save STATE_OK STATE_TEXT DONE_OK -> "STATUS CALLS WARNING": a save of the page
+# (handle_submit, no field) with these answers of the helper
+save() {
+	env TSX_SETUP_KIOSK=off TSX_SETUP_CONF="$T/none.conf" TSX_RUN_DIR="$T/ic-run" TSX_KIOSK_CONF="$T/none.conf" \
+		TSX_SETUP_PLUGIN_DIR="$T/none" TSX_SETUP_NO_ZEROCONF=1 python3 -c 'import sys, importlib.machinery as m
+d = m.SourceFileLoader("setupd", sys.argv[1]).load_module()
+calls = []
+def fake(line, timeout=None):
+    calls.append(line)
+    if line == "setup-state":
+        return (sys.argv[2] == "1", sys.argv[3])
+    if line == "setup-done":
+        return (True, "") if sys.argv[4] == "1" else (False, "unknown command")
+    return (True, "r1" if line == "rev" else "")
+d.helper_call = fake
+code, obj = d.handle_submit({}, None, on_screen=False)
+print(code, ",".join(c for c in calls if c.startswith("setup")), "warning" if obj.get("setup_done_warning") else "-")' "$SETUPD" "$1" "$2" "$3" 2>/dev/null
+}
+[ "$(save 1 open 1)" = "200 setup-state,setup-done -" ] && ok "save, state open: setup-done is sent" || bad "save open: $(save 1 open 1)"
+[ "$(save 1 done 1)" = "200 setup-state -" ] && ok "save, state done: no setup-done" || bad "save done: $(save 1 done 1)"
+[ "$(save 0 'tsx-setup-helper did not answer in time' 1)" = "200 setup-state,setup-done -" ] && ok "save, the helper gives no answer: setup-done is sent all the same" || bad "save timeout: $(save 0 'tsx-setup-helper did not answer in time' 1)"
+[ "$(save 1 'open please' 1)" = "200 setup-state,setup-done -" ] && ok "save, an odd answer: setup-done is sent" || bad "save odd: $(save 1 'open please' 1)"
+[ "$(save 0 'unknown command' 0)" = "200 setup-state,setup-done warning" ] && ok "save with an older helper (unknown command): 200 with a warning, not 500" || bad "save old helper: $(save 0 'unknown command' 0)"
+[ "$(save 1 open 0)" = "500 setup-state,setup-done -" ] && ok "save, state open and setup-done fails: 500 (save again)" || bad "save open + fail: $(save 1 open 0)"
 ! grep -n 'is_configured_from\|def has_url' "$SETUPD" | grep -v '^[0-9]*:def has_url' | grep -q . && ok "tsx-setupd has no copy of the old rule (has_url stays for the check of a save)" || bad "tsx-setupd still uses the old rule"
 
 # ---- 6. the daemons: the installer contract, a fresh panel, an old panel ------------------

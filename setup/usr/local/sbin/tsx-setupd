@@ -483,13 +483,18 @@ def ha_url_from(shown):
     return None
 
 
+def setup_state_answer():
+    """The raw answer of the helper to "setup-state": (ok, text)."""
+    return helper_call("setup-state")
+
+
 def setup_state():
     """Is the setup of the panel done? The helper answers "setup-state" with
     the rule of setup-state.sh (the marker /data/tsx/setup-done exists). Any
     other answer (no helper, an older helper, a failed move of the state of
     an earlier release) is True: the panel counts as configured, so an error
     never opens the pairing code. The log gets a line when the error changes."""
-    ok, text = helper_call("setup-state")
+    ok, text = setup_state_answer()
     if ok and text in ("done", "open"):
         err = None
         val = text == "done"
@@ -1071,21 +1076,37 @@ def handle_submit(fields, revision=None, on_screen=True):
     # the kiosk loads the page again.
     _invalidate_configured_cache()
     # The setup is done: a successful save of this page is the one signal of
-    # the page for it (the marker of setup-state.sh). On a configured panel
-    # (also when the helper gives no answer) nothing is written.
-    if not is_configured():
+    # the page for it (the marker of setup-state.sh). The save sends
+    # setup-done unless the fresh answer is exactly "done" (tsx-config
+    # setup-done keeps a marker that is there): also when the helper gives an
+    # error at this moment (busy, a respawn, a long migration), so that a
+    # saved page is never left unconfigured. A failed setup-done is an error
+    # of the save only when the answer was "open". After an error answer (an
+    # older helper says "unknown command") the save stays 200, with a warning.
+    st_ok, st_text = setup_state_answer()
+    warning = None
+    if not (st_ok and st_text == "done"):
         ok, err = mark_setup_done()
-        _invalidate_configured_cache()
         if not ok:
-            return 500, {"errors": {"_setup_done": "The settings are saved, but the panel could not note that the "
-                                                  "setup is done (%s). Save again." % (err or "tsx-config setup-done failed")}}
+            err = err or "tsx-config setup-done failed"
+            if st_ok and st_text == "open":
+                _invalidate_configured_cache()
+                return 500, {"errors": {"_setup_done": "The settings are saved, but the panel could not note that the "
+                                                      "setup is done (%s). Save again." % err}}
+            sys.stderr.write("tsx-setupd: setup-done after a save failed: %s (the setup state was: %s)\n"
+                             % (err, st_text if st_ok else "no answer: " + (st_text or "")))
+            warning = "The settings are saved. The panel could not note that the setup is done (%s)." % err
+    _invalidate_configured_cache()
     restarted = False
     if on_screen:
         clear_setup_open()
     if kiosk and (on_screen or KIOSK_START_KEYS & set(changed)):
         restart_kiosk()
         restarted = True
-    return 200, {"ok": True, "changed": changed, "applied": bool(changed), "kiosk_restarted": restarted}
+    resp = {"ok": True, "changed": changed, "applied": bool(changed), "kiosk_restarted": restarted}
+    if warning:
+        resp["setup_done_warning"] = warning
+    return 200, resp
 
 
 # ---- the Panel section: live controls (tsx-panelctl and tsx-config) -------

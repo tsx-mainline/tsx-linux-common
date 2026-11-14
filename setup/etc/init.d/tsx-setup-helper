@@ -10,6 +10,13 @@
 # and before tsx-setupd, the one reader of the setup state. A failure does
 # not stop the boot: tsx-setup-helper tries again when tsx-setupd asks, and
 # until then the setup page acts as on a configured panel.
+#
+# The migration must run only when the tsx-setupd that reads the setup state
+# is the new one: here (the new tsx-setupd starts after this) or when a new
+# tsx-setupd asks. Never add it to an apk post-upgrade script. During an
+# upgrade the old tsx-setupd keeps running with the old rule: a stamp written
+# then, and a first save on the old page (no marker), would reopen the
+# pairing code at the next boot.
 description="Privileged helper for the on-panel setup page (tsx-setupd)"
 supervisor=supervise-daemon
 command=/usr/local/sbin/tsx-setup-helper
