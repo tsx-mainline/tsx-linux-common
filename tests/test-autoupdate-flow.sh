@@ -1219,18 +1219,21 @@ grep -q 'install: not installing: .*repository unreachable' "$T/tsx-autoupdate.l
 lockfree "$T/run/autoupdate.lock" && lockfree "$T/run/autoupdate-apk.lock" || { echo "FAIL: 20n-2: a lock is still held after the tick"; fail=1; }
 
 # 20n-3: a program that needs the run lock (step 2 of uc-pxx) takes it at once while the tick's apk update
-# waits; the tick then skips its locked part (no simulation, no status write, no install)
+# waits; the tick then skips its locked part (no simulation, no status write, no install) and writes nothing to
+# the log while that program holds the lock (step 2's data migrate copies /var/log): the skip goes to stderr
 reset_calls; reset_opts; : > "$T/tsx-autoupdate.log"; rm -f "$T/holder"
 lc0=$(sed -n 's/^last_check //p' "$T/state/fields")
-NOWDATE=2026-03-04 NOWHHMM=04:15 offrun >/dev/null 2>&1 & TP=$!
+NOWDATE=2026-03-04 NOWHHMM=04:15 offrun >/dev/null 2>"$T/tick.err" & TP=$!
 sleep 1
-( flock -n 9 && { echo got > "$T/holder"; sleep 3; } ) 9>>"$T/run/autoupdate.lock" & HP=$!
+( flock -n 9 && { echo "got $(cksum < "$T/tsx-autoupdate.log")" > "$T/holder"; sleep 3; echo "end $(cksum < "$T/tsx-autoupdate.log")" >> "$T/holder"; } ) 9>>"$T/run/autoupdate.lock" & HP=$!
 wait $TP
-chk "$(cat "$T/holder" 2>/dev/null)" got "20n-3: the run lock was taken at once while apk update waited"
-chk "$(grep -c 'another tsx-autoupdate run is active (.*/autoupdate.lock): tick skipped' "$T/tsx-autoupdate.log")" 1 "20n-3: the tick skips after its apk update"
+chk "$(sed -n 's/^got .*/got/p' "$T/holder" 2>/dev/null)" got "20n-3: the run lock was taken at once while apk update waited"
+grep -q 'another run is active (.*/autoupdate.lock)' "$T/tick.err" || { echo "FAIL: 20n-3: no skip line on stderr: $(cat "$T/tick.err")"; fail=1; }
+wait $HP
+chk "$(sed -n 's/^end //p' "$T/holder")" "$(sed -n 's/^got //p' "$T/holder")" "20n-3: no log write while the program held the run lock"
+chk "$(grep -c 'tick skipped' "$T/tsx-autoupdate.log")" 0 "20n-3: no skip line in the log after the apk update"
 grep -q '^APK upgrade' "$T/apk.calls" && { echo "FAIL: 20n-3: the tick ran its locked part while the run lock was held"; fail=1; }
 chk "$(sed -n 's/^last_check //p' "$T/state/fields")" "$lc0" "20n-3: no status write by the skipped tick"
-wait $HP
 
 # 20n-4: Install (now) and the check of the init script while a tick's apk update waits: both skip at once
 # (one apk update at a time), status 0; post-update by hand still runs (it takes only the run lock)
@@ -1254,6 +1257,27 @@ chk "$r1/$(wc -l < "$T/apk.calls")" "0/0" "20n-5: the tick skips before apk upda
 chk "$(grep -c 'another tsx-autoupdate run is active (.*/autoupdate.lock): tick skipped' "$T/tsx-autoupdate.log")" 1 "20n-5: the skip line"
 wait $HP
 
+# 20n-5b: check takes the run lock for its state part: it skips (no apk update, no status write) while another
+# run holds it, and a check after the probe skips without a log write
+reset_calls; reset_opts; : > "$T/tsx-autoupdate.log"; lc0=$(sed -n 's/^last_check //p' "$T/state/fields")
+( flock -x 9; sleep 2 ) 9>>"$T/run/autoupdate.lock" & HP=$!; sleep 0.5
+NOWDATE=2026-03-04 NOWHHMM=04:46 offrun check >/dev/null 2>&1; r1=$?
+chk "$r1/$(wc -l < "$T/apk.calls")/$(sed -n 's/^last_check //p' "$T/state/fields")" "0/0/$lc0" "20n-5b: check skips while the run lock is held"
+wait $HP
+reset_calls; : > "$T/tsx-autoupdate.log"
+NOWDATE=2026-03-04 NOWHHMM=04:47 offrun check >/dev/null 2>"$T/check.err" & TP=$!; sleep 1
+( flock -n 9 && sleep 3 ) 9>>"$T/run/autoupdate.lock" & HP=$!
+wait $TP
+chk "$(wc -c < "$T/tsx-autoupdate.log")/$(grep -c 'another run is active' "$T/check.err")" "0/1" "20n-5b: a check after its apk update skips on stderr, no log write"
+wait $HP
+
+# 20n-7: run_locked takes the run lock before it lets the apk lock go (a window with neither lock would let a
+# second apk update start while this run installs)
+fn=$(sed -n '/^run_locked() {/,/^}/p' "$BIN")
+fl=$(printf '%s\n' "$fn" | grep -n 'flock -n 8' | head -n 1 | cut -d: -f1)
+el=$(printf '%s\n' "$fn" | grep -n 'exec 9>&-' | head -n 1 | cut -d: -f1)
+[ -n "$fl" ] && [ -n "$el" ] && [ "$fl" -lt "$el" ] || { echo "FAIL: 20n-7: run_locked lets fd 9 go before the run lock (flock line $fl, exec line $el)"; fail=1; }
+
 # 20n-6: a STOP hold set while the tick's apk update waits: it is set at once (no lock), and the tick then
 # installs nothing and restarts nothing; with the network back, still nothing until the clear
 reset_calls; reset_opts; : > "$T/update.txt"
@@ -1271,7 +1295,7 @@ reset_state 82; conf auto on
 
 # ---- 14: no Chromium call at all ------------------------------------------------
 grep -qi chromium "$T/apk.calls" "$T/calls" "$T/tsx-autoupdate.log" && { echo "FAIL: 14: a Chromium call or log line"; fail=1; }
-grep -q '^APK-FD8.*autoupdate.lock' "$T/fd8.log" 2>/dev/null && { echo "FAIL: 14: apk upgrade got the descriptor of the lock"; fail=1; }
+grep -q '^APK-FD8 .*autoupdate.lock' "$T/fd8.log" 2>/dev/null && { echo "FAIL: 14: apk upgrade got the descriptor of the lock"; fail=1; }
 grep -qE '^APK-FD[89].*autoupdate(-apk)?\.lock' "$T/fd8.log" 2>/dev/null && { echo "FAIL: 14: apk update or upgrade got a lock descriptor: $(grep -E 'autoupdate(-apk)?\.lock' "$T/fd8.log" | sort -u)"; fail=1; }
 
 [ $fail = 0 ] && echo "PASS tsx-autoupdate flow (check/install/window/idle/status/healthcheck/repositories/kernel/new packages/panel app/board hooks/STOP holds)"

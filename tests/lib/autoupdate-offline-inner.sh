@@ -48,23 +48,29 @@ say "boot: $b s"
 [ "$b" -le 20 ] || bad "the boot took $b s with no network (bound 20 s)"
 grep -q '^running_version ' "$T/state/fields" 2>/dev/null || bad "the boot recorded no release"
 
-# 2. The scheduled run. A look at the run lock every second while it runs.
+# 2. The scheduled run. The test does not touch the run lock (a look with flock
+# could make the tick skip, and docker shows no /proc/locks). It times the
+# locked part from the log: the tick writes its first log line only once it
+# holds the run lock (the apk update before it writes no log), so the time
+# from the first log write to the end bounds how long the run lock was held.
+# The old script logs "apk update" right after it took the lock.
+cp "$OUT/autoupdate.log" "$OUT/autoupdate-boot.log" 2>/dev/null; : > "$OUT/autoupdate.log"
 t0=$(up); run >/dev/null 2>&1 & P=$!
-n=0 busy=0
+tl=
 while kill -0 "$P" 2>/dev/null; do
-	sleep 1
-	kill -0 "$P" 2>/dev/null || break
-	n=$((n + 1))
-	flock -n "$T/run/autoupdate.lock" true 2>/dev/null || busy=$((busy + 1))
+	[ -z "$tl" ] && [ -s "$OUT/autoupdate.log" ] && tl=$(up)
+	sleep 0.5
 done
 wait "$P"; t1=$(up); k=$(secs "$t0" "$t1")
-say "tick: $k s; the run lock was held at $busy of $n looks"
+[ -n "$tl" ] || tl=$t1
+h=$(secs "$tl" "$t1")
+say "tick: $k s; the run lock was held at most about $h s (from the first log write to the end)"
 [ "$k" -le 140 ] || bad "the tick took $k s with no network (bound 4 x 20 s + 60 s)"
-[ "$busy" -le 5 ] || bad "the run lock was held at $busy of $n looks (the network part holds it)"
+[ "$h" -le 15 ] || bad "the run lock was held about $h s (the network part holds it)"
 grep -q '^repo_blocked 1$' "$T/state/fields" 2>/dev/null || bad "the status does not say that a repository is unreachable"
 c=$(grep -c 'APKINDEX.tar.gz: Operation timed out' "$OUT/autoupdate.log")
 say "timed-out repositories in the log: $c"
 [ "$c" -ge 4 ] || bad "apk update did not report the 4 repositories as timed out"
 grep -q '^CALL reboot' "$T/calls" 2>/dev/null && bad "a restart"
-[ $fail = 0 ] && say "PASS tsx-autoupdate offline (real apk): boot ${b}s, tick ${k}s, run lock held at $busy of $n looks" || say "FAIL tsx-autoupdate offline"
+[ $fail = 0 ] && say "PASS tsx-autoupdate offline (real apk): boot ${b}s, tick ${k}s, run lock held at most about ${h}s" || say "FAIL tsx-autoupdate offline"
 exit $fail

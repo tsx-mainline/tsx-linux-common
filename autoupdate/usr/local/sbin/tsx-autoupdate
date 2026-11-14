@@ -112,7 +112,7 @@
 # and the restart block says the STOP. A STOP hold does not change the field
 # post_update: a board-step hold stays as it was, and ends as before.
 #
-# One run at a time: now, the tick and post-update take a non-blocking flock
+# One run at a time: now, the tick, check and post-update take a non-blocking flock
 # on $RUN/autoupdate.lock (the run lock). A second run logs the skip and ends.
 # The run lock covers the part that reads and writes the state, installs,
 # runs a board step or restarts. The network part of a check (apk update)
@@ -131,7 +131,9 @@
 #     $RUN/autoupdate-apk.lock: one apk update of tsx-autoupdate at a time,
 #     and none while another run holds the run lock (apk update holds the
 #     database lock of apk while it waits, so an apk upgrade would fail then).
-#     A run that finds either lock busy logs the skip and ends.
+#     A run that finds a lock busy before its apk update logs the skip and
+#     ends; one that finds the run lock busy after it says so on stderr only
+#     (nothing is written while another program holds the run lock).
 #   - apk upgrade --simulate opens only the cache (no network, measured).
 #     The install (apk upgrade) runs only after a check in the same run that
 #     reached every Alpine repository, under the run lock, as before.
@@ -790,14 +792,14 @@ pending_packages() {
 # ---- the daily check + install ---------------------------------------------
 
 # fetch_indexes: the network part of a check, apk update with the timeout. It
-# writes only the index cache of apk and the log, so it runs before the run
-# lock (fetch_first). It sets UPD (its output) and FETCHED=1. The lock
-# descriptors do not reach apk.
-FETCHED=0 UPD=
+# runs before the run lock (fetch_first) and writes only the index cache of
+# apk: not the state and not the log (a program that takes the run lock while
+# apk update waits, such as step 2 of uc-pxx, may copy /var/log). It sets UPD
+# (its output), UPD_RC and FETCHED=1; do_check logs them under the run lock.
+# The lock descriptors do not reach apk.
+FETCHED=0 UPD= UPD_RC=0
 fetch_indexes() {
-	log "apk update"
-	UPD=$(apk update --timeout "$APK_NET_TIMEOUT" 2>&1 8>&- 9>&-) || log "WARNING: apk update reported errors"
-	printf '%s\n' "$UPD" >>"$LOG"
+	UPD=$(apk update --timeout "$APK_NET_TIMEOUT" 2>&1 8>&- 9>&-); UPD_RC=$?
 	FETCHED=1
 }
 
@@ -805,6 +807,9 @@ do_check() {
 	mkdir_once "$RUN"; mkdir_once "$STATE"
 	ensure_boot
 	[ "$FETCHED" = 1 ] || fetch_indexes
+	log "apk update"
+	[ "$UPD_RC" = 0 ] || log "WARNING: apk update reported errors"
+	printf '%s\n' "$UPD" >>"$LOG"
 	upd=$UPD
 	classify_repos "$upd"
 	[ -n "$REPO_WARNING" ] && log "WARNING: $REPO_WARNING"
@@ -1322,15 +1327,17 @@ cmd_healthcheck() {
 }
 
 # skip_busy NAME LOCK: log that NAME does not run because another run holds
-# LOCK. The status of run_locked: 0, for post-update 1.
+# LOCK. The status of run_locked: 0, for post-update 1. After an apk update of
+# fetch_first (FETCHED=1) the run lock is another program's now: the text goes
+# only to stderr, no log write (see fetch_indexes).
 skip_busy() {
-	log "another tsx-autoupdate run is active ($2): $1 skipped"
+	[ "$FETCHED" = 1 ] || log "another tsx-autoupdate run is active ($2): $1 skipped"
 	echo "tsx-autoupdate: another run is active ($2). Try again later." >&2
 	[ "$1" = post-update ] && return 1
 	return 0
 }
 
-# run_locked NAME CMD...: one run of "now", the tick and "post-update" at a time.
+# run_locked NAME CMD...: one run of "now", the tick, "check" and "post-update" at a time.
 # A non-blocking flock on $RUN/autoupdate.lock (fd 8). A second run does not
 # wait: it logs the skip and ends (status 0, for post-update 1). The programs
 # that the run starts (apk, the board hooks) get the descriptor closed, so a
@@ -1387,7 +1394,7 @@ main() {
 	__is_idle) is_idle;;
 	__write_status) load_conf; write_status;;
 	now) load_conf; if fetch_first now; then run_locked now cmd_now; fi;;
-	check) load_conf; if fetch_first check; then do_check; fi;;
+	check) load_conf; if fetch_first check; then run_locked check do_check; fi;;
 	refresh) load_conf; mkdir_once "$RUN"; mkdir_once "$STATE"; ensure_boot; write_status;;
 	boot) load_conf; mkdir_once "$RUN"; mkdir_once "$STATE"; ensure_boot; write_status;;
 	get) load_conf
