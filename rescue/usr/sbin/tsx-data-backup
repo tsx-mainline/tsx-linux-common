@@ -27,7 +27,9 @@
 # (the normal system runs, or a shell mounted it). The restore unpacks over
 # the files that are there and deletes nothing, unless --clean is given:
 # then it first deletes the panel data (on the root file system, only the
-# DIRS and /data).
+# DIRS and /data). A backup with no tsx/setup-v2 (a release before the setup
+# marker, setup-state.sh of tsx-base) removes that stamp of the panel, so the
+# next boot reads the setup state of the backup (tsx-setup-helper migrate).
 #
 # Env (tests): TSX_DATA_LABEL (tsxdata), TSX_ROOTFS_LABEL (tsxroot),
 # TSX_DATA_FINDFS (findfs), TSX_DATA_MOUNT (mount), TSX_DATA_UMOUNT (umount),
@@ -51,7 +53,7 @@ while [ $# -gt 0 ]; do
 	case $1 in
 	--restore) mode=restore NAME=tsx-data-restore;;
 	--clean) clean=1;;
-	-h|--help) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+	-h|--help) sed -n '2,/^set -eu$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0;;
 	-) break;;
 	-*) die "unknown option $1 (see --help)";;
 	*) break;;
@@ -158,5 +160,19 @@ else
 	done
 fi
 tar -xzf "$IN" -C "$TOP" || die "tar failed: the restore is not complete"
+# The setup state (setup-state.sh of tsx-base): a panel is configured when
+# tsx/setup-done exists. The stamp tsx/setup-v2 says that the state is moved
+# over from an earlier release. A backup without the stamp is of such a
+# release: its panel.conf can be one that the old rule called configured.
+# Without the stamp, the next boot moves that state over (the marker is
+# written when the old rule says configured; nothing is ever removed), so a
+# working panel does not open its pairing code again. A backup with no tsx/
+# leaves tsx/ of the panel (and its stamp) as it is.
+if echo "$TOPS" | grep -qx tsx && ! tar -tzf "$IN" | sed 's|^\./||' | grep -qx 'tsx/setup-v2'; then
+	st=$TOP/tsx/setup-v2
+	if [ -e "$st" ] || [ -L "$st" ]; then
+		rm -f "$st" && say "the backup has no tsx/setup-v2: the next boot reads the setup state of the backup"
+	fi
+fi
 sync
 say "restored $(echo "$TOPS" | tr '\n' ' ')to $dev"

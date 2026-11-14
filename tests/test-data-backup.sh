@@ -3,7 +3,7 @@
 # system (rescue/usr/sbin/tsx-data-backup, tsx-data-restore). No panel, no
 # root, no compiler: findfs, mount and umount are fakes. A fake ext4 mount
 # is a link to a fixture directory. A fake bind mount copies the directory
-# and the fake umount copies it back.
+# and the fake umount copies it back (a mirror: the bind is one folder).
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 DB=$HERE/rescue/usr/sbin/tsx-data-backup
@@ -42,6 +42,9 @@ cat > "$T/bin/umount" <<'FAKE'
 echo "umount $*" >> "$FAKE_T/mountlog"
 src=$(awk -v d="$1" '$1 == d { print $2 }' "$FAKE_T/binds" 2>/dev/null | tail -n 1)
 if [ -n "$src" ]; then
+	# a bind mount is the same folder: the source gets the files of the copy,
+	# and a file that the script removed in the copy goes from the source too
+	rm -rf "$src"/* "$src"/.[!.]* 2>/dev/null
 	cp -a "$1"/. "$src"/
 	awk -v d="$1" '$1 != d' "$FAKE_T/binds" > "$FAKE_T/binds.n"; mv "$FAKE_T/binds.n" "$FAKE_T/binds"
 	exit 0
@@ -117,6 +120,22 @@ dr --clean "$T/b-data.tgz" 2>"$T/err" && ok "restore --clean ends with 0" || bad
 [ ! -e "$T/rootfs/var/log/messages" ] && ok "--clean empties var/log" || bad "var/log/messages stays"
 [ -e "$T/rootfs/etc/passwd" ] && ok "--clean keeps the rest of the root file system" || bad "etc/passwd is gone"
 [ "$(cat "$T/rootfs/var/lib/tsx/x" 2>/dev/null)" = x ] && ok "the backup is in place after --clean" || bad "no var/lib/tsx/x"
+
+echo "== the setup stamp (tsx/setup-v2): a backup of an earlier release has none =="
+fixtures; echo 2 > "$T/data/tsx/setup-v2"
+db "$T/b-v2.tgz" 2>/dev/null && case $(list "$T/b-v2.tgz") in *tsx/setup-v2*) ok "a backup takes the stamp along";; *) bad "no stamp in the backup";; esac
+fixtures; echo 2 > "$T/data/tsx/setup-v2"; echo done > "$T/data/tsx/setup-done"
+dr "$T/b-data.tgz" 2>"$T/err" && [ ! -e "$T/data/tsx/setup-v2" ] && ok "a backup with no stamp removes the stamp of the panel (the next boot migrates)" || bad "stamp stays: $(cat "$T/err")"
+grep -q 'no tsx/setup-v2' "$T/err" && ok "the restore says so" || bad "message: $(cat "$T/err")"
+[ "$(cat "$T/data/tsx/setup-done" 2>/dev/null)" = done ] && ok "the marker setup-done stays (nothing makes a configured panel unconfigured)" || bad "the marker is gone"
+fixtures; echo 2 > "$T/data/tsx/setup-v2"
+dr "$T/b-v2.tgz" 2>/dev/null && [ "$(cat "$T/data/tsx/setup-v2" 2>/dev/null)" = 2 ] && ok "a backup with the stamp keeps it" || bad "a stamp of a new backup is gone"
+fixtures; : > "$T/nodata"; echo 2 > "$T/rootfs/data/tsx/setup-v2"
+dr "$T/b-data.tgz" 2>/dev/null && [ ! -e "$T/rootfs/data/tsx/setup-v2" ] && ok "into a root file system: the stamp in /data/tsx goes too" || bad "rootfs stamp stays"
+fixtures; echo 2 > "$T/data/tsx/setup-v2"; mkdir -p "$T/notsx/var/lib/tsx"; echo z > "$T/notsx/var/lib/tsx/z"
+tar -czf "$T/b-notsx.tgz" -C "$T/notsx" ./var
+dr "$T/b-notsx.tgz" 2>/dev/null && [ -e "$T/data/tsx/setup-v2" ] && ok "a backup with no tsx/ leaves tsx/ and its stamp as they are" || bad "stamp gone with no tsx/ in the backup"
+db --help 2>/dev/null | head -1 | grep -q '^tsx-data-backup: back up' && ! db --help 2>/dev/null | grep -q 'set -eu' && ok "--help prints the header only" || bad "--help: $(db --help 2>&1 | tail -2)"
 
 echo "== refusals =="
 fixtures; echo "/dev/fakedata /data ext4 rw 0 0" > "$T/mounts"
