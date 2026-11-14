@@ -22,13 +22,42 @@ REALDATE=$(command -v date)
 
 cat > "$T/bin/apk" <<EOF
 #!/bin/sh
+# The global options --no-network and --timeout N: logged in apk.opts, then
+# dropped, so that apk.calls has the call as before ("APK update", "APK info -v").
+nonet=0 to= a= skip=
+for x in "\$@"; do
+	if [ -n "\$skip" ]; then skip=; to=\$x; continue; fi
+	case \$x in
+	--no-network) nonet=1;;
+	--timeout) skip=1;;
+	*) a="\$a \$x";;
+	esac
+done
+set -- \$a
 echo "APK \$*" >> "$T/apk.calls"
+echo "\$* nonet=\$nonet timeout=\${to:-none}" >> "$T/apk.opts"
+# APK_NET_WAIT=S: no way out to the network. As measured with apk-tools 3.0.8,
+# apk update and apk info -v (it fetches the index of a repository with no
+# cached index) wait S seconds (the tests scale apk's 60 s down), or the
+# --timeout, if smaller. --no-network makes no network call. The simulation
+# opens only the cache.
+case "\$1 \${2:-} \${APK_NET_WAIT:+wait}" in
+"update  wait"|"info -v wait")
+	if [ \$nonet = 0 ]; then
+		w=\$APK_NET_WAIT; [ -n "\$to" ] && [ "\$to" -lt "\$w" ] && w=\$to
+		echo "\$* waited \$w" >> "$T/apk.waits"; sleep "\$w"
+	fi;;
+esac
 case "\$1 \${2:-}" in
-"update ") cat "$T/update.txt" 2>/dev/null; exit "\${APK_UPDATE_RC:-0}";;
+"update ")
+	# no lock descriptor of tsx-autoupdate reaches apk update (the run lock, the apk lock)
+	for fd in 8 9; do [ -e /proc/self/fd/\$fd ] && echo "APK-FD\$fd-UPDATE \$(readlink /proc/self/fd/\$fd)" >> "$T/fd8.log"; done
+	cat "$T/update.txt" 2>/dev/null; exit "\${APK_UPDATE_RC:-0}";;
 "upgrade --simulate") cat "$T/sim.txt" 2>/dev/null; exit 0;;
 "upgrade "|"upgrade --force-missing-repositories")
 	# a descriptor of the lock of tsx-autoupdate must not reach apk
 	[ -e /proc/self/fd/8 ] && echo "APK-FD8 \$(readlink /proc/self/fd/8)" >> "$T/fd8.log"
+	[ -e /proc/self/fd/9 ] && echo "APK-FD9 \$(readlink /proc/self/fd/9)" >> "$T/fd8.log"
 	# The state that Home Assistant sees while apk runs.
 	cp "$T/run/update-ha-state.json" "$T/during.json" 2>/dev/null; cp "$T/run/update.state" "$T/during.state" 2>/dev/null
 	# A good install makes the next board version the installed one.
@@ -1135,9 +1164,115 @@ reset_calls; NOWDATE=2026-03-03 NOWHHMM=12:25 run now >/dev/null 2>&1
 grep -qE '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" || { echo "FAIL: 20m-13: no hook: no install after the clear"; fail=1; }
 reset_state 75
 
+# 20n: no way out to the network (the panel's WAN drops every packet: unit 2 in U2-5). apk-tools 3.0.8 then
+# waits 60 s for each address in apk update, and also in apk info -v for a repository with no cached index
+# (measured: AUTOUPDATE-OFFLINE). The fake apk waits NETW seconds for such a call, or the --timeout if it is
+# smaller (TSX_APK_NET_TIMEOUT=TO stands for the 20 s of the panel). The boot makes no network call, apk update
+# is bounded by the timeout, and the run lock is free while apk update waits.
+ms() { "$REALDATE" +%s%3N; }
+NETW=6 TO=2
+OFFLINE_UPD='WARNING: updating and opening https://tsx-aports.example.org/v3.24/common/aarch64/APKINDEX.tar.gz: Operation timed out
+WARNING: updating and opening https://tsx-aports.example.org/v3.24/fake/aarch64/APKINDEX.tar.gz: Operation timed out
+WARNING: updating https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/APKINDEX.tar.gz: Operation timed out
+WARNING: updating https://dl-cdn.alpinelinux.org/alpine/v3.24/community/aarch64/APKINDEX.tar.gz: Operation timed out
+v3.24.4-84-ge15f85eaef7 [https://dl-cdn.alpinelinux.org/alpine/v3.24/main]
+v3.24.4-83-g2ae38f2a3d1 [https://dl-cdn.alpinelinux.org/alpine/v3.24/community]
+2 unavailable, 2 stale; 28581 distinct packages available'
+offrun() { APK_NET_WAIT=$NETW TSX_APK_NET_TIMEOUT=$TO APK_UPDATE_RC=4 run "$@"; }
+lockfree() { ( flock -n 9 ) 9>>"$1"; }   # lockfree FILE: 0 = nobody holds FILE now
+reset_opts() { : > "$T/apk.opts"; : > "$T/apk.waits"; }
+
+# 20n-0: with the network (no wait), a check runs apk update with --timeout 20 (the panel's value) and apk
+# info -v with --no-network; the simulation as before (no option)
+reset_state 80; conf manual on; reset_opts
+NOWDATE=2026-03-04 NOWHHMM=11:00 run check >/dev/null
+chk "$(sort -u "$T/apk.opts" | tr '\n' ';')" "info -v nonet=1 timeout=none;update nonet=0 timeout=20;upgrade --simulate nonet=0 timeout=none;" "20n-0: the options of a check"
+chk "$(cat "$T/apk.waits")" "" "20n-0: no wait with the network"
+
+# 20n-1: the boot (the init script runs it before the default runlevel goes on) makes no network call
+echo boot-81 > "$T/bootid"; rm -rf "$T/state" "$T/run"; reset_calls; reset_opts
+t0=$(ms); NOWDATE=2026-03-04 NOWHHMM=11:01 offrun boot >/dev/null 2>&1; t1=$(ms)
+chk "$(cat "$T/apk.waits")/$(cat "$T/apk.opts")" "/info -v nonet=1 timeout=none" "20n-1: the boot: apk info -v with --no-network, no wait"
+[ $((t1 - t0)) -lt 1500 ] || { echo "FAIL: 20n-1: the boot took $((t1 - t0)) ms with no network"; fail=1; }
+chk "$(sed -n 's/^running_version //p' "$T/state/fields")" 0.3.5 "20n-1: the boot recorded the running release"
+reset_opts; NOWDATE=2026-03-04 NOWHHMM=11:02 offrun refresh >/dev/null 2>&1
+chk "$(cat "$T/apk.waits")" "" "20n-1: refresh: no wait"
+
+# 20n-2: the tick in the window (auto, idle, packages pending from the old index): apk update waits only the
+# timeout; while it waits, the run lock is free and the apk lock is held; the check says the repositories are
+# unreachable, so nothing installs and nothing restarts
+conf auto on; printf "$SIM_BOARD" > "$T/sim.txt"; printf '%s\n' "$OFFLINE_UPD" > "$T/update.txt"
+reset_calls; reset_opts; : > "$T/tsx-autoupdate.log"
+t0=$(ms); NOWDATE=2026-03-04 NOWHHMM=04:00 offrun >/dev/null 2>&1 & TP=$!
+sleep 1
+lockfree "$T/run/autoupdate.lock" && rl=free || rl=held
+lockfree "$T/run/autoupdate-apk.lock" && al=free || al=held
+wait $TP; t1=$(ms)
+chk "$rl/$al" "free/held" "20n-2: while apk update waits: the run lock is free, the apk lock is held"
+chk "$(cat "$T/apk.waits")" "update waited $TO" "20n-2: apk update waits the timeout, not apk's own"
+d=$((t1 - t0)); [ $d -ge $((TO * 1000)) ] && [ $d -lt $((TO * 1000 + 2500)) ] || { echo "FAIL: 20n-2: the tick took $d ms (timeout $TO s, apk's own wait $NETW s)"; fail=1; }
+chk "$(sed -n 's/^repo_blocked //p' "$T/state/fields")/$(jf "$T/run/update.json" .pending_count)" "1/2" "20n-2: unreachable (blocked), two pending from the old index"
+jf "$T/run/update.json" .repo_warning | grep -q 'repository unreachable (https://dl-cdn.alpinelinux.org/alpine/v3.24/community, https://dl-cdn.alpinelinux.org/alpine/v3.24/main); not installing' || { echo "FAIL: 20n-2: repo_warning '$(jf "$T/run/update.json" .repo_warning)'"; fail=1; }
+grep -qE '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" && { echo "FAIL: 20n-2: installed with no network"; fail=1; }
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20n-2: restarted with no network"; fail=1; }
+grep -q 'install: not installing: .*repository unreachable' "$T/tsx-autoupdate.log" || { echo "FAIL: 20n-2: no 'not installing' line"; fail=1; }
+lockfree "$T/run/autoupdate.lock" && lockfree "$T/run/autoupdate-apk.lock" || { echo "FAIL: 20n-2: a lock is still held after the tick"; fail=1; }
+
+# 20n-3: a program that needs the run lock (step 2 of uc-pxx) takes it at once while the tick's apk update
+# waits; the tick then skips its locked part (no simulation, no status write, no install)
+reset_calls; reset_opts; : > "$T/tsx-autoupdate.log"; rm -f "$T/holder"
+lc0=$(sed -n 's/^last_check //p' "$T/state/fields")
+NOWDATE=2026-03-04 NOWHHMM=04:15 offrun >/dev/null 2>&1 & TP=$!
+sleep 1
+( flock -n 9 && { echo got > "$T/holder"; sleep 3; } ) 9>>"$T/run/autoupdate.lock" & HP=$!
+wait $TP
+chk "$(cat "$T/holder" 2>/dev/null)" got "20n-3: the run lock was taken at once while apk update waited"
+chk "$(grep -c 'another tsx-autoupdate run is active (.*/autoupdate.lock): tick skipped' "$T/tsx-autoupdate.log")" 1 "20n-3: the tick skips after its apk update"
+grep -q '^APK upgrade' "$T/apk.calls" && { echo "FAIL: 20n-3: the tick ran its locked part while the run lock was held"; fail=1; }
+chk "$(sed -n 's/^last_check //p' "$T/state/fields")" "$lc0" "20n-3: no status write by the skipped tick"
+wait $HP
+
+# 20n-4: Install (now) and the check of the init script while a tick's apk update waits: both skip at once
+# (one apk update at a time), status 0; post-update by hand still runs (it takes only the run lock)
+reset_calls; reset_opts; : > "$T/tsx-autoupdate.log"
+NOWDATE=2026-03-04 NOWHHMM=04:30 offrun >/dev/null 2>&1 & TP=$!
+sleep 1
+t0=$(ms); NOWDATE=2026-03-04 NOWHHMM=04:30 offrun now >/dev/null 2>&1; r1=$?
+NOWDATE=2026-03-04 NOWHHMM=04:30 offrun check >/dev/null 2>&1; r2=$?; t1=$(ms)
+NOWDATE=2026-03-04 NOWHHMM=04:30 offrun post-update >/dev/null 2>&1; r3=$?
+wait $TP
+chk "$r1/$r2/$r3" "0/0/0" "20n-4: now and check skip with status 0; post-update runs"
+[ $((t1 - t0)) -lt 1500 ] || { echo "FAIL: 20n-4: the skips took $((t1 - t0)) ms"; fail=1; }
+chk "$(grep -c 'another tsx-autoupdate run is active (.*/autoupdate-apk.lock): \(now\|check\) skipped' "$T/tsx-autoupdate.log")" 2 "20n-4: two skip lines (the apk lock)"
+chk "$(grep -c '^update' "$T/apk.opts")" 1 "20n-4: one apk update"
+
+# 20n-5: a tick while another run holds the run lock (an install, a board step, step 2): no apk update at all
+reset_calls; reset_opts; : > "$T/tsx-autoupdate.log"
+( flock -x 9; sleep 3 ) 9>>"$T/run/autoupdate.lock" & HP=$!; sleep 0.5
+NOWDATE=2026-03-04 NOWHHMM=04:45 offrun >/dev/null 2>&1; r1=$?
+chk "$r1/$(wc -l < "$T/apk.calls")" "0/0" "20n-5: the tick skips before apk update"
+chk "$(grep -c 'another tsx-autoupdate run is active (.*/autoupdate.lock): tick skipped' "$T/tsx-autoupdate.log")" 1 "20n-5: the skip line"
+wait $HP
+
+# 20n-6: a STOP hold set while the tick's apk update waits: it is set at once (no lock), and the tick then
+# installs nothing and restarts nothing; with the network back, still nothing until the clear
+reset_calls; reset_opts; : > "$T/update.txt"
+NOWDATE=2026-03-04 NOWHHMM=04:50 offrun >/dev/null 2>&1 & TP=$!
+sleep 1
+NOWDATE=2026-03-04 NOWHHMM=04:50 run stop-hold set step2 "offline test" >/dev/null 2>&1; r1=$?
+wait $TP
+chk "$r1/$(head -n 1 "$T/run/restart-block")" "0/hold stop step2" "20n-6: the STOP is set during the apk update"
+NOWDATE=2026-03-04 NOWHHMM=04:51 run >/dev/null 2>&1
+grep -qE '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" && { echo "FAIL: 20n-6: installed during the STOP"; fail=1; }
+grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20n-6: restarted during the STOP"; fail=1; }
+chk "$(head -n 1 "$T/run/restart-block")" "hold stop step2" "20n-6: the block stays"
+NOWDATE=2026-03-04 NOWHHMM=04:52 run stop-hold clear step2 >/dev/null
+reset_state 82; conf auto on
+
 # ---- 14: no Chromium call at all ------------------------------------------------
 grep -qi chromium "$T/apk.calls" "$T/calls" "$T/tsx-autoupdate.log" && { echo "FAIL: 14: a Chromium call or log line"; fail=1; }
 grep -q '^APK-FD8.*autoupdate.lock' "$T/fd8.log" 2>/dev/null && { echo "FAIL: 14: apk upgrade got the descriptor of the lock"; fail=1; }
+grep -qE '^APK-FD[89].*autoupdate(-apk)?\.lock' "$T/fd8.log" 2>/dev/null && { echo "FAIL: 14: apk update or upgrade got a lock descriptor: $(grep -E 'autoupdate(-apk)?\.lock' "$T/fd8.log" | sort -u)"; fail=1; }
 
 [ $fail = 0 ] && echo "PASS tsx-autoupdate flow (check/install/window/idle/status/healthcheck/repositories/kernel/new packages/panel app/board hooks/STOP holds)"
 exit $fail

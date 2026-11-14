@@ -113,7 +113,28 @@
 # post_update: a board-step hold stays as it was, and ends as before.
 #
 # One run at a time: now, the tick and post-update take a non-blocking flock
-# on $RUN/autoupdate.lock. A second run logs the skip and ends.
+# on $RUN/autoupdate.lock (the run lock). A second run logs the skip and ends.
+# The run lock covers the part that reads and writes the state, installs,
+# runs a board step or restarts. The network part of a check (apk update)
+# comes before it, outside the run lock, so that a slow or dead network never
+# holds it (see "apk and the network").
+#
+# apk and the network: apk-tools 3 fetches the index of a repository that has
+# none in its cache at each start that opens the repositories, also for
+# `apk info -v`, and waits up to 60 s for each address of each such host. With
+# no way out (the packets are dropped), one call takes minutes. So:
+#   - apk info -v (the installed packages) runs with --no-network. Its output
+#     is the same; it never needed the network. The boot (tsx-autoupdate boot,
+#     in the init script) therefore makes no network call.
+#   - apk update runs with --timeout $APK_NET_TIMEOUT (seconds for each
+#     connection, and with no progress), before the run lock is taken, under
+#     $RUN/autoupdate-apk.lock: one apk update of tsx-autoupdate at a time,
+#     and none while another run holds the run lock (apk update holds the
+#     database lock of apk while it waits, so an apk upgrade would fail then).
+#     A run that finds either lock busy logs the skip and ends.
+#   - apk upgrade --simulate opens only the cache (no network, measured).
+#     The install (apk upgrade) runs only after a check in the same run that
+#     reached every Alpine repository, under the run lock, as before.
 #
 # The health check after an update reboot:
 #   - kiosk panel (/etc/init.d/kiosk): the kiosk service runs and the page
@@ -142,6 +163,7 @@
 #   TSX_AUTOUPDATE_CONF TSX_AUTOUPDATE_OVERRIDE TSX_BOOT_ID_FILE TSX_RUN_DIR TSX_STATE_DIR TSX_LOG TSX_IDLED_STATE
 #   TSX_KIOSK_CONF TSX_BUILD_ID_FILE TSX_INITD TSX_BACKLIGHT_CLASS
 #   TSX_PANEL_APP_STATE TSX_HEALTH_POLL TSX_RUNLEVELS TSX_LEDBAR_FW_PENDING
+#   TSX_APK_NET_TIMEOUT
 #
 # __in_window, __needs_reboot, __is_idle and __write_status are internal. They call the
 # matching shell function directly. The host tests use them to check that
@@ -184,6 +206,8 @@ RUNLEVELS=${TSX_RUNLEVELS:-/etc/runlevels}
 # The package tsx-ledbar-fw writes this file when an upgrade brings a newer
 # image for the LED bar. The upgrade never loads the bar.
 LEDBAR_PENDING=${TSX_LEDBAR_FW_PENDING:-/data/tsx/ledbar-fw.pending}
+# The network timeout of apk update in seconds (apk's own default is 60).
+APK_NET_TIMEOUT=${TSX_APK_NET_TIMEOUT:-20}
 
 STATUS_FIELDS="installed_hash pending_count pending_list reboot_pending in_progress last_check last_install last_result health repo_warning repo_blocked running_version installed_release pending_release boot_id restart_required post_update"
 
@@ -676,9 +700,9 @@ release_pkg_to() {
 release_pkg() { release_pkg_to _rp_out "$1"; echo "$_rp_out"; }
 
 # installed_release_to VAR [APK_INFO_TEXT]: VAR gets the installed release.
-# Without the text, it runs apk info -v.
+# Without the text, it runs apk info -v (no network).
 installed_release_to() {
-	if [ $# -ge 2 ]; then _ir_iv=$2; else _ir_iv=$(apk info -v 2>/dev/null); fi
+	if [ $# -ge 2 ]; then _ir_iv=$2; else _ir_iv=$(apk info -v --no-network 2>/dev/null); fi
 	release_pkg_to _ir_p "$_ir_iv"
 	pkg_version_to _ir_v "$_ir_p" "$_ir_iv"
 	eval "$1=\${_ir_v:-unknown}"
@@ -725,7 +749,7 @@ ensure_boot() {
 installed_hash_to() {
 	read_all bid "$BUILD_ID_FILE"
 	if [ $# -lt 2 ]; then
-		h=$(apk info -v 2>/dev/null | sort | sha256sum 2>/dev/null | cut -c1-12)
+		h=$(apk info -v --no-network 2>/dev/null | sort | sha256sum 2>/dev/null | cut -c1-12)
 	elif [ -n "$2" ]; then
 		h=$(printf '%s\n' "$2" | sort | sha256sum 2>/dev/null | cut -c1-12)
 	else
@@ -765,12 +789,23 @@ pending_packages() {
 
 # ---- the daily check + install ---------------------------------------------
 
+# fetch_indexes: the network part of a check, apk update with the timeout. It
+# writes only the index cache of apk and the log, so it runs before the run
+# lock (fetch_first). It sets UPD (its output) and FETCHED=1. The lock
+# descriptors do not reach apk.
+FETCHED=0 UPD=
+fetch_indexes() {
+	log "apk update"
+	UPD=$(apk update --timeout "$APK_NET_TIMEOUT" 2>&1 8>&- 9>&-) || log "WARNING: apk update reported errors"
+	printf '%s\n' "$UPD" >>"$LOG"
+	FETCHED=1
+}
+
 do_check() {
 	mkdir_once "$RUN"; mkdir_once "$STATE"
 	ensure_boot
-	log "apk update"
-	upd=$(apk update 2>&1) || log "WARNING: apk update reported errors"
-	printf '%s\n' "$upd" >>"$LOG"
+	[ "$FETCHED" = 1 ] || fetch_indexes
+	upd=$UPD
 	classify_repos "$upd"
 	[ -n "$REPO_WARNING" ] && log "WARNING: $REPO_WARNING"
 	sim=$(apk upgrade --simulate $APK_FORCE 2>>"$LOG")
@@ -783,7 +818,7 @@ do_check() {
 		needs_reboot "$names" && rb=1
 	fi
 
-	iv=$(apk info -v 2>/dev/null)
+	iv=$(apk info -v --no-network 2>/dev/null)
 	release_pkg_to rpkg "$iv"
 	pkg_version_to irel "$rpkg" "$iv"; [ -n "$irel" ] || irel=unknown
 	prel= plist=
@@ -973,7 +1008,7 @@ do_install() {
 	# upgrade, because a part of the packages may be installed.
 	prc=0
 	if have_post_hook; then post_update_run || prc=1; fi
-	iv=$(apk info -v 2>/dev/null)
+	iv=$(apk info -v --no-network 2>/dev/null)
 	installed_hash_to ihash "$iv"
 	# A good board step after an earlier step that did not finish ("owed",
 	# "retry 1") may have changed the boot partition: the new state starts
@@ -1286,24 +1321,63 @@ cmd_healthcheck() {
 	log "post-update health check: $health"
 }
 
-# run_locked CMD...: one run of "now", the tick and "post-update" at a time.
+# skip_busy NAME LOCK: log that NAME does not run because another run holds
+# LOCK. The status of run_locked: 0, for post-update 1.
+skip_busy() {
+	log "another tsx-autoupdate run is active ($2): $1 skipped"
+	echo "tsx-autoupdate: another run is active ($2). Try again later." >&2
+	[ "$1" = post-update ] && return 1
+	return 0
+}
+
+# run_locked NAME CMD...: one run of "now", the tick and "post-update" at a time.
 # A non-blocking flock on $RUN/autoupdate.lock (fd 8). A second run does not
 # wait: it logs the skip and ends (status 0, for post-update 1). The programs
 # that the run starts (apk, the board hooks) get the descriptor closed, so a
-# program that stays behind cannot keep the lock. A panel without flock runs
-# without the lock.
+# program that stays behind cannot keep the lock. Once it holds the run lock,
+# it lets the apk lock of fetch_first go (fd 9), so the run's programs never
+# get that one. A panel without flock runs without the lock.
 run_locked() {
 	mkdir_once "$RUN"
 	if command -v flock >/dev/null 2>&1 && exec 8>>"$RUN/autoupdate.lock"; then
 		if ! flock -n 8; then
-			log "another tsx-autoupdate run is active ($RUN/autoupdate.lock): $1 skipped"
-			echo "tsx-autoupdate: another run is active ($RUN/autoupdate.lock). Try again later." >&2
-			[ "$1" = post-update ] && return 1
-			return 0
+			exec 9>&-
+			skip_busy "$1" "$RUN/autoupdate.lock"
+			return
 		fi
 	fi
+	exec 9>&-
 	shift
 	"$@"
+}
+
+# fetch_first NAME: the network part of the check of NAME (fetch_indexes),
+# before the run lock (see "apk and the network"). It takes the apk lock
+# $RUN/autoupdate-apk.lock (fd 9, non-blocking) and looks that no other run
+# holds the run lock now (fd 8, taken and let go at once): an install, a board
+# step or a program such as step 2 of uc-pxx. If either is busy, it logs the
+# skip and returns 1: NAME does not run. While apk update waits for the
+# network, the run lock is free. The apk lock stays held until run_locked
+# holds the run lock (or the run ends), so a second run cannot start apk
+# update while this run installs. A panel without flock fetches without the
+# locks.
+fetch_first() {
+	mkdir_once "$RUN"
+	if command -v flock >/dev/null 2>&1 && exec 9>>"$RUN/autoupdate-apk.lock" && exec 8>>"$RUN/autoupdate.lock"; then
+		if ! flock -n 9; then
+			exec 8>&- 9>&-
+			skip_busy "$1" "$RUN/autoupdate-apk.lock"
+			return 1
+		fi
+		if ! flock -n 8; then
+			exec 8>&- 9>&-
+			skip_busy "$1" "$RUN/autoupdate.lock"
+			return 1
+		fi
+		exec 8>&-
+	fi
+	fetch_indexes
+	return 0
 }
 
 main() {
@@ -1312,8 +1386,8 @@ main() {
 	__needs_reboot) shift; needs_reboot "$@";;
 	__is_idle) is_idle;;
 	__write_status) load_conf; write_status;;
-	now) load_conf; run_locked now cmd_now;;
-	check) load_conf; do_check;;
+	now) load_conf; if fetch_first now; then run_locked now cmd_now; fi;;
+	check) load_conf; if fetch_first check; then do_check; fi;;
 	refresh) load_conf; mkdir_once "$RUN"; mkdir_once "$STATE"; ensure_boot; write_status;;
 	boot) load_conf; mkdir_once "$RUN"; mkdir_once "$STATE"; ensure_boot; write_status;;
 	get) load_conf
@@ -1326,7 +1400,7 @@ main() {
 	healthcheck) load_conf; cmd_healthcheck;;
 	post-update) load_conf; run_locked post-update cmd_post_update_run;;
 	stop-hold) shift; load_conf; cmd_stop_hold "$@";;
-	''|cron) run_locked tick do_tick;;
+	''|cron) if fetch_first tick; then run_locked tick do_tick; fi;;
 	*) echo "usage: tsx-autoupdate [now|check|refresh|boot|get NAME|status|healthcheck|post-update|stop-hold set OWNER REASON...|stop-hold clear OWNER|stop-hold list]" >&2; return 2;;
 	esac
 }

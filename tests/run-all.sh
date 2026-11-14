@@ -4,6 +4,8 @@
 #   tests/run-all.sh --c      also the tests that compile C (gcc or CC). Run
 #                             these only on a build host or in CI.
 #   tests/run-all.sh --net    also the tests that need network access (pip)
+#   tests/run-all.sh --docker also the tests that run an Alpine container
+#                             (docker, an Alpine 3.24 image). Build host only.
 # The lists are explicit. A new test goes into one of them.
 set -u
 cd "$(dirname "$0")/.."
@@ -14,12 +16,14 @@ test-voice-esphome-run test-conf-migrate mqtt-dry mqtt-ledbar-live mqtt-stop-tim
 mqtt-sensor-rate test-config-plugins test-sendspin test-volume-sendspin test-shim-plugins test-generic-gate test-panel-layout test-panel-app-run test-panel-editor test-panel-editor-page test-panel-app-config test-layout-parity"
 CTESTS="ledbar-host-test test-panel-app-hwconf test-panel-app-state test-panel-app-control test-panel-app-slider test-panel-app-playback test-panel-app-volume test-panel-app-update test-panel-app-lastboot test-buttons test-idled test-idled-als test-idled-display test-idled-ramp test-idled-runtime test-conf-layers test-level test-orientation test-overlay-max test-overlay-config test-splash test-bench"
 NET="test-esphome test-esphome-ledbar test-esphome-wakewords"
+DOCKER="test-autoupdate-offline"
 list=$PLAIN
 for a in "$@"; do
 	case "$a" in
 	--c) list="$list $CTESTS";;
 	--net) list="$list $NET";;
-	*) echo "usage: $0 [--c] [--net]" >&2; exit 2;;
+	--docker) list="$list $DOCKER";;
+	*) echo "usage: $0 [--c] [--net] [--docker]" >&2; exit 2;;
 	esac
 done
 # The panel scripts run under busybox ash. The sh of Debian and Ubuntu is dash.

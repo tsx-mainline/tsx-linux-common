@@ -53,6 +53,8 @@ The service `tsx-autoupdate` adds a line to `/etc/crontabs/root`. `crond` runs `
 
 If an earlier install left "restart required" and `AUTO_RESTART` is on later, the next run in the window with an idle screen restarts the panel.
 
+`apk update` runs with `--timeout 20` (seconds for each connection, and with no progress; apk's own default is 60), before the run takes its lock (see [One run at a time](#one-run-at-a-time)). `apk info -v` (the installed packages) runs with `--no-network`. With no way out to the network (a WAN that drops every packet), apk-tools 3 would otherwise wait 60 s for each address of each repository, also in `apk info -v` (it fetches a missing index). A check then takes about 20 s for each address of the repositories (about 4 minutes for the four repositories of a panel, 12 addresses), and the boot makes no network call. The check then shows the repositories as unreachable, so nothing installs.
+
 ## Versions
 
 Home Assistant shows release numbers, for example `0.3.5`. The release number is the version of the board package `PREFIX-board` (`PREFIX` is `TSX_PKG_PREFIX`, default `tsx-<family>`, for example `tsx-xx50-board`). A panel without that package uses the version of `tsx-base`.
@@ -159,7 +161,7 @@ A board can also define `tsx_board_update_status`. It prints a line when the boo
 
 ### One run at a time
 
-`tsx-autoupdate now`, the scheduled run and `tsx-autoupdate post-update` take the lock `/run/tsx/autoupdate.lock` (`flock`, without a wait). When another run holds it, the new run logs "another tsx-autoupdate run is active" and ends. `post-update` then exits with 1, the others with 0. So no run restarts the panel in the middle of the `apk upgrade` of another run. `apk` and the board functions do not get the descriptor of the lock, so a program that they leave behind cannot keep it. The commands `check`, `refresh`, `boot`, `status`, `get` and `healthcheck` take no lock. A panel without `flock` runs without the lock.
+`tsx-autoupdate now`, the scheduled run and `tsx-autoupdate post-update` take the lock `/run/tsx/autoupdate.lock` (`flock`, without a wait). When another run holds it, the new run logs "another tsx-autoupdate run is active" and ends. `post-update` then exits with 1, the others with 0. So no run restarts the panel in the middle of the `apk upgrade` of another run. `apk` and the board functions do not get the descriptor of the lock, so a program that they leave behind cannot keep it. The lock covers the part that reads and writes the state, installs, runs a board step or restarts. The `apk update` of `now`, of the scheduled run and of `check` runs before it, under a second lock, `/run/tsx/autoupdate-apk.lock` (also without a wait): one `apk update` at a time, and none while another run holds `/run/tsx/autoupdate.lock`. While `apk update` waits for the network, `/run/tsx/autoupdate.lock` is free (a program such as the step 2 of uc-pxx takes it then), and a run that finds it held after its `apk update` logs the skip and ends. `apk update` holds the database lock of `apk` while it runs, so this order also keeps it away from the `apk upgrade` of another run. The commands `refresh`, `boot`, `status`, `get` and `healthcheck` take no lock, and `check` takes only the second one (it also skips while another run holds the first). A panel without `flock` runs without the locks.
 
 ### Restart block
 
@@ -235,6 +237,7 @@ The panel app writes `/run/tsx/panel-app.state` at its start, at its first frame
 | `/run/tsx/update-ha-state.json` | The status for the Home Assistant entity Update, and the fields `restart_required`, `mode` and `auto_restart` |
 | `/run/tsx/update.state` | The same values as `key value` lines for the panel app and `tsx-panelctl`: `installed`, `latest`, `title`, `summary` (one line, `\n` for a newline), `in-progress`, `restart-required`, `mode`, `auto-restart` |
 | `/run/tsx/autoupdate.conf` | The override that `tsx-config apply` writes from `panel.conf` |
+| `/run/tsx/autoupdate.lock`, `/run/tsx/autoupdate-apk.lock` | The two locks (see [One run at a time](#one-run-at-a-time)) |
 | `/var/lib/tsx/autoupdate/holds/OWNER` | A STOP hold of `OWNER` (see [STOP holds](#stop-holds)) |
 | `/var/log/tsx-autoupdate.log` | The log |
 
