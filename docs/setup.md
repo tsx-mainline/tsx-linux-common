@@ -13,6 +13,46 @@ The page is always on the LAN when the panel knows the URL of its Home Assistant
 
 `TSX_SETUP_LAN=off` in `/etc/tsx/setup.conf` keeps the page off the LAN, also for the login. `TSX_SETUP_HA_LOGIN=off` turns off the login with Home Assistant and keeps the pairing code.
 
+## Configured: the setup is done
+
+A panel is configured when the file `/data/tsx/setup-done` exists. That is the one rule (`base/usr/local/lib/tsx/setup-state.sh`). It decides if the pairing code works, if the LAN window is open while no `tsx-config setup` window is open, and if the panel app shows the setup bar (`screen.json`).
+
+No key of `panel.conf` makes a panel configured. An SSH key (`SSH_AUTHORIZED_KEY`), a page URL (`KIOSK_URL`, also one in `/etc/kiosk.conf`) and `HA_URL` do not. A panel can run with no kiosk, so a page URL is no sign of a finished setup.
+
+Only these write the file:
+
+| Writer | When |
+|---|---|
+| The setup page | A successful save (also a save with no change). `tsx-setupd` sends the helper command `setup-done`, and the helper runs `tsx-config setup-done`. |
+| `tsx-config setup-done` | Run by root, for example over ssh or by a tool of a family |
+| The migration of `tsx-setup-helper` | Once for each `/data`, see below |
+
+`tsx-config setup-state` prints `configured` or `unconfigured`. `tsx-config setup` opens the window of about 15 minutes also on a configured panel, as before. Nothing removes the file. A new `/data` (a factory reset) has no file.
+
+The file has one line (`done`, or `migrated` from the migration), mode 644, owner root. The write is atomic and durable: a temporary file in the same folder, fsync, rename, fsync of the folder. A power cut leaves at most a temporary file, and a temporary file counts for nothing.
+
+`tsx-setupd` runs with no privilege and cannot read `/data/tsx` (mode 700). It asks the helper (`setup-state`, answer `done` or `open`) at most every 4 s. Any other answer counts as configured: an error (no helper, an older helper, a failed migration) never opens the pairing code on a working panel.
+
+### The migration from an earlier release
+
+Up to 0.3.13_pre20261111 the rule was different. With a kiosk, a panel was configured when it had a page URL (`KIOSK_URL` of `panel.conf`, else of the layers of `kiosk.conf`). With no kiosk, it was configured when `panel.conf` had a key. A panel that was configured by that rule stays configured after the update:
+
+1. The stamp `/data/tsx/setup-v2` (one line `2`, mode 644) says that the new rule holds for this `/data`.
+2. While the stamp is missing, `tsx-setup-helper migrate` asks the old rule (`setup/usr/local/lib/tsx/setup_old_rule.py`, the code of the old `tsx-setupd`, unchanged) with the output of `tsx-config show`. When it says configured, the helper writes `setup-done`. Then it writes the stamp, always after the marker.
+3. The start of the service `tsx-setup-helper` runs the migration. The service starts after `tsx-config` (its `apply` puts an installer seed in place as `panel.conf`) and before `tsx-setupd`. When the stamp is still missing at a `setup-state` request (an update with no restart), the helper runs the migration first.
+4. When the migration cannot decide, it writes nothing, also no stamp: a `panel.conf` that exists but cannot be read, a failed `tsx-config show`, a failed old rule. The panel then counts as configured (the answer is an error), and the helper tries again 60 s later at the earliest and at the next boot. So an unreadable `panel.conf` never opens the pairing code.
+
+With the stamp there is no migration. A restore of a backup with no stamp (`tsx-data-restore` in the rescue system) removes the stamp of the panel, so that the next boot reads the old state of the backup.
+
+### An installer that makes a new `/data`
+
+An installer that wants the new rule from the first boot writes the stamp together with its files. The RAM installer of uc-pxx (`uc-pxx-inst`) writes, into a new mainline slot before its first boot:
+
+- `/data/tsx/panel.conf` with exactly one line `SSH_AUTHORIZED_KEY="<key>"` (the store format of `tsx-config`), mode 600, owner root
+- `/data/tsx/setup-v2` with one line `2`, mode 644, owner root
+
+Such a panel boots unconfigured. `tsx-config apply` adds the key to the `authorized_keys` of root at boot, the pairing code works, and the panel app shows the setup bar. The first save of the setup page ends the setup. An installer that writes no stamp gets the old rule once, by the migration (a seed with `KIOSK_URL` or a `panel.conf` with keys then is configured, as before).
+
 ## Log in with Home Assistant
 
 The panel uses the login of its own Home Assistant. An administrator of that Home Assistant opens the page of any panel with no code.
@@ -146,7 +186,7 @@ A save of the setup page that changes the setting restarts the kiosk, also from 
 
 `TZ_NAME` of `panel.conf` sets the time zone. The page sets it with the *Time zone* select. Some tools write a first zone before the first save. The installer of a kiosk panel and the card tool of the panel app write `TZ_NAME` or a default file. The update window of `tsx-autoupdate` uses the local time, so a panel with the wrong zone updates at the wrong hour.
 
-A card tool can also write the first line of the file `/data/tsx/timezone`, with one zone name. `tsx-setup` uses that zone at boot while `panel.conf` has no `TZ_NAME`. The file is not a key of `panel.conf` on purpose. A panel with no kiosk counts as configured when `panel.conf` has any key. The setup page, the pairing code and the bar on the screen must stay until the first save. A zone with a character outside `A-Z a-z 0-9 _ + / -`, or one that starts with a slash, is ignored. The first save of the setup page writes `TZ_NAME`, and this value wins from then on.
+A card tool can also write the first line of the file `/data/tsx/timezone`, with one zone name. `tsx-setup` uses that zone at boot while `panel.conf` has no `TZ_NAME`. The file is not a key of `panel.conf` on purpose. Up to 0.3.13_pre20261111 a panel with no kiosk counted as configured when `panel.conf` had any key, and the migration of an earlier release still reads `panel.conf` that way (see [Configured](#configured-the-setup-is-done)). The setup page, the pairing code and the bar on the screen must stay until the first save. A zone with a character outside `A-Z a-z 0-9 _ + / -`, or one that starts with a slash, is ignored. The first save of the setup page writes `TZ_NAME`, and this value wins from then on.
 
 ### Update settings
 
@@ -196,7 +236,9 @@ The *Install* button of the update entity in Home Assistant works in both modes.
 |---|---|
 | `setup/usr/local/sbin/tsx-setupd` | The server. It runs as the user `tsx-setup`, with no privilege. |
 | `setup/usr/local/lib/tsx/setup_ha_login.py` | The Home Assistant side of the login: the code exchange, the websocket API and the revoke. Standard library only. |
-| `setup/usr/local/sbin/tsx-setup-helper` | The root helper with a fixed command set. |
+| `setup/usr/local/sbin/tsx-setup-helper` | The root helper with a fixed command set. It answers `setup-state`, sends `setup-done` to `tsx-config`, and runs the migration of the setup state. |
+| `base/usr/local/lib/tsx/setup-state.sh` | The rule of "configured" and the atomic write of `setup-done` and `setup-v2`. `tsx-config` and the helper source it. |
+| `setup/usr/local/lib/tsx/setup_old_rule.py` | The rule of the earlier releases, for the migration only. |
 | `base/usr/local/lib/tsx/tsx_presence.py` | The kind of the presence sensor (`PRESENCE` in `hw.conf`). `tsx-setupd` finds it in `/usr/local/lib/tsx`, or in `base/` of a checkout. |
 
 ## Tests
@@ -205,4 +247,5 @@ The *Install* button of the update entity in Home Assistant works in both modes.
 |---|---|
 | `tests/test-setup-login.sh` | The login against a fake Home Assistant (`tests/fake-ha.py`): the redirect, the return, the admin check, the refusal of a user who is not an administrator, a replayed or foreign return, the revoke of the refresh token, CSRF, the session list, a revoke, a logout, the expiry, the rate limit, the Panel section and the allowlist of the helper |
 | `tests/test-setup.sh` | The pairing code, the save, the revision and the helper. The presence fields for `tof`, `pir`, `yes` and `no` |
+| `tests/test-setup-done.sh` | The setup state: the rule, the write, `tsx-config setup-done` and `setup-state`, each case of the migration (compared with the `tsx-setupd` of 7aafeb2 when git has it), a power cut, an unreadable `panel.conf`, the contract of the uc-pxx installer, a fresh panel and an old configured panel |
 | `tests/test-setup-page.sh` | The script of the page in node: the fields, the gate, the session bar, the Panel section and the CSRF header |

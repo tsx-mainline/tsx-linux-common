@@ -31,6 +31,22 @@
 #                                  for one ~15 min window even if KIOSK_URL is
 #                                  already set. It touches /run/tsx/setup-open
 #                                  and restarts the kiosk service if it is up.
+#   tsx-config setup-done          (panel, root) mark the setup of the panel as
+#                                  done: write /data/tsx/setup-done. From then
+#                                  on the panel is configured: the setup page
+#                                  has no pairing code, no LAN window and no
+#                                  setup bar, except in a window of
+#                                  `tsx-config setup`. A successful save of the
+#                                  setup page does the same.
+#   tsx-config setup-state         (panel, root) print "configured" (exit 0) or
+#                                  "unconfigured" (exit 1).
+#
+# "Configured" has one rule (setup-state.sh of /usr/local/lib/tsx): the marker
+# /data/tsx/setup-done exists. A key of panel.conf (SSH_AUTHORIZED_KEY,
+# KIOSK_URL, HA_URL or any other) never makes the panel configured. The stamp
+# /data/tsx/setup-v2 says that the rule holds for this /data. While it is
+# missing, tsx-setup-helper first moves the state of an earlier release over
+# (a panel that the old rule called configured gets the marker).
 #
 # File: $TSX_CONF (default /data/tsx/panel.conf). It has KEY="value" lines,
 # one setting per line, '#' comments and blank lines. No service ever `.`
@@ -176,6 +192,11 @@ else
 	# yes, and everything else is no. It does not warn about an unknown value.
 	presence_kind() { [ "${1:-}" = -q ] && shift; case "${1:-}" in pir) echo pir;; tof|yes) echo tof;; *) echo no;; esac; }
 fi
+# setup-state.sh: the one rule of "configured" (setup-done and setup-state below).
+SSTATE=${TSX_SETUP_STATE_SH:-/usr/local/lib/tsx/setup-state.sh}
+[ -r "$SSTATE" ] || SSTATE=$(dirname "$0")/../lib/tsx/setup-state.sh
+SSTATE_OK=0
+if [ -r "$SSTATE" ]; then . "$SSTATE"; SSTATE_OK=1; fi
 
 KNOWN_KEYS="PANEL_NAME KIOSK_URL KIOSK_DARK HA_URL HA_LOGIN_METHOD HA_TOKEN TZ_NAME VOICE WAKE_WORD HA_TRANSPORT HA_API_KEY HA_ALLOW_FROM MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD KERNEL_FLAVOR APK_URL BLANK_TIMEOUT KEY_LED_BLANK BOOT_VERBOSE ORIENTATION BT_PROXY BT_ACTIVE BT_MAC PRESENCE_WAKE PRESENCE_DISTANCE_MM PRESENCE_MIN_MM PRESENCE_HOLD_S AUTO_BRIGHTNESS ALS_SCALE UPDATE_MODE UPDATE_AUTO_RESTART ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
 SECRET_KEYS="HA_TOKEN HA_API_KEY MQTT_PASSWORD ROOT_PASSWORD_HASH SSH_AUTHORIZED_KEY"
@@ -1106,6 +1127,32 @@ setup() {
 	fi
 }
 
+# setup_done: the explicit end of the setup (setup-state.sh has the rule). It
+# writes the marker only. A marker that is there already stays as it is. It
+# needs root: the folder of panel.conf has mode 700.
+setup_done() {
+	[ "${TSX_APPLY_ALLOW_NONROOT:-0}" = 1 ] || [ "$(id -u)" = 0 ] || die "setup-done must run as root"
+	[ "$SSTATE_OK" = 1 ] || die "setup-done: $SSTATE is missing (tsx-base)"
+	if tsx_setup_done; then
+		log "the setup is done already ($TSX_SETUP_DONE_FILE)"
+		return 0
+	fi
+	tsx_setup_write "$TSX_SETUP_DONE_FILE" done || die "cannot write $TSX_SETUP_DONE_FILE"
+	log "the setup is done ($TSX_SETUP_DONE_FILE): the setup page has no pairing code and no LAN window now (tsx-config setup opens a window)"
+}
+
+# setup_state: print the state of the setup. Without the stamp, the state of
+# an earlier release is not moved over yet (tsx-setup-helper does that): a
+# line on stderr says so.
+setup_state() {
+	[ "${TSX_APPLY_ALLOW_NONROOT:-0}" = 1 ] || [ "$(id -u)" = 0 ] || die "setup-state must run as root"
+	[ "$SSTATE_OK" = 1 ] || die "setup-state: $SSTATE is missing (tsx-base)"
+	tsx_setup_stamped || log "note: $TSX_SETUP_V2_FILE is missing: tsx-setup-helper moves the state of an earlier release over at its start"
+	if tsx_setup_done; then echo configured; return 0; fi
+	echo unconfigured
+	return 1
+}
+
 CMD=${1:-}
 [ $# -ge 1 ] && shift || true
 case "$CMD" in
@@ -1119,5 +1166,7 @@ sync-root) [ $# = 0 ] || usage
 	[ "${TSX_APPLY_ALLOW_NONROOT:-0}" = 1 ] || [ "$(id -u)" = 0 ] || die "sync-root must run as root"
 	sync_root;;
 setup) [ $# = 0 ] || usage; setup;;
+setup-done) [ $# = 0 ] || usage; setup_done;;
+setup-state) [ $# = 0 ] || usage; setup_state || exit 1;;
 *) usage;;
 esac

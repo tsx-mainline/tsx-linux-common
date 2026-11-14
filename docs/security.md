@@ -65,13 +65,15 @@ The daemon writes into the folder of the panel app only with a rename of a file 
 
 ### tsx-setup-helper
 
-The FIFOs are `/run/tsx/setup-helper` and `/run/tsx/setup-helper.resp`, group `tsx-setup`. The commands are `show`, `rev`, `set KEY VALUE`, `unset KEY`, `apply`, `setup`, `kiosk-restart`, `brightness-learn-reset`, `clear-setup-open`, `layout-save`, `ha-token-set URL TOKEN`, `ha-token-clear`, `ha-entities`, `panel-state`, `panel CMD ARGS` and `rootpw PASSWORD`. The header of `setup/usr/local/sbin/tsx-setup-helper` describes each command. See also [Setup page](setup.md).
+The FIFOs are `/run/tsx/setup-helper` and `/run/tsx/setup-helper.resp`, group `tsx-setup`. The commands are `show`, `rev`, `set KEY VALUE`, `unset KEY`, `apply`, `setup`, `kiosk-restart`, `brightness-learn-reset`, `clear-setup-open`, `layout-save`, `ha-token-set URL TOKEN`, `ha-token-clear`, `ha-entities`, `panel-state`, `panel CMD ARGS`, `rootpw PASSWORD`, `setup-state` and `setup-done`. The header of `setup/usr/local/sbin/tsx-setup-helper` describes each command. See also [Setup page](setup.md).
 
 ## Files
 
 | File | Owner | Mode | Readers |
 |---|---|---|---|
 | `/data/tsx/panel.conf` | root | 600 | root only. The setup page reads it through `tsx-setup-helper`, which masks the secrets. |
+| `/data/tsx/setup-done` | root | 644 | The setup is done: the panel is configured (one line). The folder `/data/tsx` has mode 700, so only root reads it. The setup page asks `tsx-setup-helper` (`setup-state`). Only a save of the setup page (helper `setup-done`), `tsx-config setup-done` and the migration of `tsx-setup-helper` write it. See [Setup page](setup.md#configured-the-setup-is-done). |
+| `/data/tsx/setup-v2` | root | 644 | The stamp of the rule of `setup-done` (one line `2`). The migration of `tsx-setup-helper` writes it after the marker, and an installer that makes a new `/data` can write it. |
 | `/run/tsx/esphome.key` (the HA API key) | root, group `kiosk` or `tsx-panel-app` | 640 | `tsx-esphome` (root), the voice satellite, the panel app. Root owns it, so a reader cannot change the key. |
 | `/var/lib/tsx/panel-app/` | root | 711 | The folder of the token of the layout editor (`ha-token`, root, 600). |
 | `/var/lib/tsx/panel-app/app/` | `tsx-panel-app` | 700 | The ESPHome preferences and the backlight level of the app. |
@@ -86,7 +88,7 @@ The FIFOs are `/run/tsx/setup-helper` and `/run/tsx/setup-helper.resp`, group `t
 | Service | Why it needs root |
 |---|---|
 | `tsx-panelctl` | The root helper of the kiosk, the voice satellite and the panel app (see above). |
-| `tsx-setup-helper` | The root helper of the setup page: `panel.conf`, `chpasswd`. |
+| `tsx-setup-helper` | The root helper of the setup page: `panel.conf`, `setup-done`, `chpasswd`. |
 | `tsx-config`, `tsx-data`, `tsx-hostname`, `tsx-setup` (boot) | They write `panel.conf`, the files of `/run/tsx`, the host name, the MAC, the time zone, the swap and the mounts. They run once at boot. |
 | `tsx-autoupdate` | `apk upgrade` and the restart after an update. |
 | `tsx-esphome`, `tsx-mqtt`, `tsx-bt` | The Home Assistant layer of the kiosk panels: the root-only tools of the board, the Bluetooth controller. |

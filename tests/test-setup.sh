@@ -324,6 +324,7 @@ start_helper() {
 	TSX_APPLY_PREFIX="$T/prefix" TSX_STATE_DIR="$T/state" \
 	TSX_SETUP_HELPER_REQ="${2:-$RUNDIR/setup-helper}" TSX_SETUP_HELPER_RESP="${3:-$RUNDIR/setup-helper.resp}" \
 	TSX_CHPASSWD_BIN="$T/bin/chpasswd" TSX_SHADOW_FILE="$T/shadow" TSX_RCSERVICE_BIN="$T/bin/rc-service" TSX_PANELCTL_BIN="$T/bin/tsx-panelctl" \
+	TSX_SETUP_CONF="$T/setup.conf" TSX_KIOSK_CONF="$T/kiosk.conf" \
 		busybox sh "$HELPER" >> "$log" 2>&1 &
 	HPID=$!
 	for _ in $(seq 1 100); do
@@ -887,19 +888,21 @@ echo "== tsx-kiosk-url: unconfigured always shows setup =="
 R=$(TSX_SETUP_CONF="$T/setup.conf" TSX_RUN_DIR="$RUNDIR" busybox sh "$KIOSKURL" "")
 [ "$R" = "http://127.0.0.1:$PORT/setup" ] && ok "empty KIOSK_URL -> setup page" || bad "empty KIOSK_URL did not trigger setup: $R"
 
-# ---- 9. a URL only in /etc/kiosk.conf (install --kiosk-url, no panel.conf) is configured too
-echo "== is_configured: panel.conf KIOSK_URL, else /etc/kiosk.conf's =="
-isconf() {  # isconf PANEL_CONF_URL KIOSK_CONF_TEXT -> True/False
+# ---- 9. a page URL does not make the panel configured: only the marker does
+echo "== is_configured: the marker setup-done (through the helper), never a page URL =="
+isconf() {  # isconf PANEL_CONF_URL KIOSK_CONF_TEXT SETUP_STATE_ANSWER -> True/False
 	printf '%s\n' "$2" > "$T/kiosk-ic.conf"
 	TSX_KIOSK_CONF="$T/kiosk-ic.conf" TSX_SETUP_CONF="$T/setup.conf" TSX_RUN_DIR="$T/ic-run" TSX_SETUP_NO_ZEROCONF=1 \
 		python3 -c 'import sys, importlib.machinery as m
 d = m.SourceFileLoader("setupd", sys.argv[1]).load_module()
-d.tcfg_show = lambda: {"KIOSK_URL": sys.argv[2]} if sys.argv[2] else {}
-print(d.is_configured())' "$SETUPD" "$1" 2>/dev/null
+d.helper_call = lambda line, timeout=None: (True, sys.argv[3]) if line == "setup-state" else (True, "KIOSK_URL=" + sys.argv[2] if sys.argv[2] else "")
+print(d.is_configured())' "$SETUPD" "$1" "$3" 2>/dev/null
 }
-[ "$(isconf "" 'KIOSK_URL=""')" = False ] && ok "no URL anywhere: unconfigured" || bad "no URL anywhere should be unconfigured"
-[ "$(isconf "" 'KIOSK_URL="https://ha.example.org"')" = True ] && ok "URL only in /etc/kiosk.conf: configured (LAN setup closed)" || bad "a kiosk.conf URL left the panel unconfigured (LAN setup open while the kiosk shows HA)"
-[ "$(isconf "https://ha.example.org" '# KIOSK_URL="https://x.example.org"')" = True ] && ok "panel.conf URL: configured" || bad "panel.conf URL should be configured"
+[ "$(isconf "" 'KIOSK_URL=""' open)" = False ] && ok "no URL anywhere, no marker: unconfigured" || bad "no URL anywhere should be unconfigured"
+[ "$(isconf "" 'KIOSK_URL="https://ha.example.org"' open)" = False ] && ok "URL only in /etc/kiosk.conf, no marker: unconfigured" || bad "a kiosk.conf URL made the panel configured"
+[ "$(isconf "https://ha.example.org" '' open)" = False ] && ok "panel.conf URL, no marker: unconfigured" || bad "a panel.conf URL made the panel configured"
+[ "$(isconf "" '' done)" = True ] && ok "the marker, no URL: configured" || bad "the marker should make the panel configured"
+[ -e "$T/setup-done" ] && ok "the saves above wrote the marker setup-done next to panel.conf" || bad "no marker after the saves: $(ls "$T")"
 
 # ---- 10. the fields per package: the base page, and the plugin of tsx-ha -------
 echo "== the setup page of the base has no Home Assistant, MQTT or voice field =="

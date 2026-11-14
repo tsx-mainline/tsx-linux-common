@@ -1,6 +1,15 @@
 #!/sbin/openrc-run
 # Privileged command FIFO for the unprivileged on-panel setup page
 # (tsx-setupd). See the "Setup page" docs of the board repository.
+#
+# The start also moves the setup state of an earlier release over, once per
+# /data (`tsx-setup-helper migrate`, see the header of tsx-setup-helper): a
+# panel that the old rule called configured gets the marker
+# /data/tsx/setup-done before tsx-setupd asks for the first time. It runs
+# after tsx-config (apply has put an installer seed in place as panel.conf)
+# and before tsx-setupd, the one reader of the setup state. A failure does
+# not stop the boot: tsx-setup-helper tries again when tsx-setupd asks, and
+# until then the setup page acts as on a configured panel.
 description="Privileged helper for the on-panel setup page (tsx-setupd)"
 supervisor=supervise-daemon
 command=/usr/local/sbin/tsx-setup-helper
@@ -13,4 +22,9 @@ depend() {
 	after tsx-config
 	before tsx-setupd
 }
-start_pre() { checkpath -d -m 0755 /run/tsx; }
+start_pre() {
+	checkpath -d -m 0755 /run/tsx
+	/usr/local/sbin/tsx-setup-helper migrate >> /var/log/tsx-setup-helper.log 2>&1 \
+		|| ewarn "tsx-setup-helper migrate failed (see /var/log/tsx-setup-helper.log). The setup page acts as on a configured panel until it works"
+	return 0
+}

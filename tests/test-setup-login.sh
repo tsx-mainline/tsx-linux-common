@@ -5,7 +5,8 @@
 # API and its websocket API), tsx-panelctl is a fake that logs. The test
 # covers:
 #  - the HA URL: none (the pairing code only), the origin of KIOSK_URL, and
-#    HA_URL (it wins); the page is on the LAN with no pairing window
+#    HA_URL (it wins); the page is on the LAN with no pairing window; a page
+#    URL alone does not close the pairing code, tsx-config setup-done does
 #  - the login: the redirect to Home Assistant (client_id = the origin of
 #    the page, redirect_uri on the same host), the return, the exchange of
 #    the code, the admin check over the websocket API, the revoke of the
@@ -94,6 +95,7 @@ start_helper() {  # LOG REQ RESP
 	TSX_APPLY_PREFIX="$T/prefix" TSX_STATE_DIR="$T/state" \
 	TSX_SETUP_HELPER_REQ="$2" TSX_SETUP_HELPER_RESP="$3" \
 	TSX_RCSERVICE_BIN="$T/bin/rc-service" TSX_PANELCTL_BIN="$T/bin/tsx-panelctl" \
+	TSX_SETUP_CONF="$T/setup.conf" TSX_KIOSK_CONF="$T/kiosk.conf" \
 		busybox sh "$HELPER" >> "$1" 2>&1 &
 	PIDS="$PIDS $!"
 	for _ in $(seq 1 100); do grep -q "listening on" "$1" 2>/dev/null && return 0; sleep 0.1; done
@@ -176,6 +178,10 @@ def tcfg_set(key, val):
     env = dict(os.environ, TSX_CONF=CONF, TSX_RUN=T + "/run", TSX_APPLY_ALLOW_NONROOT="1")
     subprocess.run(["tsx-config", "set", key, val], env=env, check=True, capture_output=True)
 
+def tcfg_setup_done():
+    env = dict(os.environ, TSX_CONF=CONF, TSX_RUN=T + "/run", TSX_APPLY_ALLOW_NONROOT="1")
+    subprocess.run(["tsx-config", "setup-done"], env=env, check=True, capture_output=True)
+
 def ha_events():
     try:
         return [json.loads(l) for l in open(T + "/ha.log")]
@@ -226,8 +232,12 @@ ok(s.get("need_pairing") is True and s.get("login") is False and s.get("pairing"
 print("== the origin of KIOSK_URL is the Home Assistant URL ==")
 tcfg_set("KIOSK_URL", "http://127.0.0.1:%d/lovelace/0" % HAPORT)
 s = wait_state(lambda s: s.get("login") is True)
+ok(s.get("login") is True and s.get("pairing") is True and s.get("ha_host") == "127.0.0.1:%d" % HAPORT,
+   "a page URL does not make the panel configured: login true, pairing still true: %s" % s)
+tcfg_setup_done()
+s = wait_state(lambda s: s.get("pairing") is False)
 ok(s.get("login") is True and s.get("pairing") is False and s.get("ha_host") == "127.0.0.1:%d" % HAPORT,
-   "configured, window closed: login true, pairing false, the host of KIOSK_URL: %s" % s)
+   "configured (tsx-config setup-done), window closed: login true, pairing false, the host of KIOSK_URL: %s" % s)
 ok(listens_lan(PORT), "the page stays on the LAN (0.0.0.0) with no pairing window")
 r = req("GET", "/setup")
 ok(r.status == 200 and "Log in with Home Assistant" in r.body, "GET /setup from the LAN shows the page with the login button")

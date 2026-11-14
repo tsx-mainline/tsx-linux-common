@@ -9,8 +9,8 @@ privilege at all. It serves a small, dark, touch-friendly page (docs/setup.md
 of tsx-linux-common):
 
   * On the panel itself, over loopback (http://127.0.0.1:PORT/setup).
-    kiosk-session loads this page instead of Home Assistant when no
-    KIOSK_URL is configured, or for one ~15 minute window after
+    kiosk-session loads this page instead of Home Assistant when the kiosk
+    has no page URL (KIOSK_URL), or for one ~15 minute window after
     `tsx-config setup` or the overlay "Setup" entry. Loopback never needs a
     login.
   * From a laptop or phone on the LAN (http://<panel-ip>:PORT/setup), with
@@ -32,6 +32,17 @@ of tsx-linux-common):
     When neither is possible, the process does not even listen on a
     LAN-reachable address (ServerManager below rebinds to loopback only).
     It does not just refuse at the HTTP layer.
+
+Configured (is_configured() below): the setup of the panel is done. The rule
+is in setup-state.sh of tsx-base: the marker /data/tsx/setup-done exists. This
+process cannot read /data/tsx (mode 700), so it asks tsx-setup-helper
+("setup-state"). No key of panel.conf makes the panel configured: not
+SSH_AUTHORIZED_KEY, not KIOSK_URL or HA_URL, and no page URL of kiosk.conf.
+Only a successful save of this page (handle_submit: the helper command
+"setup-done") and `tsx-config setup-done` write the marker. When the helper
+gives no answer (it is not running, an older helper, or the move of the state
+of an earlier release failed), the panel counts as configured: a pairing code
+never opens on a working panel because of an error.
 
 Sessions (the Sessions class): the cookie "tsxsetup" (HttpOnly,
 SameSite=Strict, Path=/setup) holds a random token. The server keeps the
@@ -56,8 +67,8 @@ below). The Home Assistant fields (the HA URL and login, voice, MQTT) are the
 plugin of tsx-ha. Without it, this page never names Home Assistant.
 
 Every privileged action goes through tsx-setup-helper. These actions are:
-read or write panel.conf (mode 600, owned by root), apply it, restart the
-kiosk, and change the root password. tsx-setup-helper is a small root daemon
+read or write panel.conf (mode 600, owned by root), apply it, read and write
+the setup state, restart the kiosk, and change the root password. tsx-setup-helper is a small root daemon
 with a fixed, line-based command set
 (rootfs/overlay/usr/local/sbin/tsx-setup-helper). This process never runs a
 shell that is built from form input. The one check that needs no privilege
@@ -97,9 +108,8 @@ the mode is "on" when the defaults file of kiosk.conf exists. With the mode "off
     page also hides the fields that only a service of tsx-kiosk reads:
     KIOSK_URL, KIOSK_DARK and BLANK_TIMEOUT (tsx-idled). A plugin names its own such
     keys in KIOSK_ONLY_KEYS. A save leaves these keys as they are.
-  * The panel is "configured" when panel.conf has at least one key. While
-    it is not configured, a save always sends TZ_NAME, so the first save
-    makes panel.conf and closes the LAN listener.
+  * While the panel is not configured, a save always sends TZ_NAME, so the
+    first save gives the panel a time zone.
   * A save restarts no kiosk.
   * The screen of the panel is not a browser. So the pairing code goes to
     the native app in the file screen.json (see write_screen below).
@@ -435,15 +445,17 @@ def tcfg_apply():
     return helper_call("apply", HELPER_SLOW_TIMEOUT)
 
 
-# ServerManager.watch_forever polls is_configured() forever (every POLL_S),
-# and lan_allowed() calls it once per request. A short cache keeps an idle,
-# already-configured panel from forking tsx-config and reading panel.conf
-# over the helper every single second for the rest of its life. A save
-# (handle_submit) calls restart_kiosk() and clear_setup_open() directly
-# anyway. So the cache only delays the close of the LAN listener of a
-# freshly-configured panel by a few seconds. It does not delay the load of HA.
+# ServerManager.watch_forever polls is_configured() and ha_url() forever
+# (every POLL_S), and lan_allowed() calls them once per request. A short cache
+# keeps an idle, already-configured panel from asking the helper every single
+# second for the rest of its life. A save (handle_submit) empties the cache,
+# and calls restart_kiosk() and clear_setup_open() directly anyway. So the
+# cache only delays a change from outside (tsx-config setup-done, a new HA_URL)
+# by a few seconds. It does not delay the load of HA. The setup state starts
+# as "configured": no LAN window before the first answer of the helper.
 _CONFIGURED_CACHE_S = 4.0
-_configured_cache = {"at": float("-inf"), "val": False, "rev": None, "ha": None}
+_configured_cache = {"at": float("-inf"), "val": True, "err": None,
+                     "ha_at": float("-inf"), "rev": None, "ha": None}
 _configured_cache_lock = threading.Lock()
 
 
@@ -471,50 +483,71 @@ def ha_url_from(shown):
     return None
 
 
-def is_configured_from(shown):
-    """Is the panel configured? shown is the output of tcfg_show. With a
-    kiosk, it needs a page URL. With no kiosk, panel.conf needs at least one
-    key (a line of tcfg_show that is not a comment of tsx-config)."""
-    if kiosk_enabled():
-        return has_url(shown)
-    return any(re.fullmatch(r"[A-Z][A-Z0-9_]*", k) for k in shown)
+def setup_state():
+    """Is the setup of the panel done? The helper answers "setup-state" with
+    the rule of setup-state.sh (the marker /data/tsx/setup-done exists). Any
+    other answer (no helper, an older helper, a failed move of the state of
+    an earlier release) is True: the panel counts as configured, so an error
+    never opens the pairing code. The log gets a line when the error changes."""
+    ok, text = helper_call("setup-state")
+    if ok and text in ("done", "open"):
+        err = None
+        val = text == "done"
+    else:
+        err = text or "no answer"
+        val = True
+    if err != _configured_cache.get("err"):
+        if err:
+            sys.stderr.write("tsx-setupd: the setup state via helper failed: %s (the panel counts as configured)\n" % err)
+        elif _configured_cache.get("err"):
+            sys.stderr.write("tsx-setupd: the setup state via helper works again\n")
+        _configured_cache["err"] = err
+    return val
 
 
-def _refresh_configured():
-    """Read panel.conf again when its revision changed (at most every
-    _CONFIGURED_CACHE_S): is the panel configured, and the Home Assistant URL."""
+def is_configured():
+    """True when the setup of the panel is done (setup_state, at most every
+    _CONFIGURED_CACHE_S)."""
+    with _configured_cache_lock:
+        now = time.monotonic()
+        if now - _configured_cache["at"] > _CONFIGURED_CACHE_S:
+            _configured_cache["val"] = setup_state()
+            _configured_cache["at"] = now
+        return _configured_cache["val"]
+
+
+def ha_url():
+    """The Home Assistant URL for the login (ha_url_from), or None. It reads
+    panel.conf again when its revision changed (at most every
+    _CONFIGURED_CACHE_S)."""
     # tsx-config show takes seconds on a slow panel. So the check reads the
     # values again only when the revision of panel.conf (one sha256 in the
     # helper) has changed since the last read.
     with _configured_cache_lock:
         now = time.monotonic()
-        if now - _configured_cache["at"] > _CONFIGURED_CACHE_S:
+        if now - _configured_cache["ha_at"] > _CONFIGURED_CACHE_S:
             rev = tcfg_rev()
             if rev is None or rev != _configured_cache.get("rev"):
-                shown = tcfg_show()
-                _configured_cache["val"] = is_configured_from(shown)
-                _configured_cache["ha"] = ha_url_from(shown)
+                _configured_cache["ha"] = ha_url_from(tcfg_show())
                 _configured_cache["rev"] = rev
-            _configured_cache["at"] = now
-        return _configured_cache["val"], _configured_cache["ha"]
-
-
-def is_configured():
-    return _refresh_configured()[0]
-
-
-def ha_url():
-    """The Home Assistant URL for the login (ha_url_from), or None."""
-    return _refresh_configured()[1]
+            _configured_cache["ha_at"] = now
+        return _configured_cache["ha"]
 
 
 def _invalidate_configured_cache():
     """Call this right after a successful save. Otherwise is_configured()
-    might not notice for up to _CONFIGURED_CACHE_S, and the response of the
-    state API to that same save would look stale."""
+    and ha_url() might not notice for up to _CONFIGURED_CACHE_S, and the
+    response of the state API to that same save would look stale."""
     with _configured_cache_lock:
         _configured_cache["at"] = float("-inf")
+        _configured_cache["ha_at"] = float("-inf")
         _configured_cache["rev"] = None
+
+
+def mark_setup_done():
+    """The setup is done: helper "setup-done" (tsx-config setup-done writes the
+    marker). Returns (ok, error text)."""
+    return helper_call("setup-done", HELPER_SLOW_TIMEOUT)
 
 
 def _run_flag_path():
@@ -1037,6 +1070,15 @@ def handle_submit(fields, revision=None, on_screen=True):
     # Also a save with no change closes the window: the user is done, and
     # the kiosk loads the page again.
     _invalidate_configured_cache()
+    # The setup is done: a successful save of this page is the one signal of
+    # the page for it (the marker of setup-state.sh). On a configured panel
+    # (also when the helper gives no answer) nothing is written.
+    if not is_configured():
+        ok, err = mark_setup_done()
+        _invalidate_configured_cache()
+        if not ok:
+            return 500, {"errors": {"_setup_done": "The settings are saved, but the panel could not note that the "
+                                                  "setup is done (%s). Save again." % (err or "tsx-config setup-done failed")}}
     restarted = False
     if on_screen:
         clear_setup_open()
@@ -1523,7 +1565,7 @@ class Handler(BaseHTTPRequestHandler):
         sess = None if loop else self._session()
         resp = {
             "need_pairing": False,
-            "configured": is_configured_from(shown),
+            "configured": is_configured(),
             "kiosk": kiosk,
             "loopback": loop,
             "lan_allowed": lan_allowed(),
@@ -2162,7 +2204,7 @@ a.btn { display:inline-block; text-align:center; text-decoration:none; box-sizin
   // A panel with no kiosk loads no page. Hide the settings that only a
   // service of the kiosk reads, and do not send them (a disabled field is
   // not sent). Without a time zone, the first save sends the time zone of
-  // this browser, so that it makes panel.conf.
+  // this browser, so that the panel gets a time zone.
   function applyKiosk(on, s){
     $("url-card").style.display = on ? "block" : "none";
     $("f-url").disabled = !on;

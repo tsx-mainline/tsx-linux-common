@@ -5,7 +5,9 @@
 # temporary folders and fake helper binaries. It never uses the panel, a
 # container or root. The test covers:
 #  - the mode with no kiosk (TSX_SETUP_KIOSK): no page URL, no blank timeout,
-#    the first save needs no KIOSK_URL, a save restarts no kiosk
+#    the first save needs no KIOSK_URL and writes the marker setup-done, keys
+#    of panel.conf (an SSH key) do not make the panel configured, a save
+#    restarts no kiosk
 #  - screen.json, the pairing code for a native screen: the keys, mode 600,
 #    the refresh, and the removal when the LAN window closes or the process ends
 #  - the layout editor, a plugin of the setup page: the page, the API (the
@@ -218,6 +220,7 @@ start_helper() {
 	TSX_RUN="$RUNBASE" TSX_RUN_DIR="$RUNDIR" TSX_APPLY_ALLOW_NONROOT=1 \
 	TSX_APPLY_PREFIX="$T/prefix" TSX_STATE_DIR="$T/tsx-state" \
 	TSX_RCSERVICE_BIN="$T/bin/rc-service" TSX_SETUP_STATE_DIR="$T/state" \
+	TSX_SETUP_CONF="$T/setup.conf" TSX_KIOSK_CONF="$T/kiosk.conf" \
 	TSX_PANEL_LAYOUT_FILE="$LAYOUT_USER" TSX_LAYOUT_CHECK_BIN="$T/bin/tsx-layout-check" \
 	TSX_HA_TOKEN_FILE="$HA_TOKEN" TSX_HA_ENTITIES_FILE="$HA_ENT" TSX_HA_ENTITIES_BIN="$HAENT" \
 		busybox sh "$HELPER" >> "$log" 2>&1 &
@@ -293,23 +296,32 @@ U2=$(jget uptime < "$SJ")
 ls "$T/state" | grep -q 'tmp' && bad "a temporary file stays in the state folder: $(ls -a "$T/state")" || ok "no temporary file stays in the state folder"
 
 echo "== the first save needs no KIOSK_URL =="
-tcfg set BLANK_TIMEOUT 120   # a key that no service of this panel reads; this makes panel.conf non-empty
-tcfg unset BLANK_TIMEOUT
+# Keys in panel.conf do not make the panel configured (setup-state.sh: only
+# the marker setup-done does). The panel app of uc-pxx gets panel.conf with an
+# SSH key from its installer and must still show the pairing code.
+tcfg set TZ_NAME UTC
+tcfg set SSH_AUTHORIZED_KEY "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGVoZHRlc3RrZXl0ZXN0a2V5dGVzdGtleXRlc3Rr test@host"
+sleep 4.5   # the cache of tsx-setupd (4 s)
 out=$(call GET /setup/api/state); body=$(body_of "$out")
-[ "$(jget configured <<<"$body")" = False ] && ok "a panel.conf with no key is still not configured" || bad "configured after unset: $body"
-out=$(submit '{}'); body=$(body_of "$out")
-[ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "[]" ] && ok "a save with no change and no URL is accepted" || bad "empty save: $out"
-! grep -qv '^#' "$CONF" 2>/dev/null && ok "the save with no change wrote no key" || bad "panel.conf has keys: $(cat "$CONF")"
+[ "$(jget configured <<<"$body")" = False ] && ok "a panel.conf with keys (TZ_NAME, SSH_AUTHORIZED_KEY) is not configured" || bad "configured by a key: $body"
+listens_on 0.0.0.0 && has_file "$SJ" && ok "the LAN window and screen.json stay" || bad "the window closed by a key: $(ss -ltn | grep ":$PORT")"
+[ ! -e "$T/setup-done" ] && ok "no marker" || bad "a key wrote the marker"
+tcfg unset TZ_NAME
+tcfg unset SSH_AUTHORIZED_KEY
 KR0=$(grep -c 'kiosk-restart' "$T/helper.log" 2>/dev/null || true)
 out=$(submit '{"TZ_NAME":"America/Denver","KIOSK_URL":"https://example.org/x","BLANK_TIMEOUT":"90"}'); body=$(body_of "$out")
-[ "$(status_of "$out")" = 200 ] && grep -q '^TZ_NAME="America/Denver"$' "$CONF" && ok "the first save with TZ_NAME makes panel.conf" || bad "first save: $out / $(cat "$CONF" 2>&1)"
+[ "$(status_of "$out")" = 200 ] && grep -q '^TZ_NAME="America/Denver"$' "$CONF" && ok "the first save with TZ_NAME writes panel.conf" || bad "first save: $out / $(cat "$CONF" 2>&1)"
 grep -Eq '^(KIOSK_URL|BLANK_TIMEOUT)=' "$CONF" && bad "KIOSK_URL or BLANK_TIMEOUT were written: $(cat "$CONF")" || ok "KIOSK_URL and BLANK_TIMEOUT from a client are ignored"
 [ "$(jget changed <<<"$body")" = "['TZ_NAME']" ] && ok "the save reports TZ_NAME only" || bad "changed: $body"
 [ "$(grep -c 'kiosk-restart' "$T/helper.log" 2>/dev/null || true)" = "$KR0" ] && ok "a save restarts no kiosk" || bad "the save asked for a kiosk restart"
+[ "$(cat "$T/setup-done" 2>/dev/null)" = done ] && ok "the first save writes the marker setup-done" || bad "no marker after the first save: $(ls -A "$T")"
 out=$(call GET /setup/api/state); body=$(body_of "$out")
 [ "$(jget configured <<<"$body")" = True ] && ok "the panel is configured now" || bad "configured: $body"
 wait_for 15 no_file "$SJ" && ok "screen.json is removed when the first save closes the LAN window" || bad "screen.json stays after the save"
 wait_for 15 listens_on 127.0.0.1 && ! listens_on 0.0.0.0 && ok "the listener is on loopback only" || bad "listeners: $(ss -ltn | grep ":$PORT")"
+out=$(submit '{}'); body=$(body_of "$out")
+[ "$(status_of "$out")" = 200 ] && [ "$(jget changed <<<"$body")" = "[]" ] && ok "a save with no change and no URL is accepted" || bad "empty save: $out"
+[ "$(grep -cv '^#' "$CONF")" = 1 ] && ok "the save with no change wrote no key" || bad "panel.conf: $(cat "$CONF")"
 tcfg set BLANK_TIMEOUT 120
 body=$(body_of "$(call GET /setup/api/state)")
 [ "$(jget fields.BLANK_TIMEOUT <<<"$body")" = "" ] && [ "$(jget fields.TZ_NAME <<<"$body")" = "America/Denver" ] \
@@ -356,17 +368,21 @@ print(d.kiosk_enabled())' "$SETUPD" 2>/dev/null
 [ "$(mode "" "" yes)" = True ] && [ "$(mode "" "" no)" = False ] && ok "no setting is auto" || bad "default mode"
 [ "$(mode on "" no)" = True ] && [ "$(mode off "" yes)" = False ] && ok "on and off in setup.conf win over the file" || bad "on/off mode"
 [ "$(mode off on yes)" = True ] && ok "the environment replaces the setup.conf key" || bad "env mode"
-# configured, with no kiosk: panel.conf has a key
-conf_with() {  # conf_with SHOWN_JSON KIOSK -> True/False
+# configured: the answer of the helper to setup-state (the marker), never the
+# keys of panel.conf, with and without a kiosk (tests/test-setup-done.sh has
+# the rule of the earlier releases, for the migration)
+conf_with() {  # conf_with SHOWN_JSON KIOSK SETUP_STATE_ANSWER -> True/False
 	env TSX_SETUP_KIOSK="$2" TSX_SETUP_CONF="$T/setup.conf" TSX_RUN_DIR="$T/ic-run" TSX_KIOSK_CONF="$T/none.conf" TSX_SETUP_PLUGIN_DIR="$T/none" \
 		python3 -c 'import sys, json, importlib.machinery as m
 d = m.SourceFileLoader("setupd", sys.argv[1]).load_module()
-d.tcfg_show = lambda: json.loads(sys.argv[2])
-print(d.is_configured())' "$SETUPD" "$1" 2>/dev/null
+shown = json.loads(sys.argv[2])
+d.helper_call = lambda line, timeout=None: (True, sys.argv[3]) if line == "setup-state" else (True, "\x01".join("%s=%s" % kv for kv in shown.items()))
+print(d.is_configured())' "$SETUPD" "$1" "$3" 2>/dev/null
 }
-[ "$(conf_with '{}' off)" = False ] && [ "$(conf_with '{"TZ_NAME": "UTC"}' off)" = True ] && ok "no kiosk: configured = panel.conf has a key" || bad "configured, no kiosk"
-[ "$(conf_with '{"# WARNING: x y z": "1"}' off)" = False ] && ok "no kiosk: a comment line of tsx-config is no key" || bad "comment line counts"
-[ "$(conf_with '{"TZ_NAME": "UTC"}' on)" = False ] && [ "$(conf_with '{"KIOSK_URL": "https://example.org"}' on)" = True ] && ok "with a kiosk: configured = a page URL (as before)" || bad "configured, kiosk"
+[ "$(conf_with '{"TZ_NAME": "UTC", "SSH_AUTHORIZED_KEY": "********"}' off open)" = False ] && [ "$(conf_with '{}' off done)" = True ] \
+	&& ok "no kiosk: configured = the marker, not a key of panel.conf" || bad "configured, no kiosk"
+[ "$(conf_with '{"KIOSK_URL": "https://example.org", "HA_URL": "https://example.org"}' on open)" = False ] && [ "$(conf_with '{}' on done)" = True ] \
+	&& ok "with a kiosk: configured = the marker, not a page URL" || bad "configured, kiosk"
 
 # ==== 2. tsx-setup-helper: layout-save =============================================
 # A helper that handles one request, with its own FIFOs and its own folders.

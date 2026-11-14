@@ -99,6 +99,30 @@
 #                          Then it copies the new /etc/shadow hash into
 #                          ROOT_PASSWORD_HASH, the way tsx-config apply
 #                          already does for that key.
+#   setup-state           is the setup of the panel done? "ok done" or "ok
+#                          open". The rule is setup-state.sh of tsx-base: the
+#                          marker /data/tsx/setup-done exists. Nothing else
+#                          counts, also no key of panel.conf. While the stamp
+#                          /data/tsx/setup-v2 is missing, the script first
+#                          runs the migration (below). When that fails, the
+#                          reply is "err ..." and tsx-setupd acts as on a
+#                          configured panel. A failed migration runs again
+#                          60 s later at the earliest. tsx-setupd asks about
+#                          every 4 s: the command writes no log line.
+#   setup-done            tsx-config setup-done: the setup is done (tsx-setupd
+#                          sends it after a successful save of the page)
+#
+# The migration of the setup state (once per /data, before the first answer
+# of setup-state; `tsx-setup-helper migrate` runs it alone, and the start of
+# the service runs that before tsx-setupd starts): when the stamp
+# /data/tsx/setup-v2 is missing, it asks the rule of the earlier releases
+# (setup_old_rule.py: the old code of tsx-setupd, unchanged) with the output
+# of `tsx-config show 2>&1`, the text that the old tsx-setupd read. When that
+# rule says configured, it writes the marker. Then it writes the stamp. So a
+# panel that was configured stays configured. A panel.conf that exists but
+# cannot be read, a failed tsx-config show or a failed old rule give no
+# answer: the script writes nothing (also no stamp), and the panel counts as
+# configured until a later run can decide.
 #
 # Env overrides for tests: TSX_RUN_DIR, TSX_SETUP_HELPER_REQ,
 # TSX_SETUP_HELPER_RESP, TSX_CONF (panel.conf, the same variable and default
@@ -107,7 +131,9 @@
 # TSX_LAYOUT_CHECK_BIN, TSX_HA_TOKEN_FILE, TSX_HA_ENTITIES_FILE,
 # TSX_HA_ENTITIES_BIN, TSX_SETUP_HELPER_ONESHOT=1 (handle exactly one request,
 # then exit. Tests only), TSX_APPLY_ALLOW_NONROOT (passed through to
-# tsx-config, tests only).
+# tsx-config, tests only), TSX_SETUP_STATE_SH (setup-state.sh),
+# TSX_SETUP_OLD_RULE (setup_old_rule.py), TSX_PYTHON_BIN (python3), and the
+# variables of setup-state.sh and setup_old_rule.py.
 set -u
 R=${TSX_RUN_DIR:-/run/tsx}
 REQ=${TSX_SETUP_HELPER_REQ:-$R/setup-helper}
@@ -133,8 +159,57 @@ SALT=
 REV_HASH= REV_REUSED=0 REV_MISSING=0
 REV_REF=$R/setup-helper.revtime
 TAG=
+# The rule of "configured" (tsx-base) and the old rule for the migration
+# (this package). A checkout has setup-state.sh in base/. setup-state.sh
+# takes the folder of the files from TSX_CONF, with the default of CONF.
+SSTATE=${TSX_SETUP_STATE_SH:-/usr/local/lib/tsx/setup-state.sh}
+[ -r "$SSTATE" ] || SSTATE=$(dirname "$0")/../../../../base/usr/local/lib/tsx/setup-state.sh
+OLD_RULE=${TSX_SETUP_OLD_RULE:-/usr/local/lib/tsx/setup_old_rule.py}
+[ -r "$OLD_RULE" ] || OLD_RULE=$(dirname "$0")/../lib/tsx/setup_old_rule.py
+PYTHON=${TSX_PYTHON_BIN:-python3}
+SSTATE_OK=0
+if [ -r "$SSTATE" ]; then . "$SSTATE"; SSTATE_OK=1; fi
+# the uptime of the last failed migration (setup-state tries again 60 s later)
+MIGRATE_FAILED_AT=
 
 log() { echo "$(date '+%F %T') tsx-setup-helper: $*"; }
+
+# setup_migrate: the migration of the setup state (see the header). Exit 0
+# when the stamp is there at the end.
+setup_migrate() {
+	[ "$SSTATE_OK" = 1 ] || { log "setup-migrate: $SSTATE is missing (tsx-base): no answer"; return 1; }
+	tsx_setup_stamped && return 0
+	if [ -e "$CONF" ] || [ -L "$CONF" ]; then
+		if [ ! -f "$CONF" ] || ! cat "$CONF" > /dev/null 2>&1; then
+			log "setup-migrate: $CONF cannot be read: no answer (the panel counts as configured)"
+			return 1
+		fi
+	fi
+	[ -r "$OLD_RULE" ] || { log "setup-migrate: $OLD_RULE is missing: no answer"; return 1; }
+	# the same text as the reply of "show" (below) that the old tsx-setupd read
+	if ! sm_out=$("$CONFIG" show 2>&1); then
+		log "setup-migrate: tsx-config show failed: no answer"
+		return 1
+	fi
+	# The answer is one line on stdout and exit 0. An error of python (also
+	# exit 1) is no answer.
+	sm_ans=$(printf '%s' "$sm_out" | "$PYTHON" -I "$OLD_RULE") || sm_ans="exit $?"
+	case $sm_ans in
+	configured)
+		if ! tsx_setup_done; then
+			tsx_setup_write "$TSX_SETUP_DONE_FILE" migrated \
+				|| { log "setup-migrate: cannot write $TSX_SETUP_DONE_FILE"; return 1; }
+		fi
+		log "setup-migrate: configured by the rule of the earlier releases: $TSX_SETUP_DONE_FILE";;
+	unconfigured) log "setup-migrate: not configured by the rule of the earlier releases";;
+	*) log "setup-migrate: the old rule gave no answer ($(printf '%s' "$sm_ans" | tr -d '\000-\037' | cut -c1-80))"; return 1;;
+	esac
+	tsx_setup_write "$TSX_SETUP_V2_FILE" 2 || { log "setup-migrate: cannot write $TSX_SETUP_V2_FILE"; return 1; }
+	log "setup-migrate: done ($TSX_SETUP_V2_FILE)"
+	return 0
+}
+
+uptime_s() { awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0; }
 
 # Read the salt of this boot, or make it (16 random bytes, in hex). The file
 # is written with umask 077 and then moved into place, so it is never
@@ -262,6 +337,25 @@ handle() {
 		rm -f "$R/setup-open"
 		reply_ok
 		;;
+	setup-state)
+		[ -z "$rest" ] || { reply_err "setup-state takes no arguments"; return; }
+		[ "$SSTATE_OK" = 1 ] || { reply_err "setup-state: $SSTATE is missing"; return; }
+		if ! tsx_setup_stamped; then
+			ss_now=$(uptime_s)
+			if [ -z "$MIGRATE_FAILED_AT" ] || [ $((ss_now - MIGRATE_FAILED_AT)) -ge 60 ] \
+				|| [ $((ss_now - MIGRATE_FAILED_AT)) -lt 0 ]; then
+				setup_migrate || MIGRATE_FAILED_AT=$(uptime_s)
+			fi
+			tsx_setup_stamped || { reply_err "setup-state: the setup state of an earlier release is not moved over"; return; }
+		fi
+		if tsx_setup_done; then reply_ok done; else reply_ok open; fi
+		;;
+	setup-done)
+		[ -z "$rest" ] || { reply_err "setup-done takes no arguments"; return; }
+		log "setup-done"
+		if out=$("$CONFIG" setup-done 2>&1); then reply_ok
+		else reply_err "$(printf '%s\n' "${out:-tsx-config setup-done failed}" | sed -n '$p')"; fi
+		;;
 	layout-save)
 		[ -z "$rest" ] || { reply_err "layout-save takes no arguments"; return; }
 		if ! command -v "$LAYOUT_CHECK" >/dev/null 2>&1; then reply_err "no panel app on this panel"; return; fi
@@ -359,6 +453,15 @@ handle() {
 	*) reject="$(safe "$cmd $rest")"; log "rejected: $reject"; reply_err "unknown command";;
 	esac
 }
+
+# `tsx-setup-helper migrate`: only the migration of the setup state (the
+# start of the service runs it before tsx-setupd starts). Exit 0 when the
+# stamp is there.
+case "${1:-}" in
+migrate) [ $# = 1 ] || { echo "usage: $0 [migrate]" >&2; exit 2; }; setup_migrate; exit $?;;
+'') ;;
+*) echo "usage: $0 [migrate]" >&2; exit 2;;
+esac
 
 mkdir -p "$R"
 salt_init

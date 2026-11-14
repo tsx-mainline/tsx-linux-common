@@ -50,9 +50,10 @@ select_eth0_mac() {
 # default_tz: the time zone that the card tool of a family wrote to the data
 # partition (TSX_TZ_DEFAULT_FILE, /data/tsx/timezone: one zone name in the first
 # line). The panel uses it only while panel.conf has no TZ_NAME. The file is not
-# a setting of panel.conf on purpose: a panel with no kiosk counts as
-# configured when panel.conf has any key, and the setup page must stay open
-# until the first save. A name with a character outside the set of
+# a setting of panel.conf on purpose: up to 0.3.13_pre20261111 a panel with no
+# kiosk counted as configured when panel.conf had any key (the migration of
+# tsx-setup-helper still reads panel.conf that way), and the setup page must
+# stay open until the first save. A name with a character outside the set of
 # tsx-config, or one that starts with a slash, gives nothing.
 default_tz() {
 	tzf=${TSX_TZ_DEFAULT_FILE:-/data/tsx/timezone}
