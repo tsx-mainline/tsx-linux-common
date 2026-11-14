@@ -89,9 +89,14 @@ PORT=$(free_port); PORT2=$(free_port); HAPORT=$(free_port)
 printf 'TSX_SETUP_PORT=%s\nTSX_SETUP_LAN=on\nTSX_SETUP_WINDOW=900\n' "$PORT" > "$T/setup.conf"
 printf 'TSX_SETUP_PORT=%s\nTSX_SETUP_LAN=on\nTSX_SETUP_WINDOW=900\n' "$PORT2" > "$T/setup2.conf"
 
-start_helper() {  # LOG REQ RESP
+# start_helper LOG REQ RESP [RUN_DIR]: RUN_DIR (default the run folder of
+# tsx-setupd) holds the salt and the time file of "rev". A helper that serves
+# another tsx-setupd gets its own: two helpers that share the time file reuse
+# each other's "hash is fresh" time, and one of them then gives an old
+# revision for up to 15 requests (a panel has one helper).
+start_helper() {  # LOG REQ RESP [RUN_DIR]
 	PATH="$T/bin:$PATH" TSX_CONFIG_BIN="$T/bin/tsx-config" TSX_CONF="$CONF" \
-	TSX_RUN="$T/run" TSX_RUN_DIR="$T/run/tsx" TSX_APPLY_ALLOW_NONROOT=1 \
+	TSX_RUN="$T/run" TSX_RUN_DIR="${4:-$T/run/tsx}" TSX_APPLY_ALLOW_NONROOT=1 \
 	TSX_APPLY_PREFIX="$T/prefix" TSX_STATE_DIR="$T/state" \
 	TSX_SETUP_HELPER_REQ="$2" TSX_SETUP_HELPER_RESP="$3" \
 	TSX_RCSERVICE_BIN="$T/bin/rc-service" TSX_PANELCTL_BIN="$T/bin/tsx-panelctl" \
@@ -114,7 +119,7 @@ start_setupd() {  # LOG CONF REQ RESP [ENV...]
 }
 start_helper "$T/helper.log" "$T/run/tsx/setup-helper" "$T/run/tsx/setup-helper.resp" || { echo "FAIL: helper"; cat "$T/helper.log"; exit 1; }
 start_helper "$T/helper2.log" "$T/h2/req" "$T/h2/resp" || { echo "FAIL: helper 2"; exit 1; }
-start_helper "$T/helper3.log" "$T/h3/req" "$T/h3/resp" || { echo "FAIL: helper 3"; exit 1; }
+start_helper "$T/helper3.log" "$T/h3/req" "$T/h3/resp" "$T/h3/run" || { echo "FAIL: helper 3"; exit 1; }
 python3 "$HERE/tests/fake-ha.py" "$HAPORT" "$T/ha.log" > "$T/fake-ha.out" 2>&1 &
 PIDS="$PIDS $!"
 for _ in $(seq 1 50); do grep -q listening "$T/fake-ha.out" 2>/dev/null && break; sleep 0.1; done
