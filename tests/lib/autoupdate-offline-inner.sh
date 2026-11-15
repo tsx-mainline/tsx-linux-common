@@ -48,29 +48,40 @@ say "boot: $b s"
 [ "$b" -le 20 ] || bad "the boot took $b s with no network (bound 20 s)"
 grep -q '^running_version ' "$T/state/fields" 2>/dev/null || bad "the boot recorded no release"
 
-# 2. The scheduled run. The test does not touch the run lock (a look with flock
-# could make the tick skip, and docker shows no /proc/locks). It times the
-# locked part from the log: the tick writes its first log line only once it
-# holds the run lock (the apk update before it writes no log), so the time
-# from the first log write to the end bounds how long the run lock was held.
-# The old script logs "apk update" right after it took the lock.
+# 2. The scheduled run. The test never takes the run lock (that could make the
+# tick skip). Twice a second it reads which process has fd 8 open on
+# /run/tsx/autoupdate.lock: tsx-autoupdate opens fd 8 only for its probe (an
+# instant) and while it holds the run lock (its children have it then too).
+# It also times the part from the first log write to the end (the apk update
+# before the run lock writes no log), and checks that /var/log does not change
+# before that first log write (apk update runs with --no-logfile: nothing lands
+# in /var/log, which step 2 of uc-pxx copies, while the run lock is free).
 cp "$OUT/autoupdate.log" "$OUT/autoupdate-boot.log" 2>/dev/null; : > "$OUT/autoupdate.log"
+vlog() { tar -cf - /var/log 2>/dev/null | md5sum | cut -d' ' -f1; }
+v0=$(vlog)
 t0=$(up); run >/dev/null 2>&1 & P=$!
-tl=
+tl= v1= n=0 held=0
 while kill -0 "$P" 2>/dev/null; do
-	[ -z "$tl" ] && [ -s "$OUT/autoupdate.log" ] && tl=$(up)
+	if [ -z "$tl" ] && [ -s "$OUT/autoupdate.log" ]; then tl=$(up); fi
+	[ -z "$tl" ] && v1=$(vlog)
+	n=$((n + 1))
+	for d in /proc/[0-9]*; do
+		case $(readlink "$d/fd/8" 2>/dev/null) in */autoupdate.lock) held=$((held + 1)); break;; esac
+	done
 	sleep 0.5
 done
 wait "$P"; t1=$(up); k=$(secs "$t0" "$t1")
 [ -n "$tl" ] || tl=$t1
 h=$(secs "$tl" "$t1")
-say "tick: $k s; the run lock was held at most about $h s (from the first log write to the end)"
+say "tick: $k s; fd 8 on the run lock at $held of $n looks (0.5 s); from the first log write to the end $h s"
 [ "$k" -le 140 ] || bad "the tick took $k s with no network (bound 4 x 20 s + 60 s)"
-[ "$h" -le 15 ] || bad "the run lock was held about $h s (the network part holds it)"
+[ "$held" -le 30 ] || bad "the run lock was held at $held of $n looks (the network part holds it)"
+[ "$h" -le 15 ] || bad "about $h s from the first log write to the end (the network part is under the run lock)"
+[ "$v1" = "$v0" ] || bad "/var/log changed during the apk update before the run lock ($(ls /var/log))"
 grep -q '^repo_blocked 1$' "$T/state/fields" 2>/dev/null || bad "the status does not say that a repository is unreachable"
 c=$(grep -c 'APKINDEX.tar.gz: Operation timed out' "$OUT/autoupdate.log")
 say "timed-out repositories in the log: $c"
 [ "$c" -ge 4 ] || bad "apk update did not report the 4 repositories as timed out"
 grep -q '^CALL reboot' "$T/calls" 2>/dev/null && bad "a restart"
-[ $fail = 0 ] && say "PASS tsx-autoupdate offline (real apk): boot ${b}s, tick ${k}s, run lock held at most about ${h}s" || say "FAIL tsx-autoupdate offline"
+[ $fail = 0 ] && say "PASS tsx-autoupdate offline (real apk): boot ${b}s, tick ${k}s, run lock fd at $held of $n looks, /var/log unchanged before the run lock" || say "FAIL tsx-autoupdate offline"
 exit $fail

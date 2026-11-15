@@ -53,7 +53,7 @@ The service `tsx-autoupdate` adds a line to `/etc/crontabs/root`. `crond` runs `
 
 If an earlier install left "restart required" and `AUTO_RESTART` is on later, the next run in the window with an idle screen restarts the panel.
 
-`apk update` runs with `--timeout 20` (seconds for each connection, and with no progress; apk's own default is 60), before the run takes its lock (see [One run at a time](#one-run-at-a-time)). `apk info -v` (the installed packages) runs with `--no-network`. With no way out to the network (a WAN that drops every packet), apk-tools 3 would otherwise wait 60 s for each address of each repository, also in `apk info -v` (it fetches a missing index). A check then takes about 20 s for each address of the repositories (about 4 minutes for the four repositories of a panel, 12 addresses), and the boot makes no network call. The check then shows the repositories as unreachable, so nothing installs.
+`apk update` runs with `--no-logfile --timeout 20` (seconds for each connection, and with no progress; apk's own default is 60), before the run takes its lock (see [One run at a time](#one-run-at-a-time)). `apk info -v` (the installed packages) runs with `--no-network`. With no way out to the network (a WAN that drops every packet), apk-tools 3 would otherwise wait 60 s for each address of each repository, also in `apk info -v` (it fetches a missing index). A check then takes about 20 s for each address of the repositories (about 4 minutes for the four repositories of a panel, 12 addresses), and the boot makes no network call. The check then shows the repositories as unreachable, so nothing installs.
 
 ## Versions
 

@@ -17,9 +17,10 @@
 #   - tsx-autoupdate boot (the init script runs it before the default
 #     runlevel goes on) makes no network call: it ends in seconds;
 #   - the scheduled run: apk update ends by its --timeout (4 x 20 s), the run
-#     lock /run/tsx/autoupdate.lock is held only for the part after it (timed
-#     from the log, at most 15 s), and the status says that the repositories
-#     are unreachable.
+#     lock /run/tsx/autoupdate.lock is held only for the part after it (read
+#     from /proc without taking the lock, and timed from the log), /var/log
+#     does not change before the run lock, and the status says that the
+#     repositories are unreachable.
 # The inner part is tests/lib/autoupdate-offline-inner.sh (busybox sh).
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(cd "$HERE/.." && pwd)

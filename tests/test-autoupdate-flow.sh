@@ -29,6 +29,7 @@ for x in "\$@"; do
 	if [ -n "\$skip" ]; then skip=; to=\$x; continue; fi
 	case \$x in
 	--no-network) nonet=1;;
+	--no-logfile) echo "\$* nolog" >> "$T/apk.nolog";;
 	--timeout) skip=1;;
 	*) a="\$a \$x";;
 	esac
@@ -1180,7 +1181,7 @@ v3.24.4-83-g2ae38f2a3d1 [https://dl-cdn.alpinelinux.org/alpine/v3.24/community]
 2 unavailable, 2 stale; 28581 distinct packages available'
 offrun() { APK_NET_WAIT=$NETW TSX_APK_NET_TIMEOUT=$TO APK_UPDATE_RC=4 run "$@"; }
 lockfree() { ( flock -n 9 ) 9>>"$1"; }   # lockfree FILE: 0 = nobody holds FILE now
-reset_opts() { : > "$T/apk.opts"; : > "$T/apk.waits"; }
+reset_opts() { : > "$T/apk.opts"; : > "$T/apk.waits"; : > "$T/apk.nolog"; }
 
 # 20n-0: with the network (no wait), a check runs apk update with --timeout 20 (the panel's value) and apk
 # info -v with --no-network; the simulation as before (no option)
@@ -1216,6 +1217,8 @@ jf "$T/run/update.json" .repo_warning | grep -q 'repository unreachable (https:/
 grep -qE '^APK upgrade( --force-missing-repositories)?$' "$T/apk.calls" && { echo "FAIL: 20n-2: installed with no network"; fail=1; }
 grep -q '^CALL reboot' "$T/calls" && { echo "FAIL: 20n-2: restarted with no network"; fail=1; }
 grep -q 'install: not installing: .*repository unreachable' "$T/tsx-autoupdate.log" || { echo "FAIL: 20n-2: no 'not installing' line"; fail=1; }
+chk "$(grep -c 'APKINDEX.tar.gz: Operation timed out$' "$T/tsx-autoupdate.log")" 4 "20n-2: the output of apk update is in the log (written under the run lock)"
+grep -q 'update ' "$T/apk.nolog" 2>/dev/null || { echo "FAIL: 20n-2: apk update without --no-logfile (apk would write /var/log/apk.log outside the run lock)"; fail=1; }
 lockfree "$T/run/autoupdate.lock" && lockfree "$T/run/autoupdate-apk.lock" || { echo "FAIL: 20n-2: a lock is still held after the tick"; fail=1; }
 
 # 20n-3: a program that needs the run lock (step 2 of uc-pxx) takes it at once while the tick's apk update

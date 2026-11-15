@@ -126,7 +126,7 @@
 #   - apk info -v (the installed packages) runs with --no-network. Its output
 #     is the same; it never needed the network. The boot (tsx-autoupdate boot,
 #     in the init script) therefore makes no network call.
-#   - apk update runs with --timeout $APK_NET_TIMEOUT (seconds for each
+#   - apk update runs with --no-logfile --timeout $APK_NET_TIMEOUT (seconds for each
 #     connection, and with no progress), before the run lock is taken, under
 #     $RUN/autoupdate-apk.lock: one apk update of tsx-autoupdate at a time,
 #     and none while another run holds the run lock (apk update holds the
@@ -793,13 +793,14 @@ pending_packages() {
 
 # fetch_indexes: the network part of a check, apk update with the timeout. It
 # runs before the run lock (fetch_first) and writes only the index cache of
-# apk: not the state and not the log (a program that takes the run lock while
-# apk update waits, such as step 2 of uc-pxx, may copy /var/log). It sets UPD
+# apk: not the state and not a log (a program that takes the run lock while
+# apk update waits, such as step 2 of uc-pxx, may copy /var/log; --no-logfile
+# keeps apk from writing /var/log/apk.log). It sets UPD
 # (its output), UPD_RC and FETCHED=1; do_check logs them under the run lock.
 # The lock descriptors do not reach apk.
 FETCHED=0 UPD= UPD_RC=0
 fetch_indexes() {
-	UPD=$(apk update --timeout "$APK_NET_TIMEOUT" 2>&1 8>&- 9>&-); UPD_RC=$?
+	UPD=$(apk update --no-logfile --timeout "$APK_NET_TIMEOUT" 2>&1 8>&- 9>&-); UPD_RC=$?
 	FETCHED=1
 }
 
