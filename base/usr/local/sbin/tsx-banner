@@ -3,6 +3,9 @@
 # above the login prompt on the panel screen and on the serial console) and
 # /etc/motd (shown after a login). Both have the Tux and "TSX - LINUX" art of
 # /etc/tsx/banner.art, then the model, the IP address and "SSH is on".
+# /etc/issue also says which root password case applies (tsx-rootpw note).
+# /etc/motd does not: /etc/profile.d/tsx.sh prints that line once after the
+# login, in the words for a person who is logged in (tsx-rootpw note ssh).
 #
 #   tsx-banner        write both files. When /etc/issue changed, end the idle
 #                     getty processes. init starts them again, so the login
@@ -120,9 +123,10 @@ facts() {
 		echo "   address:  none yet (waiting for DHCP)"
 		echo "   SSH is on (port 22)"
 	fi
-	# which root password case applies (tsx-rootpw note)
-	"${TSX_ROOTPW_BIN:-/usr/local/bin/tsx-rootpw}" note 2>/dev/null
 }
+# which root password case applies (tsx-rootpw note): the screen words, for
+# /etc/issue only
+rootnote() { "${TSX_ROOTPW_BIN:-/usr/local/bin/tsx-rootpw}" note 2>/dev/null; }
 
 tmp=$ISSUE.tmp.$$
 {
@@ -131,7 +135,7 @@ tmp=$ISSUE.tmp.$$
 	# Double them, so the art prints as it is.
 	sed 's/\\/\\\\/g; s/%/%%/g' "$ART" 2>/dev/null
 	echo
-	facts | sed 's/\\/\\\\/g; s/%/%%/g'
+	{ facts; rootnote; } | sed 's/\\/\\\\/g; s/%/%%/g'
 	echo
 } > "$tmp" && chmod 644 "$tmp" || { rm -f "$tmp"; exit 1; }
 changed=1; cmp -s "$tmp" "$ISSUE" 2>/dev/null && changed=0

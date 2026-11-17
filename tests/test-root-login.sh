@@ -88,10 +88,28 @@ printf 'root:%s:19000:0:::::\n' "$HASH" > "$SH"; rp note | grep -q 'password is 
 : > "$AK"; printf 'root:*::0:::::\n' > "$SH"
 rp note | grep -q 'Nobody can log in' && ok "note (locked, no key): says nobody can log in" || bad "note (no key) wrong"
 printf 'root::19000:0:::::\n' > "$SH"; rp note | grep -q 'WARNING' && ok "note (empty field): warns" || bad "note (empty) wrong"
+echo "$KEY" > "$AK"; printf 'root:*::0:::::\n' > "$SH"
+eq "$(rp note ssh)" "$(printf '%s\n' "   root:     no password is set, so the login on the panel's screen is off." "             Run passwd to turn it on.")" "note ssh (key only): the words for a person who is logged in"
+rp note ssh | grep -q 'over SSH\|this screen' && bad "note ssh still says log in over SSH / this screen" || ok "note ssh does not tell a logged-in person to log in over SSH"
+printf 'root:%s:19000:0:::::\n' "$HASH" > "$SH"; eq "$(rp note ssh)" "   root:     password is set." "note ssh (password set)"
+printf 'root::19000:0:::::\n' > "$SH"; rp note ssh | grep -q 'WARNING.*Run passwd' && ok "note ssh (empty field): warns, run passwd" || bad "note ssh (empty) wrong"
+rp note bogus >/dev/null 2>&1; eq "$?" "2" "note with an unknown form: usage, exit 2"
 
 echo "== /etc/profile.d/tsx.sh: the console login never forces a password =="
 grep -q 'tsx-rootpw login' "$PROF" && bad "tsx.sh still forces a password change" || ok "tsx.sh has no forced password change"
 grep -q '/dev/tty' "$PROF" && bad "tsx.sh still checks the console terminal" || ok "tsx.sh does not look at the terminal"
+# tsx.sh in an interactive root shell: the note once, in the ssh words, for every profile
+# (the copy runs as root, and takes the interactive branch: a host shell
+# without a terminal clears "i" in $-)
+PF=$T/prof; mkdir -p "$PF"
+sed "s#/usr/local/bin/tsx-rootpw#$PF/rootpw#g; s#/etc/tsx/#$PF/etc/#g; s#^case \$- in#case i in#; s#\$(id -u)#0#" "$PROF" > "$PF/tsx.sh"
+printf '#!/bin/sh\necho "rootpw $*"\n' > "$PF/rootpw"; chmod 755 "$PF/rootpw"
+for prof in console kiosk-ha; do
+	mkdir -p "$PF/etc"; echo "$prof" > "$PF/etc/profile"
+	out=$(busybox sh -c ". '$PF/tsx.sh'" 2>/dev/null </dev/null)
+	eq "$(printf '%s\n' "$out" | grep -c '^rootpw')" "1" "tsx.sh ($prof): the root note once"
+	printf '%s\n' "$out" | grep -qx 'rootpw note ssh' && ok "tsx.sh ($prof): the ssh words (note ssh)" || bad "tsx.sh ($prof): not note ssh: $out"
+done
 
 echo "== ssh takes the key until a password is set =="
 grep -q '^PermitEmptyPasswords no$' "$SSHD" && ok "sshd: PermitEmptyPasswords no" || bad "sshd: no PermitEmptyPasswords no"
@@ -101,11 +119,12 @@ echo "== the banner says which case applies =="
 mkdir -p "$T/run"; echo FAKE-100 > "$T/run/model"
 ban() { env TSX_BANNER_ART="$ART" TSX_ISSUE_FILE="$T/issue" TSX_MOTD_FILE="$T/motd" TSX_RUN="$T/run" TSX_IP=192.0.2.10 TSX_NO_RESPAWN=1 TSX_ROOTPW_BIN="$RPW" TSX_SHADOW_FILE="$SH" TSX_AUTH_KEYS_FILE="$AK" sh "$BAN"; }
 printf 'root:*::0:::::\n' > "$SH"; echo "$KEY" > "$AK"; ban
-for f in issue motd; do
-	grep -q 'no password is set' "$T/$f" && grep -q 'over SSH with your key' "$T/$f" && grep -q 'run passwd' "$T/$f" && ok "$f (key only): says the console login opens after passwd over SSH" || bad "$f (key only) wrong"
-done
+grep -q 'no password is set' "$T/issue" && grep -q 'over SSH with your key' "$T/issue" && grep -q 'run passwd' "$T/issue" && ok "issue (key only): says the console login opens after passwd over SSH" || bad "issue (key only) wrong"
+grep -q 'root:' "$T/motd" && bad "motd repeats the root note (tsx.sh prints it after the login)" || ok "motd (key only): no root note (tsx.sh prints it once)"
+grep -q 'SSH is on' "$T/motd" && ok "motd keeps the facts" || bad "motd lost the facts"
 printf 'root:%s:19000:0:::::\n' "$HASH" > "$SH"; ban
-for f in issue motd; do grep -q 'password is set' "$T/$f" && ok "$f (password set): says so" || bad "$f (set) wrong"; done
+grep -q 'password is set' "$T/issue" && ok "issue (password set): says so" || bad "issue (set) wrong"
+grep -q 'root:' "$T/motd" && bad "motd (password set) repeats the root note" || ok "motd (password set): no root note"
 printf 'root:*::0:::::\n' > "$SH"; : > "$AK"; ban
 grep -q 'Nobody can log in' "$T/issue" && ok "issue (no password, no key): says nobody can log in" || bad "issue (nothing) wrong"
 
@@ -117,7 +136,7 @@ grep -q 'no password is set' "$T/issue" || bad "setup of the check test failed"
 cp "$T/issue" "$T/issue.1"; cban
 cmp -s "$T/issue" "$T/issue.1" && ok "check: no change in the files, no rewrite" || bad "check rewrote the banner with no change"
 printf 'root:%s:19000:0:::::\n' "$HASH" > "$SH"; touch -d '2026-02-01 00:00:00' "$SH"; cban
-for f in issue motd; do grep -q 'password is set' "$T/$f" && ! grep -q 'login on this screen is off' "$T/$f" && ok "check: $f says the password is set after passwd" || bad "check: $f stays stale after passwd"; done
+grep -q 'password is set' "$T/issue" && ! grep -q 'login on this screen is off' "$T/issue" && ok "check: issue says the password is set after passwd" || bad "check: issue stays stale after passwd"
 printf 'root:*::0:::::\n' > "$SH"; touch -d '2026-03-01 00:00:00' "$SH"; cban
 grep -q 'no password is set' "$T/issue" && ok "check: the password removed, the banner follows" || bad "check: banner stays at password set"
 busybox sh -n "$BAN" && ok "tsx-banner passes busybox sh -n" || bad "tsx-banner: busybox sh -n"

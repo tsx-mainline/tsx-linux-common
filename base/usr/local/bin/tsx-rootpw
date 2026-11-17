@@ -15,7 +15,12 @@
 #                      no password login at all) or empty (the field has no
 #                      value: this is an error state). It prints nothing when
 #                      it cannot read /etc/shadow (not root).
-#   tsx-rootpw note    print the lines for the banner: which case applies
+#   tsx-rootpw note    print the lines for the screen banner (/etc/issue, above
+#                      the login prompt on the panel screen and the serial
+#                      console): which case applies
+#   tsx-rootpw note ssh  the same case in the words for a person who is logged
+#                      in already, for example over SSH (/etc/profile.d/tsx.sh
+#                      prints it once at each interactive root login)
 # Test hooks: TSX_SHADOW_FILE (default /etc/shadow),
 # TSX_AUTH_KEYS_FILE (default /root/.ssh/authorized_keys).
 set -u
@@ -36,11 +41,21 @@ state() {
 case "${1:-}" in
 state) state;;
 note)
+	# $2: empty = the screen words, ssh = the words after a login
+	how=${2:-}
+	case $how in ''|ssh) ;; *) sed -n '2,25p' "$0" >&2; exit 2;; esac
 	case $(state) in
 	empty)
-		echo "   root:     WARNING: the password field is empty. Log in over SSH with a key and run passwd.";;
+		if [ "$how" = ssh ]; then
+			echo "   root:     WARNING: the password field is empty. Run passwd to set a password."
+		else
+			echo "   root:     WARNING: the password field is empty. Log in over SSH with a key and run passwd."
+		fi;;
 	locked)
-		if [ -s "$KEYS" ]; then
+		if [ "$how" = ssh ]; then
+			echo "   root:     no password is set, so the login on the panel's screen is off."
+			echo "             Run passwd to turn it on."
+		elif [ -s "$KEYS" ]; then
 			echo "   root:     no password is set, so the login on this screen is off."
 			echo "             Log in over SSH with your key and run passwd. Then this screen works."
 		else
@@ -49,5 +64,5 @@ note)
 	set)
 		echo "   root:     password is set.";;
 	esac;;
-*) sed -n '2,20p' "$0" >&2; exit 2;;
+*) sed -n '2,25p' "$0" >&2; exit 2;;
 esac
