@@ -21,6 +21,10 @@
 #    (bt-gatt-peer.py): links, GATT, the slot count, timeouts, drops
 #    (bt-gatt-check.py), the pause of the passive scan around a connect,
 #    and the BT_ACTIVE switch.
+#  - btscan.py: a controller that answers Inquiry Cancel with 0x12 (the
+#    BCM4345C5). The passive scan never starts an inquiry. After an active
+#    scan, the pause before a connect starts one inquiry and cancels it, so
+#    that the kernel sets its discovery state back to stopped.
 #  - btgatt.py: the end of a link and a reconnect to the same address, with
 #    a fake clock, client and HCI (btgatt-race-check.py). No late conn event
 #    and no error -1 reach a client that connects again.
@@ -479,6 +483,65 @@ PYEOF
 grep -q 'connect refused: BT_ACTIVE is off' "$G/btscan.log" || bad "no log line for the refused connect"
 kill "$SCAN" 2>/dev/null; wait "$SCAN" 2>/dev/null
 [ ! -e "$G/bt-gatt.sock" ] && ok "SIGTERM: the GATT socket is removed" || bad "GATT socket left after the stop"
+
+echo "== btscan.py + btgatt.py: Inquiry Cancel answers 0x12 (BCM4345C5) =="
+Q=$W/bcm; mkdir -p "$Q"
+TSX_FAKE_HCI_CANCEL_STATUS=12 python3 "$HERE/bt-fake-hci.py" "$Q/hci.sock" "$Q/hci.log" > "$Q/fakehci.out" 2>&1 &
+PIDS="$PIDS $!"
+python3 "$HERE/bt-gatt-peer.py" fake "$Q/peer.sock" "$Q/peer.log" > "$Q/peer.out" 2>&1 &
+PIDS="$PIDS $!"
+for _ in $(seq 1 50); do [ -S "$Q/hci.sock" ] && [ -S "$Q/peer.sock" ] && break; sleep 0.1; done
+printf 'PROXY="on"\nACTIVE="on"\n' > "$Q/bt.conf"
+TSX_BT_CONF="$Q/bt.conf" TSX_BT_MAC_FILE="$Q/bt.mac" TSX_BTSCAN_FAKE_HCI="$Q/hci.sock" TSX_BTSCAN_FAKE_L2CAP="$Q/peer.sock" \
+	TSX_BT_CONNECT_TIMEOUT=2 python3 "$LIB/btscan.py" --socket "$Q/adv.sock" --group "" > "$Q/btscan.log" 2>&1 &
+SCAN=$!; PIDS="$PIDS $SCAN"
+for _ in $(seq 1 50); do [ -S "$Q/bt-gatt.sock" ] && grep -q 'HCI socket open' "$Q/btscan.log" && break; sleep 0.1; done
+python3 - "$Q/adv.sock" "$Q/bt-gatt.sock" "$Q/hci.log" <<'PYEOF2' && ok "Inquiry Cancel 0x12: no inquiry in the passive scan or the active scan; before the connect one inquiry, cancelled at once; no inquiry for the next connects" || { bad "Inquiry Cancel 0x12: see above"; grep '^cmd' "$Q/hci.log" | tr '\n' ' '; }
+import json, socket, sys, time
+advp, gattp, hcilog = sys.argv[1:4]
+def cmds():
+    return [" ".join(l.split()[1:]) for l in open(hcilog) if l.startswith("cmd ") and not l.startswith("cmd 1009")]
+def link(g, addr):
+    g.send(json.dumps({"op": "connect", "addr": addr, "atype": 0}).encode())
+    while True:
+        m = json.loads(g.recv(4096))
+        if m.get("ev") == "conn" and m["addr"] == addr:
+            assert m["connected"], m
+            break
+    g.send(json.dumps({"op": "disconnect", "addr": addr}).encode())
+    while True:
+        m = json.loads(g.recv(4096))
+        if m.get("ev") == "conn" and m["addr"] == addr:
+            assert not m["connected"], m
+            break
+adv = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET); adv.connect(advp)
+time.sleep(0.8)
+c = cmds()
+assert "200c 0100" in c and "0402" in c, c          # the passive scan runs, with one Inquiry Cancel
+assert not any(x.startswith("0401") for x in c), c  # and no inquiry: the passive scan sends nothing
+adv.send(b"m\x01"); time.sleep(0.8)                 # the front end asks for the active scan
+assert any(x.startswith("200b 01") for x in cmds()), cmds()
+adv.send(b"m\x00"); time.sleep(0.8)                 # and for the passive scan again
+c = cmds()
+assert c[-1] == "200c 0100" and c[-2].startswith("200b 00"), c
+assert not any(x.startswith("0401") for x in c), c  # the Inquiry Cancel failed: still no inquiry
+n0 = len(c)
+g = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET); g.connect(gattp); g.settimeout(5)
+g.recv(4096)
+link(g, 0xC0FFEE000003)
+c = cmds()[n0:]
+# the pause: the scan off, Inquiry Cancel (0x12), the inquiry, Inquiry
+# Cancel (status 0: the kernel sets "stopped"), LE host support, then the link
+assert c[:5] == ["200c 0000", "0402", "0401 338b9e0101", "0402", "0c6d 0100"], c
+time.sleep(0.8)
+link(g, 0xC0FFEE000004)                             # only passive scans since then
+c = cmds()
+assert sum(x.startswith("0401") for x in c) == 1, c
+g.close(); adv.close()
+PYEOF2
+[ "$(grep -c 'Inquiry Cancel: status 0x12' "$Q/btscan.log")" = 1 ] && grep -q 'discovery state reset: inquiry started and cancelled' "$Q/btscan.log" \
+	&& ok "the log names the 0x12 answer once and the reset by the inquiry" || bad "log: $(grep -i inquiry "$Q/btscan.log" | tr '\n' ' ')"
+kill "$SCAN" 2>/dev/null; wait "$SCAN" 2>/dev/null
 
 echo "== $N ok, $F failed =="
 [ $F = 0 ] && echo PASS test-bt || echo FAIL test-bt

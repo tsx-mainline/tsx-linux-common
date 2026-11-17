@@ -12,6 +12,11 @@ sends the ADVERTS below every 0.2 s: one LE Advertising Report event with
 two reports, then one with a single report. Read BD_ADDR (0x1009) gets
 BD_ADDR (default 02:AA:BB:CC:DD:01). HCI Disconnect (0x0406) gets a
 Command Status and a Disconnection Complete (reason 0x16) for the handle.
+HCI Inquiry (0x0401) gets a Command Status with status 0: an inquiry runs
+until Inquiry Cancel (0x0402). Inquiry Cancel then gets status 0. With no
+inquiry it gets the status that TSX_FAKE_HCI_CANCEL_STATUS gives (hex).
+The default is 0C (Command Disallowed). Some controllers answer 12 (Invalid
+HCI Command Parameters), for example the BCM4345C5.
 LOG gets one line per command: "cmd OPCODE PARAMS-HEX". The advertisement
 data is made up.
 """
@@ -52,8 +57,10 @@ def main():
     srv.bind(path)
     srv.listen(1)
     log = open(logpath, "a", buffering=1, encoding="ascii")
+    cancel_status = int(os.environ.get("TSX_FAKE_HCI_CANCEL_STATUS", "0C"), 16)
     conn = None
     scanning = False
+    inquiring = False
     next_adv = 0.0
     while True:
         rlist = [srv] + ([conn] if conn else [])
@@ -63,6 +70,7 @@ def main():
                 conn.close()
             conn, _ = srv.accept()
             scanning = False
+            inquiring = False
             log.write("connect\n")
         if conn and conn in r:
             pkt = conn.recv(300)
@@ -85,6 +93,16 @@ def main():
                 except OSError:
                     pass
                 continue
+            if opcode == 0x0401:
+                inquiring = True
+                try:
+                    conn.send(bytes((0x04, 0x0F, 4, 0, 1)) + struct.pack("<H", opcode))
+                except OSError:
+                    pass
+                continue
+            if opcode == 0x0402:
+                status = 0 if inquiring else cancel_status
+                inquiring = False
             if opcode == 0x200C:
                 if params[0] == 0 and not scanning:
                     status = 0x0C

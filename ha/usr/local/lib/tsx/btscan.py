@@ -87,8 +87,10 @@ A link belongs to the front end that asked for it. When that front end
 closes its socket, the daemon takes its links down. The daemon connects
 only while bt.conf says ACTIVE="on", and one link at a time. The passive
 scan pauses while a link comes up, because the kernel scans for the device
-itself then. The kernel stops every scan when a link comes up or goes down,
-so the daemon starts the passive scan again after those events.
+itself then. After an active scan the kernel does that scan only when its
+discovery state is "stopped" again, so the pause resets that state first
+(reset_discovery). The kernel stops every scan when a link comes up or goes
+down, so the daemon starts the passive scan again after those events.
 
   btscan.py [--hci hci0] [--socket /run/tsx/bt-adv.sock] [--group kiosk]
             [--gatt-socket PATH] [--max-connections 3]
@@ -130,11 +132,18 @@ EVT_LE_META = 0x3E
 LE_ADV_REPORT = 0x02
 LE_CONN_COMPLETE = (0x01, 0x0A)
 
+OP_INQUIRY = 0x0401
 OP_INQUIRY_CANCEL = 0x0402
 OP_READ_BD_ADDR = 0x1009
 OP_LE_SET_SCAN_PARAMS = 0x200B
 OP_LE_SET_SCAN_ENABLE = 0x200C
 OP_WRITE_LE_HOST_SUPPORTED = 0x0C6D
+
+# HCI Inquiry: the general inquiry access code (LAP 0x9E8B33), 1.28 s, at
+# most one response. The daemon cancels it at once (reset_discovery).
+INQUIRY_PARAMS = bytes((0x33, 0x8B, 0x9E, 0x01, 0x01))
+# Commands that end with a Command Status (no Command Complete follows).
+STATUS_ENDS = (OP_INQUIRY,)
 
 HCIDEVUP = 0x400448C9    # _IOW('H', 201, int)
 # ESPHome BluetoothScannerState
@@ -247,6 +256,7 @@ class Scanner:
         self.scan_mode = MODE_PASSIVE   # the mode of the scan that runs
         self.scan_failed = False
         self.discovery_dirty = False  # an active scan ran: the kernel thinks discovery runs
+        self.cancel_logged = set()   # Inquiry Cancel answers that are in the log already
         self.sent_state = {}     # adv client -> the last state message sent
         self.cc_params = {}      # opcode -> return parameters of the last Command Complete
         self.link_event_at = -100.0  # a link came up or went down (retry the scan sooner)
@@ -414,32 +424,57 @@ class Scanner:
             else:
                 self.send_cmd(OP_LE_SET_SCAN_ENABLE, bytes((0, 0)))
                 self.scanning = False
-                self.reset_discovery()
+                self.reset_discovery(inquiry=self.paused)
                 _LOGGER.info("scan off (%s)", "a link comes up" if self.paused else "no clients")
             return True
         except OSError as err:
             self.hci_fail("HCI command", err)
             return False
 
-    def reset_discovery(self):
+    def reset_discovery(self, inquiry=False):
         """Set the discovery state of the kernel back to stopped.
 
         The kernel tracks the scan commands on the raw socket. When an active
         scan starts, it sets its discovery state to "finding", and only a
         stop of its own discovery sets it back. While the state is not
-        "stopped", the kernel does not start the scan for a pending LE link,
-        and every connect() runs into the 20 s timeout. The Command Complete
-        of Inquiry Cancel sets the state to "stopped" when no active scan
-        runs. A controller can answer "Command Disallowed" (no inquiry runs), and
-        the kernel takes that answer as success. Call this with the scan off.
+        "stopped", the kernel does not start the scan for a pending LE link:
+        connect() sends no HCI command and runs into the 20 s timeout. The
+        Command Complete of Inquiry Cancel sets the state to "stopped" when
+        no active scan runs. With no inquiry, a controller can answer
+        "Command Disallowed", and the kernel takes that answer as success.
+        Other controllers answer "Invalid HCI Command Parameters" (0x12), for
+        example the BCM4345C5. The kernel then keeps its state.
+
+        inquiry=True (just before a connect, when the link will transmit
+        anyway): if Inquiry Cancel alone fails, start an inquiry and cancel
+        it at once. An Inquiry Cancel while an inquiry runs gets status 0,
+        and the kernel sets "stopped". The inquiry transmits for a few
+        milliseconds, so the passive scan never does this. Call this with the
+        scan off.
         """
         if not self.discovery_dirty or self.hci is None:
             return
         st = self.send_cmd(OP_INQUIRY_CANCEL)
         if st in (0x00, 0x0C):
             self.discovery_dirty = False
+            return
+        if not inquiry:
+            if st not in self.cancel_logged:
+                self.cancel_logged.add(st)
+                _LOGGER.info("Inquiry Cancel: %s. A short inquiry before the next connect resets "
+                             "the discovery state of the kernel", "no answer" if st is None else f"status 0x{st:02x}")
+            return
+        st = self.send_cmd(OP_INQUIRY, INQUIRY_PARAMS)
+        if st != 0:
+            _LOGGER.warning("Inquiry: %s. The connect can time out", "no answer" if st is None else f"status 0x{st:02x}")
+            return
+        st = self.send_cmd(OP_INQUIRY_CANCEL)
+        if st in (0x00, 0x0C):
+            self.discovery_dirty = False
+            _LOGGER.info("discovery state reset: inquiry started and cancelled")
         else:
-            _LOGGER.warning("Inquiry Cancel: %s", "no answer" if st is None else f"status 0x{st:02x}")
+            _LOGGER.warning("Inquiry Cancel after an inquiry: %s. The connect can time out",
+                            "no answer" if st is None else f"status 0x{st:02x}")
 
     def read_hci(self):
         try:
@@ -462,7 +497,7 @@ class Scanner:
                 self.cc_params[opcode] = bytes(params[3:])
         elif evt == EVT_CMD_STATUS and len(params) >= 4:
             opcode = struct.unpack_from("<H", params, 2)[0]
-            if opcode in self.pending and params[0] != 0:
+            if opcode in self.pending and (params[0] != 0 or opcode in STATUS_ENDS):
                 self.pending[opcode] = params[0]
         elif evt == EVT_LE_META and params and params[0] == LE_ADV_REPORT:
             for rep in parse_adv_reports(params[1:]):
@@ -516,7 +551,7 @@ class Scanner:
         else:
             # The kernel stopped the scan: it can still be in discovery
             try:
-                self.reset_discovery()
+                self.reset_discovery(inquiry=True)
             except OSError as err:
                 self.hci_fail("HCI command", err)
 
