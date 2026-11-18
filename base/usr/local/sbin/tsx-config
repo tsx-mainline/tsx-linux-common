@@ -115,10 +115,12 @@
 #   file sets it). Apply writes
 #   /run/tsx/bt.conf (world-readable, no secret) for tsx-bt and both ESPHome
 #   front ends, and starts or stops the tsx-bt service when the value changes.
-# BT_ACTIVE (on|off, default off): with BT_PROXY=on, also active connections:
-#   Home Assistant can connect to BLE devices through the panel (GATT).
-#   Apply writes it to bt.conf and restarts the ESPHome front end, so that
-#   Home Assistant reads the new feature flags.
+# BT_ACTIVE (on|off, not set = the board default): with BT_PROXY=on, also
+#   active connections: Home Assistant can connect to BLE devices through the
+#   panel (GATT). Without the key in panel.conf (or with an empty value) the
+#   board default applies: TSX_BT_ACTIVE_DEFAULT (a board file can set it, on
+#   or off), else off. Apply writes it to bt.conf and restarts the ESPHome
+#   front end, so that Home Assistant reads the new feature flags.
 # BT_MAC: the Bluetooth address that tsx-bt loads into the chip. Empty = the
 #   eth0 MAC, the same value as the vendor firmware.
 # AUTO_BRIGHTNESS (on|off, default on): the backlight follows the ambient
@@ -175,7 +177,7 @@ PREFIX=${TSX_APPLY_PREFIX:-}
 # is the presence sensor: a missing PRESENCE key means no sensor.
 HW_CONF=${TSX_HW_CONF:-$RUN/hw.conf}
 # The board values (TSX_FAMILY, TSX_APK_CATEGORY, TSX_BT_PROXY_DEFAULT,
-# TSX_BT_MAC_SETTABLE, TSX_CONFIG_RELOAD). Test hook: TSX_BOARD_CONF. The installer runs this
+# TSX_BT_ACTIVE_DEFAULT, TSX_BT_MAC_SETTABLE, TSX_CONFIG_RELOAD). Test hook: TSX_BOARD_CONF. The installer runs this
 # script from a checkout of the repository on a host. There the board file is
 # next to it.
 BOARD=${TSX_BOARD_CONF:-/usr/local/lib/tsx/board.sh}
@@ -875,7 +877,10 @@ apply() {
 	# runs as kiosk and cannot read $TSX_CONF.
 	btp=$(cfg_get BT_PROXY) || btp=
 	[ -n "$btp" ] || btp=$TSX_BT_PROXY_DEFAULT
-	bta=$(cfg_get BT_ACTIVE) || bta=off
+	# not set or empty = the board default (TSX_BT_ACTIVE_DEFAULT, else off)
+	bta=$(cfg_get BT_ACTIVE) || bta=
+	[ -n "$bta" ] || bta=${TSX_BT_ACTIVE_DEFAULT:-off}
+	case "$bta" in on|off) ;; *) bta=off;; esac
 	# No Bluetooth module: bt.conf says off, so tsx-bt and both ESPHome
 	# front ends never offer the proxy.
 	if hw_missing BT_PROXY >/dev/null; then

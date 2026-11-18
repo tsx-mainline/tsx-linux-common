@@ -386,6 +386,20 @@ grep -qx 'PROXY="on"' "$FX/run/tsx/bt.conf" && [ "$(btl restart)" = $((s1 + 1)) 
 	|| bad "empty BT_PROXY, board default on: $(cat "$FX/run/tsx/bt.conf"), $(btl restart) restarts (was $s1)"
 set_ BT_PROXY off >/dev/null; TSX_BT_PROXY_DEFAULT=on applyp
 grep -qx 'PROXY="off"' "$FX/run/tsx/bt.conf" && ok "BT_PROXY=off wins over a board default of on" || bad "BT_PROXY=off, board default on: $(cat "$FX/run/tsx/bt.conf")"
+# BT_ACTIVE: not set = the board default TSX_BT_ACTIVE_DEFAULT (off when the board file has none)
+set_ BT_PROXY on >/dev/null; TSX_CONF="$CFG" busybox sh "$SCRIPT" unset BT_ACTIVE >/dev/null; applyp
+grep -qx 'ACTIVE="off"' "$FX/run/tsx/bt.conf" && ok "BT_ACTIVE not set, no board default: ACTIVE off" || bad "BT_ACTIVE not set: $(cat "$FX/run/tsx/bt.conf")"
+r0=$(restarts); TSX_BT_ACTIVE_DEFAULT=on applyp
+grep -qx 'ACTIVE="on"' "$FX/run/tsx/bt.conf" && [ "$(restarts)" = $((r0 + 1)) ] \
+	&& ok "BT_ACTIVE not set follows TSX_BT_ACTIVE_DEFAULT=on of the board: ACTIVE on, tsx-esphome restarts" \
+	|| bad "BT_ACTIVE not set, board default on: $(cat "$FX/run/tsx/bt.conf"), $(restarts) restarts (was $r0)"
+set_ BT_ACTIVE off >/dev/null; TSX_BT_ACTIVE_DEFAULT=on applyp
+grep -qx 'ACTIVE="off"' "$FX/run/tsx/bt.conf" && ok "BT_ACTIVE=off wins over a board default of on" || bad "BT_ACTIVE=off, board default on: $(cat "$FX/run/tsx/bt.conf")"
+printf 'BT_ACTIVE=""\n' >> "$CFG"; TSX_BT_ACTIVE_DEFAULT=on applyp
+grep -qx 'ACTIVE="on"' "$FX/run/tsx/bt.conf" && ok "an empty BT_ACTIVE line also follows the board default" || bad "empty BT_ACTIVE line: $(cat "$FX/run/tsx/bt.conf")"
+TSX_BT_ACTIVE_DEFAULT=bogus applyp
+grep -qx 'ACTIVE="off"' "$FX/run/tsx/bt.conf" && ok "a board default other than on or off counts as off" || bad "bogus board default: $(cat "$FX/run/tsx/bt.conf")"
+TSX_CONF="$CFG" busybox sh "$SCRIPT" unset BT_ACTIVE >/dev/null; set_ BT_PROXY off >/dev/null; applyp
 echo "== AUTO_BRIGHTNESS and ALS_SCALE: /run/tsx/als.panel for tsx-als =="
 rm -f "$FX/run/tsx/als.panel"; applyp
 [ ! -e "$FX/run/tsx/als.panel" ] && ok "als.panel: not written while neither key is set" || bad "als.panel written by default: $(cat "$FX/run/tsx/als.panel")"

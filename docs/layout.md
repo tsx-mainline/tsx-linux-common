@@ -67,7 +67,7 @@ The family repo gives the board values to this repo in `board.sh`, in the files 
 
 ### board.sh
 
-Variables: `TSX_FAMILY`, `TSX_APK_CATEGORY`, `TSX_HA_MODEL`, `TSX_SOUND_CARD`, `TSX_DISPLAY_DRM`, `TSX_RENDER_DRM`, `TSX_DISPLAY_ENV`, `TSX_BT_CHIP`, `TSX_BT_PROXY_DEFAULT`, `TSX_BT_MAC_SETTABLE`, `TSX_MAC_SOURCE`.
+Variables: `TSX_FAMILY`, `TSX_APK_CATEGORY`, `TSX_HA_MODEL`, `TSX_SOUND_CARD`, `TSX_DISPLAY_DRM`, `TSX_RENDER_DRM`, `TSX_DISPLAY_ENV`, `TSX_BT_CHIP`, `TSX_BT_PROXY_DEFAULT`, `TSX_BT_ACTIVE_DEFAULT` (optional: the BT_ACTIVE of a panel.conf without the key; off when the board file does not set it), `TSX_BT_MAC_SETTABLE`, `TSX_MAC_SOURCE`.
 
 Functions: `tsx_board_model`, `tsx_board_stock_fw`, `tsx_board_unit_id`, `tsx_board_mac`, `tsx_board_mac_early`, `tsx_board_mac_source`, `tsx_board_hostname_hint`, `tsx_board_rescue_extra`, `tsx_board_load`, `tsx_board_probe`. Every function name starts with `tsx_board_`. A function prints its value, or nothing when the board has none. The functions `tsx_board_ha_model` and `tsx_board_ledbar_map` are optional (see the next table).
 
