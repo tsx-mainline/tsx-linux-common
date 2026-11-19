@@ -7,6 +7,10 @@ The panel is one ESPHome device in Home Assistant. The `VOICE` setting selects t
 | `off` | `tsx-esphome` | `ha/voice/shim/tsx_panel/esphome_server.py` |
 | `on` | `tsx-voice` | The voice satellite (linux-voice-assistant) with the shim `ha/voice/shim/tsx_lva`. It serves the panel entities and the satellite entities. |
 
+## Network address and mDNS
+
+Both services listen on all IPv4 addresses (`0.0.0.0`, port 6053) and announce the device over mDNS (`_esphomelib._tcp`). The record holds the current IPv4 addresses of the interface of the default route (`IFACE=` selects another interface). When the default route goes away, the interface of the last default route counts. A network without a default route needs `IFACE=`. A panel that starts before its DHCP lease announces nothing until it has an address. It never announces `0.0.0.0`. When the address changes or goes away, the service replaces or withdraws the record at its next check (every 5 seconds). `HOST=` makes the service listen on and announce that one address only. The code is `ha/voice/shim/tsx_panel/mdns.py`, and the test is `tests/esphome-mdns-check.py`.
+
 ## Device information
 
 Both services send the same device information to Home Assistant. The device page does not change with `VOICE`. Only the voice feature flags differ (see "Voice features").

@@ -541,9 +541,38 @@ def _patch():
         _LOGGER.warning("tsx_panel: could not attach panel entities", exc_info=True)
 
 
+def _patch_listen(lva_main, argv):
+    """The address of the ESPHome API (tsx_panel/mdns.py). LVA reads the
+    address of the default interface once at start: it listens on that
+    address only and announces it over mDNS. Before a DHCP lease there is no
+    address, and the satellite stops at the announcement. After an address
+    change, it listens on and announces an address that is gone. Without
+    --host it now listens on all IPv4 addresses (0.0.0.0), and
+    tsx_panel.mdns.Announcer takes the place of HomeAssistantZeroconf: it
+    announces the current address of the interface and follows it. With
+    --host, LVA listens on that address, and the record holds it.
+
+    lva_main is linux_voice_assistant.__main__. run() reads both names from
+    its module at each call, so setting them before run() is enough."""
+    import argparse  # noqa: WPS433
+
+    from tsx_panel import mdns  # noqa: WPS433
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--network-interface")
+    iface = parser.parse_known_args(argv)[0].network_interface
+
+    def announcer(*args, **kwargs):
+        return mdns.Announcer(*args, interface=iface, **kwargs)
+
+    lva_main.get_default_ipv4 = lambda _iface: mdns.ANY
+    lva_main.HomeAssistantZeroconf = announcer
+
+
 def main():
     _patch()
     GLUE.start_threads()
-    from linux_voice_assistant.__main__ import run  # noqa: WPS433
+    from linux_voice_assistant import __main__ as lva_main  # noqa: WPS433
 
-    run()
+    _patch_listen(lva_main, sys.argv[1:])
+    lva_main.run()

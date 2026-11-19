@@ -3,8 +3,8 @@
 (docs/esphome.md), used when VOICE=off. When VOICE=on the same entities
 live inside the voice satellite's own process instead (tsx_lva's plugin) so
 Home Assistant only ever sees one device -- see docs/esphome.md. Reuses
-linux_voice_assistant's low-level frame parser
-(APIServer) and its zeroconf helper; only the entity set and the message
+linux_voice_assistant's low-level frame parser (APIServer). The mDNS
+announcement is mdns.py (shared with tsx_lva). Only the entity set and the message
 router are the panel's own (satellite.py's router is voice-specific and, for
 two message types, narrower than we need -- see entities.py's module
 docstring).
@@ -41,10 +41,9 @@ from aioesphomeapi.model import VoiceAssistantFeature
 from getmac import get_mac_address
 from google.protobuf import message
 from linux_voice_assistant.api_server import APIServer
-from linux_voice_assistant.util import get_default_interface, get_default_ipv4
-from linux_voice_assistant.zeroconf import HomeAssistantZeroconf
+from linux_voice_assistant.util import get_default_interface
 
-from . import bluetooth, deviceinfo, hw, naming, plugins, reconnect, security
+from . import bluetooth, deviceinfo, hw, mdns, naming, plugins, reconnect, security
 from .backend import PanelBackend
 from .device import build_entities, poll
 
@@ -203,8 +202,10 @@ async def async_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", help="Friendly name when PANEL_NAME is unset (default: hostname); see naming.py")
     parser.add_argument("--port", type=int, default=6053)
-    parser.add_argument("--network-interface")
-    parser.add_argument("--host")
+    parser.add_argument("--network-interface",
+                        help="the interface whose IPv4 addresses mDNS announces (default: the one of the default route, read again at each poll)")
+    parser.add_argument("--host",
+                        help="listen on and announce only this address (default: listen on all IPv4 addresses)")
     parser.add_argument("--poll-interval", type=float, default=1.0)
     parser.add_argument("--no-zeroconf", action="store_true",
                         help="do not announce the device over mDNS (a test instance that Home Assistant must not discover)")
@@ -213,7 +214,10 @@ async def async_main() -> None:
     import socket as _socket
 
     iface = args.network_interface or get_default_interface()
-    host_ip = args.host or (get_default_ipv4(iface) if iface else None) or "0.0.0.0"
+    # All IPv4 addresses, not the address at start: a panel that starts
+    # before its DHCP lease, or gets a new address later, stays reachable.
+    # mdns.py announces the current address.
+    host_ip = args.host or mdns.ANY
     mac = get_mac_address(interface=iface) or "00:00:00:00:00:00"
     # same name/friendly name the voice satellite uses (naming.py), so
     # switching VOICE does not rename the device in Home Assistant
@@ -252,7 +256,8 @@ async def async_main() -> None:
     if args.no_zeroconf:
         _LOGGER.info("no mDNS announcement (--no-zeroconf)")
     else:
-        discovery = HomeAssistantZeroconf(port=args.port, name=device_name, mac_address=mac, host_ip_address=host_ip)
+        discovery = mdns.Announcer(port=args.port, name=device_name, mac_address=mac,
+                                   host_ip_address=args.host, interface=args.network_interface)
         await discovery.register_server()
 
     _LOGGER.info("Bluetooth proxy: %s", "off" if not bluetooth.PROXY.enabled() else

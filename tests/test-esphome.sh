@@ -170,12 +170,12 @@ BADKEY=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
 # its lower case form (tsx_panel/naming.py), the same in both modes. Standalone
 # instances announce themselves over mDNS on this host. Two instances with one
 # name would collide, also an instance of another run. The test reads nothing
-# from /run/tsx on this host.
+# from /run/tsx on this host. TSX_TEST_HOST_ARGS replaces "--host 127.0.0.1".
 start_server() {
 	local kind=$1 log=$2 port=$3 pname=$4-$RUN; shift 4
 	local cmd
 	case $kind in
-	standalone) cmd=(-m tsx_panel.esphome_server --name "$pname-host" --port "$port" --host 127.0.0.1 ${TSX_TEST_SERVER_ARGS:-});;
+	standalone) cmd=(-m tsx_panel.esphome_server --name "$pname-host" --port "$port" ${TSX_TEST_HOST_ARGS---host 127.0.0.1} ${TSX_TEST_SERVER_ARGS:-});;
 	voice) cmd=("$HERE/esphome-lva-harness.py" "$port");;
 	esac
 	env PATH="$F/bin:$PATH" \
@@ -551,6 +551,22 @@ wait_listening "$T/server-allow.log" "$T/server-deny.log"
 "$T/venv/bin/python3" "$HERE/esphome-allowlist-check.py" "$ALLOW_PORT" allow || rc=1
 "$T/venv/bin/python3" "$HERE/esphome-allowlist-check.py" "$DENY_PORT" deny || rc=1
 grep -q 'closing connection from 127.0.0.1' "$T/server-deny.log" 2>/dev/null && echo "OK: denial was logged" || { echo "FAIL: no denial logged"; rc=1; }
+
+# ---- the address of the API and the mDNS record (tsx_panel/mdns.py) -------
+# The logic with fake interfaces: no lease at start, a lease, a change.
+echo "== mDNS: the record follows the address =="
+PYTHONPATH="$SHIM:$LVA_SRC" TSX_PANEL_NAME_FILE=/nonexistent "$T/venv/bin/python3" "$HERE/esphome-mdns-check.py" || rc=1
+# The real server without --host: it listens on 0.0.0.0, and the real
+# zeroconf announces the address of the interface (lo here), not 0.0.0.0.
+echo "== tsx-esphome without --host =="
+ANY_PORT=$((API_PORT + 90))
+TSX_TEST_HOST_ARGS="--network-interface lo" start_server standalone "$T/server-any.log" "$ANY_PORT" Mdns-Panel TSX_HA_API_KEY=
+wait_listening "$T/server-any.log"
+grep -q "listening on 0.0.0.0:$ANY_PORT" "$T/server-any.log" && echo "OK: tsx-esphome listens on 0.0.0.0 without --host" \
+	|| { echo "FAIL: no 'listening on 0.0.0.0:$ANY_PORT'"; cat "$T/server-any.log"; rc=1; }
+grep -q "mDNS: mdns-panel-$RUN announced at 127.0.0.1 port $ANY_PORT" "$T/server-any.log" && ! grep -q "announced at 0.0.0.0" "$T/server-any.log" \
+	&& echo "OK: the record holds the address of the interface (127.0.0.1), not 0.0.0.0" || { echo "FAIL: no mDNS record for the address of lo"; cat "$T/server-any.log"; rc=1; }
+"$T/venv/bin/python3" "$HERE/esphome-allowlist-check.py" "$ANY_PORT" allow || rc=1
 
 [ "$rc" = 0 ] && echo "PASS test-esphome" || echo "FAIL test-esphome"
 exit "$rc"
